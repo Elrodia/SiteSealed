@@ -4,50 +4,15 @@ import helmet from "helmet";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createMysqlRecordStoreFromEnv } from "./database.js";
+import { createMemoryRecordStore, normalizeRecordId } from "./specimen.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const clientDist = path.resolve(__dirname, "../client/dist");
 const indexFile = path.join(clientDist, "index.html");
 
-const SPECIMEN_ID = "SR-2026-08-0147-A3";
-
-const specimenRecord = Object.freeze({
-  recordId: SPECIMEN_ID,
-  classification: "Live capture - substructure / site condition",
-  project: "Riverside Business Park - Block C",
-  description:
-    "Standing water in blockwork footings after overnight rainfall - grid A/1-D/4",
-  file: "IMG_2417.JPG",
-  captureMode: "In-app camera only - gallery import blocked",
-  capturedAt: "2026-08-10T11:47:03.000Z",
-  qualifiedAt: "2026-08-10T11:47:09.000Z",
-  position: "50.6412 N, 5.5710 E (+/- 4 m)",
-  sha256:
-    "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-  qualifiedRail: {
-    provider: "CertEurope Qualified TSA (simulated)",
-    token: "RFC 3161 - serial 00A4-77F2-19C3-8B21",
-    status: "Signature valid - CRL check passed (simulated)",
-  },
-  chainRail: {
-    chain: "Ethereum mainnet (simulated)",
-    block: "21,904,553",
-    anchor: "0x6b1e...9c4d",
-    merkleRoot: "4a7c19e2...88f0",
-    batchSize: 1024,
-    status: "Inclusion path passed (simulated)",
-  },
-});
-
-function normalizeRecordId(value) {
-  return String(value ?? "")
-    .trim()
-    .toUpperCase()
-    .replace(/\s+/g, "");
-}
-
-export function createApp() {
+export function createApp({ recordStore = createMemoryRecordStore() } = {}) {
   const app = express();
 
   app.set("trust proxy", 1);
@@ -80,15 +45,17 @@ export function createApp() {
     next();
   });
 
-  app.get("/api/health", (_request, response) => {
+  app.get("/api/health", async (_request, response) => {
+    const database = await recordStore.healthCheck();
     response.status(200).json({
       ok: true,
       service: "sitesealed",
-      version: "1.0.0",
+      version: "1.1.0",
+      database,
     });
   });
 
-  const verifyRecord = (request, response) => {
+  const verifyRecord = async (request, response) => {
     const recordId = normalizeRecordId(
       request.params.recordId ?? request.body?.recordId,
     );
@@ -101,21 +68,21 @@ export function createApp() {
       });
     }
 
-    if (recordId !== SPECIMEN_ID) {
+    const record = await recordStore.findById(recordId);
+    if (!record) {
       return response.status(404).json({
         ok: false,
         code: "RECORD_NOT_FOUND",
-        message:
-          "This Genesis demo recognises only the specimen record SR-2026-08-0147-A3.",
+        message: "No sealed SiteSealed record was found for this identifier.",
       });
     }
 
     return response.status(200).json({
       ok: true,
-      specimen: true,
-      status: "SPECIMEN_CHECK_PASSED",
+      specimen: Boolean(record.specimen),
+      status: record.specimen ? "SPECIMEN_CHECK_PASSED" : "CHECK_PASSED",
       checkedAt: new Date().toISOString(),
-      record: specimenRecord,
+      record,
       scope: {
         proves:
           "The production design will verify existence, integrity and certified time against independent proof rails.",
@@ -189,28 +156,49 @@ function parsePort(value) {
   return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 3000;
 }
 
-export function startServer() {
+export async function startServer() {
   const port = parsePort(process.env.PORT);
   const host = process.env.HOST || "0.0.0.0";
-  const app = createApp();
+  const recordStore =
+    (await createMysqlRecordStoreFromEnv(process.env)) ??
+    createMemoryRecordStore();
+  const app = createApp({ recordStore });
   const server = app.listen(port, host, () => {
-    console.log(`SiteSealed listening on ${host}:${port}`);
+    console.log(
+      `SiteSealed listening on ${host}:${port} with ${recordStore.mode} records.`,
+    );
   });
 
+  let shuttingDown = false;
   const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(`${signal} received; closing HTTP server.`);
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(1), 10_000).unref();
+    const timeout = setTimeout(() => process.exit(1), 10_000);
+    timeout.unref();
+    server.close(async () => {
+      try {
+        await recordStore.close();
+        clearTimeout(timeout);
+        process.exit(0);
+      } catch (error) {
+        console.error(`Database shutdown failed: ${error.message}`);
+        process.exit(1);
+      }
+    });
   };
 
   process.once("SIGTERM", () => shutdown("SIGTERM"));
   process.once("SIGINT", () => shutdown("SIGINT"));
-  return server;
+  return { server, recordStore };
 }
 
 if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
 ) {
-  startServer();
+  startServer().catch((error) => {
+    console.error(`SiteSealed failed to start: ${error.message}`);
+    process.exitCode = 1;
+  });
 }

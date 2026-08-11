@@ -26,6 +26,12 @@ test("health endpoint reports a ready service", async () => {
   const payload = await response.json();
   assert.equal(payload.ok, true);
   assert.equal(payload.service, "sitesealed");
+  assert.equal(payload.version, "1.1.0");
+  assert.deepEqual(payload.database, {
+    mode: "memory",
+    status: "not_configured",
+    persistent: false,
+  });
 });
 
 test("specimen verification returns both proof rails", async () => {

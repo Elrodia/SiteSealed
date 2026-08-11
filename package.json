@@ -1,6 +1,6 @@
 {
   "name": "sitesealed",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "SiteSealed - a neutral proof layer for construction records.",
   "private": true,
   "type": "module",
@@ -16,6 +16,7 @@
     "dev": "node scripts/dev-router.mjs",
     "dev:full": "concurrently --kill-others-on-fail --names API,WEB --prefix-colors blue,magenta \"npm run dev --workspace server\" \"npm run dev --workspace client\"",
     "build": "npm run build --workspace client",
+    "db:migrate": "npm run db:migrate --workspace server",
     "start": "npm run start --workspace server",
     "test": "npm run build && npm run test --workspace server",
     "check": "npm run test"
