@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const ISO_8601_TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+const MAX_TIMESTAMP_AGE_MS = 24 * 60 * 60 * 1000;
+const MAX_TIMESTAMP_FUTURE_SKEW_MS = 10 * 60 * 1000;
 const SHA256_IDENTIFIERS = new Set([
   "SHA256",
   "SHA-256",
@@ -24,13 +28,45 @@ function canonicalBase64(value) {
   return { encoded, bytes };
 }
 
+export function normalizeEvidencyTimestamp(value, { nowMs = Date.now() } = {}) {
+  let timestampMs;
+
+  if (typeof value === "number") {
+    timestampMs = value;
+  } else if (typeof value === "string") {
+    const timestamp = value.trim();
+    if (ISO_8601_TIMESTAMP_PATTERN.test(timestamp)) {
+      timestampMs = Date.parse(timestamp);
+    } else if (/^\d+$/.test(timestamp)) {
+      timestampMs = Number(timestamp);
+    } else {
+      throw new Error("Evidency returned an invalid timestamp value.");
+    }
+  } else {
+    throw new Error("Evidency returned an invalid timestamp value.");
+  }
+
+  const referenceMs = Number(nowMs);
+  if (
+    !Number.isSafeInteger(timestampMs) ||
+    timestampMs <= 0 ||
+    !Number.isSafeInteger(referenceMs) ||
+    timestampMs < referenceMs - MAX_TIMESTAMP_AGE_MS ||
+    timestampMs > referenceMs + MAX_TIMESTAMP_FUTURE_SKEW_MS
+  ) {
+    throw new Error("Evidency returned an invalid timestamp value.");
+  }
+
+  return new Date(timestampMs).toISOString();
+}
+
 export function resolveEvidencyConfig(environment = process.env) {
   const mode = String(environment.EVIDENCY_MODE ?? "disabled")
     .trim()
     .toLowerCase();
   if (mode === "disabled") return null;
   if (mode !== "sandbox") {
-    throw new Error('EVIDENCY_MODE must be either "disabled" or "sandbox" in v1.4-alpha.3.');
+    throw new Error('EVIDENCY_MODE must be either "disabled" or "sandbox" in v1.4-alpha.4.');
   }
 
   const apiKey = String(environment.EVIDENCY_API_KEY ?? "").trim();
@@ -92,7 +128,7 @@ export function createDisabledTimestampService() {
 
 export function createEvidencyTimestampService(
   config,
-  { fetchImpl = globalThis.fetch } = {},
+  { fetchImpl = globalThis.fetch, now = Date.now } = {},
 ) {
   if (!config || config.mode !== "sandbox") {
     throw new Error("A valid Evidency sandbox configuration is required.");
@@ -125,7 +161,7 @@ export function createEvidencyTimestampService(
               "content-type": "application/json",
               accept: "application/json",
               "x-api-key": config.apiKey,
-              "user-agent": "SiteSealed/1.4-alpha.3",
+              "user-agent": "SiteSealed/1.4-alpha.4",
             },
             body: JSON.stringify({
               hashAlgorithm: "SHA256",
@@ -175,10 +211,9 @@ export function createEvidencyTimestampService(
       if (!SHA256_IDENTIFIERS.has(algorithm)) {
         throw new Error("Evidency returned an unexpected hash algorithm.");
       }
-      const certifiedAtMs = Number(payload.timestamp);
-      if (!Number.isSafeInteger(certifiedAtMs) || certifiedAtMs <= 0) {
-        throw new Error("Evidency returned an invalid timestamp value.");
-      }
+      const certifiedAt = normalizeEvidencyTimestamp(payload.timestamp, {
+        nowMs: now(),
+      });
       const token = canonicalBase64(payload.token);
       const serialNumber = String(payload.serialNumber ?? "").trim();
       const tsaPolicyId = String(payload.tsaPolicyId ?? "").trim();
@@ -195,7 +230,7 @@ export function createEvidencyTimestampService(
         hashAlgorithm: "SHA256",
         hashedMessage: digest,
         serialNumber,
-        certifiedAt: new Date(certifiedAtMs).toISOString(),
+        certifiedAt,
         tokenBase64: token.encoded,
         tokenSha256: createHash("sha256").update(token.bytes).digest("hex"),
         tsaPolicyId,

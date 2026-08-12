@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   createEvidencyTimestampService,
+  normalizeEvidencyTimestamp,
   resolveEvidencyConfig,
 } from "./evidency.js";
 
@@ -52,13 +53,14 @@ test("the sandbox adapter sends only the evidence digest and labels the token te
             hashAlgorithm: "2.16.840.1.101.3.4.2.1",
             hashedMessage: digest,
             serialNumber: "abc123",
-            timestamp: Date.parse("2026-08-12T18:00:00.000Z"),
+            timestamp: "2026-08-12T18:00:00Z",
             token,
             tsaPolicyId: "1.3.6.1.4.1.60053.2.1.1.1.1",
           }),
           { status: 200, headers: { "content-type": "application/json" } },
         );
       },
+      now: () => Date.parse("2026-08-12T18:01:00.000Z"),
     },
   );
   const proof = await service.issueTimestamp({
@@ -78,7 +80,38 @@ test("the sandbox adapter sends only the evidence digest and labels the token te
   assert.equal(proof.legalUse, false);
   assert.equal(proof.qualificationStatus, "TEST_ONLY_NOT_QUALIFIED");
   assert.equal(proof.signatureVerification, "NOT_INDEPENDENTLY_VERIFIED");
+  assert.equal(proof.certifiedAt, "2026-08-12T18:00:00.000Z");
   assert.match(proof.tokenSha256, /^[a-f0-9]{64}$/);
+});
+
+test("the adapter keeps compatibility with the legacy Unix-millisecond timestamp", async () => {
+  const issuedAt = Date.parse("2026-08-12T18:00:00.000Z");
+  assert.equal(
+    normalizeEvidencyTimestamp(issuedAt, { nowMs: issuedAt + 1_000 }),
+    "2026-08-12T18:00:00.000Z",
+  );
+  assert.equal(
+    normalizeEvidencyTimestamp(String(issuedAt), { nowMs: issuedAt + 1_000 }),
+    "2026-08-12T18:00:00.000Z",
+  );
+});
+
+test("the adapter rejects malformed, stale and future Evidency timestamps", () => {
+  const nowMs = Date.parse("2026-08-12T18:00:00.000Z");
+  assert.throws(
+    () => normalizeEvidencyTimestamp("not-a-date", { nowMs }),
+    /invalid timestamp value/,
+  );
+  assert.throws(
+    () =>
+      normalizeEvidencyTimestamp("2026-08-10T18:00:00Z", { nowMs }),
+    /invalid timestamp value/,
+  );
+  assert.throws(
+    () =>
+      normalizeEvidencyTimestamp("2026-08-12T19:00:00Z", { nowMs }),
+    /invalid timestamp value/,
+  );
 });
 
 test("the adapter rejects a token response bound to another digest", async () => {

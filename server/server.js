@@ -310,7 +310,7 @@ export function createApp({
     response.status(200).json({
       ok: true,
       service: "sitesealed",
-      version: "1.4.0-alpha.3",
+      version: "1.4.0-alpha.4",
       sealing: {
         workflow: "IMPORTED_FILE_CLIENT_ENCRYPTED_STORAGE_RECEIPT",
         clientEncryptedObjectStorage: true,
@@ -767,7 +767,7 @@ export async function startServer() {
   });
   const server = app.listen(port, host, () => {
     console.log(
-      `SiteSealed v1.4-alpha.3 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
+      `SiteSealed v1.4-alpha.4 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
     );
   });
 

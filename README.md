@@ -1,4 +1,4 @@
-# SiteSealed Genesis v1.4-alpha.3
+# SiteSealed Genesis v1.4-alpha.4
 
 Cette alpha construit les deux rails externes choisis pour le QTSP :
 
@@ -6,11 +6,17 @@ Cette alpha construit les deux rails externes choisis pour le QTSP :
 - **Ethereum mainnet (chain ID 1)** comme rail public définitif pour les racines
   Merkle horaires.
 
-L'alpha.3 relie le statut public Evidency au worker séparé sans copier ses
+L'alpha.4 relie le statut public Evidency au worker séparé sans copier ses
 secrets dans le service web. L'indicateur ne devient `ON` qu'après réception,
 contrôle du digest et stockage d'un vrai jeton sandbox. L'interface sombre
 permanente reste active sur desktop et mobile ; le reçu PDF conserve son fond
 clair afin de rester imprimable.
+
+Cette version corrige l'incompatibilité observée avec l'API Evidency du
+12 août 2026 : l'OpenAPI actuel renvoie `timestamp` sous forme de chaîne
+ISO 8601, tandis que l'ancien guide montrait un entier Unix en millisecondes.
+L'adaptateur accepte les deux formats documentés, les normalise en UTC et
+rejette les dates mal formées ou hors de la fenêtre d'émission attendue.
 
 Le mot `sealed` reste volontairement désactivé. Un jeton Evidency sandbox n'a
 aucun effet juridique et ne devient jamais un horodatage qualifié eIDAS. Même
@@ -84,7 +90,7 @@ Le statut d'infrastructure Evidency est distinct du statut probatoire d'un reçu
 
 Le protocole privé de dépôt reste `1.2` afin de préserver les objets et kits de
 récupération existants. Le reçu et le bundle publics passent en
-`1.4-alpha.1` pour préserver la compatibilité des preuves. L'alpha.3 ne modifie
+`1.4-alpha.1` pour préserver la compatibilité des preuves. L'alpha.4 ne modifie
 ni le protocole cryptographique ni le schéma public ; elle rend le statut du
 worker observable sans exposer ses secrets. La migration MySQL
 `004_dual_rail_alpha` reste additive.
