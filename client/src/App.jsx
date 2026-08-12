@@ -441,7 +441,7 @@ function SealingWorkbench({ onVerify }) {
     }
     if (file.size > MAX_FILE_BYTES) {
       setStatus("error");
-      setMessage("This v1.2 workflow accepts files up to 25 MB.");
+      setMessage("This v1.3 workflow accepts files up to 25 MB.");
       return;
     }
     if (!acknowledged) {
@@ -587,7 +587,7 @@ function SealingWorkbench({ onVerify }) {
     hashing: "Hashing the file locally...",
     encrypting: "Encrypting the manifest and original locally...",
     uploading: "Sending only encrypted ciphertext to the private Bucket...",
-    recording: "Binding the S3 object and digest receipt in MySQL...",
+    recording: "Binding the MySQL receipt and PostgreSQL audit event...",
   }[status];
 
   return (
@@ -595,7 +595,7 @@ function SealingWorkbench({ onVerify }) {
       <div className="sealing-workbench__header">
         <span className="sealing-workbench__icon"><Icon name="shield" size={25} /></span>
         <div>
-          <span>REAL V1.2 WORKFLOW</span>
+          <span>REAL V1.3 WORKFLOW</span>
           <strong>Create a development seal</strong>
         </div>
         <span className="development-pill">EXTERNAL PROOFS PENDING</span>
@@ -676,7 +676,7 @@ function SealingWorkbench({ onVerify }) {
             {progressLabel || "Hash, encrypt and record"}
             {!progressLabel && <Icon name="arrow" size={17} />}
           </button>
-          <p>Anonymous v1.2 limit: 20 receipts per IP and hour.</p>
+          <p>Anonymous v1.3 limit: 20 receipts per IP and hour, coordinated through Redis.</p>
         </div>
       </form>
 
@@ -703,7 +703,7 @@ function SealingWorkbench({ onVerify }) {
                 <small>DEVELOPMENT INTEGRITY RECEIPT CREATED</small>
                 <h3>{result.record.recordId}</h3>
               </div>
-              <em>{result.storage?.persistent ? "S3 + MySQL persisted" : "Memory only - not persistent"}</em>
+              <em>{result.storage?.persistent ? "S3 + MySQL + PostgreSQL persisted" : "Memory only - not persistent"}</em>
             </div>
             <div className="seal-success__facts">
               <div><span>FILE SHA-256</span><code>{result.record.sha256}</code></div>
@@ -997,7 +997,7 @@ function VerifierV12({ requestedRecord }) {
           <span>PUBLIC VERIFICATION PORTAL</span>
           <strong>Receipt and local-file checker</strong>
         </div>
-        <span className="live-pill">V1.2 LIVE</span>
+        <span className="live-pill">V1.3 LIVE</span>
       </div>
 
       <form className="verify-form" onSubmit={verify} noValidate>
@@ -1119,6 +1119,27 @@ function VerifierV12({ requestedRecord }) {
             </div>
 
             {!result.specimen && (
+              <div className="verified-result__audit">
+                <span>POSTGRESQL OPERATIONAL AUDIT / INTERNAL APPLICATION LAYER</span>
+                {result.operationalAudit?.state === "RECORDED" ? (
+                  <>
+                    <strong>
+                      Event sequence {result.operationalAudit.event.sequence} - hash chain valid
+                    </strong>
+                    <code>{result.operationalAudit.event.eventSha256}</code>
+                  </>
+                ) : (
+                  <strong>
+                    {result.operationalAudit?.state === "NOT_RECORDED_LEGACY"
+                      ? "Legacy receipt - no v1.3 audit event"
+                      : "Operational audit temporarily unavailable"}
+                  </strong>
+                )}
+                <p>This database event is not an eIDAS timestamp or a public-chain anchor.</p>
+              </div>
+            )}
+
+            {!result.specimen && (
               <div className="verified-result__downloads">
                 <a href={`/api/records/${encodeURIComponent(result.record.recordId)}/report.pdf`}>
                   PDF receipt <Icon name="download" size={15} />
@@ -1135,6 +1156,85 @@ function VerifierV12({ requestedRecord }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function InfrastructureStatus() {
+  const [health, setHealth] = useState(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/health", { signal: controller.signal, cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Health endpoint unavailable");
+        return response.json();
+      })
+      .then((payload) => {
+        setHealth(payload);
+        setFailed(false);
+      })
+      .catch((error) => {
+        if (error.name !== "AbortError") setFailed(true);
+      });
+    return () => controller.abort();
+  }, []);
+
+  const services = [
+    {
+      name: "MySQL",
+      role: "Receipt registry",
+      data: health?.database,
+    },
+    {
+      name: "S3",
+      role: "Encrypted objects",
+      data: health?.objectStorage,
+    },
+    {
+      name: "PostgreSQL",
+      role: "Append-only audit",
+      data: health?.auditDatabase,
+    },
+    {
+      name: "Redis",
+      role: "Distributed guard + cache",
+      data: health?.coordination,
+    },
+  ];
+
+  return (
+    <div className="infrastructure-status" aria-live="polite">
+      <div className="infrastructure-status__heading">
+        <div>
+          <span>V1.3 APPLICATION PLANE</span>
+          <strong>Four services, four non-overlapping roles.</strong>
+        </div>
+        <small className={failed ? "is-error" : health ? "is-online" : ""}>
+          {failed ? "STATUS UNAVAILABLE" : health ? "CONNECTED" : "CHECKING"}
+        </small>
+      </div>
+      <div className="infrastructure-status__grid">
+        {services.map((service) => {
+          const connected = service.data?.status === "connected";
+          const local = service.data?.mode === "memory";
+          return (
+            <div className="infrastructure-node" key={service.name}>
+              <i className={connected ? "is-online" : local ? "is-local" : ""} />
+              <div>
+                <strong>{service.name}</strong>
+                <span>{service.role}</span>
+              </div>
+              <small>{connected ? "ONLINE" : local ? "LOCAL" : "..."}</small>
+            </div>
+          );
+        })}
+      </div>
+      <p>
+        PostgreSQL and Redis strengthen the application layer only. They are not
+        the qualified eIDAS timestamp or the public-chain anchor.
+      </p>
     </div>
   );
 }
@@ -1163,7 +1263,7 @@ function App() {
           <div className="hero__mesh" aria-hidden="true" />
           <div className="container hero__inner">
             <div className="hero__copy">
-              <div className="phase-tag"><span>V1.2 LIVE</span> DEVELOPMENT INTEGRITY RECEIPT</div>
+              <div className="phase-tag"><span>V1.3 LIVE</span> DEVELOPMENT INTEGRITY RECEIPT</div>
               <h1>Construction records that can <em>verify themselves.</em></h1>
               <p className="hero__lede">
                 Create a real SHA-256 integrity receipt and a private encrypted backup without ever uploading the readable original. Qualified time and public-chain anchoring remain visibly pending until the external rails exist.
@@ -1181,7 +1281,7 @@ function App() {
               </div>
               <div className="hero__trustline">
                 <span><Icon name="lock" size={16} /> Client-side encrypted original</span>
-                <span><Icon name="shield" size={16} /> S3 object + MySQL receipt</span>
+                <span><Icon name="shield" size={16} /> S3 + MySQL + PostgreSQL + Redis</span>
               </div>
             </div>
             <HeroSeal />
@@ -1342,14 +1442,15 @@ function App() {
               <SectionHeading
                 eyebrow="05 / First real workflow"
                 title="Hash locally. Encrypt locally. Record only what is necessary."
-                copy="This v1.2 web workflow creates a persistent development receipt for an imported file. It is useful for testing real integrity and persistence, while remaining deliberately below the whitepaper's final dual-rail evidentiary standard."
+                copy="This v1.3 web workflow creates a persistent development receipt for an imported file, adds an internal hash-chained audit event and coordinates anonymous traffic across instances, while remaining deliberately below the whitepaper's final dual-rail evidentiary standard."
               />
               <div className="seal-workflow__boundary">
                 <span><Icon name="alert" size={18} /> CURRENT BOUNDARY</span>
-                <p><strong>Real now:</strong> SHA-256, client-side AES-256-GCM, MySQL persistence, public lookup, local file comparison and a dynamic PDF receipt.</p>
+                <p><strong>Real now:</strong> SHA-256, client-side AES-256-GCM, private S3 ciphertext, MySQL receipts, a PostgreSQL append-only audit chain, Redis coordination, public lookup and a dynamic PDF receipt.</p>
                 <p><strong>Not yet:</strong> in-app camera attestation, identity, GNSS, qualified RFC 3161 time, Merkle batching or public-chain anchoring.</p>
               </div>
             </div>
+            <InfrastructureStatus />
             <SealingWorkbench onVerify={scrollToVerifier} />
           </div>
         </section>
@@ -1360,7 +1461,7 @@ function App() {
               <SectionHeading
                 eyebrow="06 / Open verification"
                 title="A proof held by one side is a claim. A proof checkable by the other is evidence."
-                copy="Look up any v1.2 receipt and optionally select the original file. Its SHA-256 is recalculated entirely in your browser and compared with the persistent record."
+                copy="Look up any v1.3 receipt and optionally select the original file. Its SHA-256 is recalculated entirely in your browser and compared with the persistent record."
                 inverse
               />
               <div className="verify__promise">
@@ -1462,7 +1563,7 @@ function App() {
             </div>
             <div>
               <strong>Status</strong>
-              <span>Genesis v1.2</span>
+              <span>Genesis v1.3</span>
               <span>Development receipts live</span>
               <span>External proof rails pending</span>
             </div>

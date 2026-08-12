@@ -94,14 +94,19 @@ after(async () => {
   });
 });
 
-test("health endpoint reports the honest v1.2 capability boundary", async () => {
+test("health endpoint reports the honest v1.3 capability boundary", async () => {
   const response = await fetch(`${baseUrl}/api/health`);
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.ok, true);
   assert.equal(payload.service, "sitesealed");
-  assert.equal(payload.version, "1.2.0");
+  assert.equal(payload.version, "1.3.0");
   assert.equal(payload.sealing.clientEncryptedObjectStorage, true);
+  assert.equal(
+    payload.sealing.operationalAudit,
+    "POSTGRESQL_APPEND_ONLY_HASH_CHAIN",
+  );
+  assert.equal(payload.sealing.distributedCoordination, true);
   assert.equal(payload.sealing.qualifiedTimestamp, false);
   assert.equal(payload.sealing.publicChainAnchor, false);
   assert.deepEqual(payload.database, {
@@ -118,6 +123,26 @@ test("health endpoint reports the honest v1.2 capability boundary", async () => 
     private: true,
     clientEncryptedOnly: true,
   });
+  assert.deepEqual(payload.auditDatabase, {
+    mode: "memory",
+    status: "not_configured",
+    persistent: false,
+    writable: true,
+    appendOnly: true,
+    hashChained: true,
+    independentlyAnchored: false,
+    latestSequence: "0",
+  });
+  assert.deepEqual(payload.coordination, {
+    mode: "memory",
+    status: "not_configured",
+    persistent: false,
+    writable: true,
+    authoritative: false,
+    distributed: false,
+    rateLimiting: true,
+    verificationCache: true,
+  });
 });
 
 test("a real digest receipt binds a client-encrypted original without receiving plaintext", async () => {
@@ -130,6 +155,10 @@ test("a real digest receipt binds a client-encrypted original without receiving 
   assert.equal(payload.record.qualifiedRail.state, "NOT_ISSUED");
   assert.equal(payload.record.chainRail.state, "NOT_ANCHORED");
   assert.equal(payload.record.storage.state, "STORED_ENCRYPTED");
+  assert.equal(payload.operationalAudit.state, "RECORDED");
+  assert.equal(payload.operationalAudit.role, "APPLICATION_AUDIT_ONLY");
+  assert.equal(payload.operationalAudit.independentlyAnchored, false);
+  assert.equal(payload.operationalAudit.eventHashValid, true);
   assert.match(payload.record.receiptSha256, /^[a-f0-9]{64}$/);
   assert.equal(payload.storage.persistent, false);
   assert.deepEqual(payload.storage.database, {
@@ -141,6 +170,18 @@ test("a real digest receipt binds a client-encrypted original without receiving 
     persistent: false,
     state: "STORED_ENCRYPTED",
     plaintextReceived: false,
+  });
+  assert.deepEqual(payload.storage.audit, {
+    mode: "memory",
+    persistent: false,
+    appendOnly: true,
+    hashChained: true,
+    independentlyAnchored: false,
+  });
+  assert.deepEqual(payload.coordination, {
+    mode: "memory",
+    distributed: false,
+    authoritative: false,
   });
   assert.equal(JSON.stringify(payload).includes("originalBase64"), false);
   assert.equal(
@@ -170,6 +211,8 @@ test("a created receipt is publicly retrievable with pending rails", async () =>
   assert.equal(payload.status, "DEVELOPMENT_RECEIPT_FOUND");
   assert.equal(payload.proofsComplete, false);
   assert.equal(payload.record.sha256, created.payload.record.sha256);
+  assert.equal(payload.operationalAudit.state, "RECORDED");
+  assert.equal(payload.operationalAudit.eventHashValid, true);
   assert.match(payload.scope.doesNotProve, /qualified eIDAS timestamp/);
 });
 
@@ -181,7 +224,8 @@ test("public bundle binds both encrypted manifest and encrypted-original digest"
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-disposition"), /proof-bundle\.json/);
   const payload = await response.json();
-  assert.equal(payload.schemaVersion, "sitesealed.proof-bundle.v1.2");
+  assert.equal(payload.schemaVersion, "sitesealed.proof-bundle.v1.3");
+  assert.equal(payload.bundleVersion, "1.3");
   assert.equal(payload.receiptSha256, created.payload.record.receiptSha256);
   assert.equal(payload.encryptedManifest.algorithm, "AES-256-GCM");
   assert.equal(payload.encryptedOriginal.state, "STORED_ENCRYPTED");
@@ -189,6 +233,9 @@ test("public bundle binds both encrypted manifest and encrypted-original digest"
   assert.equal(Object.hasOwn(payload.encryptedOriginal, "objectKey"), false);
   assert.equal(JSON.stringify(payload).includes("recoveryTokenSha256"), false);
   assert.equal(Object.hasOwn(payload, "original"), false);
+  assert.equal(payload.operationalAudit.state, "RECORDED");
+  assert.equal(payload.operationalAudit.eventHashValid, true);
+  assert.equal(payload.operationalAudit.independentlyAnchored, false);
 });
 
 test("the encrypted original requires the private recovery token and retains integrity", async () => {
@@ -270,12 +317,12 @@ test("unknown records fail honestly", async () => {
   assert.equal(payload.code, "RECORD_NOT_FOUND");
 });
 
-test("the production server serves the React application and proof documents", async () => {
+test("the production server serves the React application and v1.3 proof documents", async () => {
   const [homeResponse, iconResponse, reportResponse, schemaResponse] = await Promise.all([
     fetch(`${baseUrl}/`),
     fetch(`${baseUrl}/icon-192.svg`),
     fetch(`${baseUrl}/documents/SiteSealed_EvidenceReport_SPECIMEN.pdf`),
-    fetch(`${baseUrl}/schemas/proof-bundle-v1.2.schema.json`),
+    fetch(`${baseUrl}/schemas/proof-bundle-v1.3.schema.json`),
   ]);
   assert.equal(homeResponse.status, 200);
   assert.match(await homeResponse.text(), /id="root"/);

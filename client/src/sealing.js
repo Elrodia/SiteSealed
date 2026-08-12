@@ -58,7 +58,7 @@ export async function sha256File(file) {
   if (!(file instanceof Blob)) throw new TypeError("A browser File or Blob is required.");
   if (file.size <= 0) throw new Error("The selected file is empty.");
   if (file.size > MAX_FILE_BYTES) {
-    throw new Error("This v1.2 workflow accepts files up to 25 MB.");
+    throw new Error("This v1.3 workflow accepts files up to 25 MB.");
   }
   return sha256Bytes(await file.arrayBuffer());
 }
@@ -134,7 +134,7 @@ export async function encryptManifest(manifest) {
 export async function encryptOriginal(file, recoveryKey) {
   if (!(file instanceof Blob)) throw new TypeError("A browser File or Blob is required.");
   if (file.size <= 0 || file.size > MAX_FILE_BYTES) {
-    throw new Error("This v1.2 workflow accepts files from 1 byte up to 25 MB.");
+    throw new Error("This v1.3 workflow accepts files from 1 byte up to 25 MB.");
   }
   const rawKey = base64ToBytes(recoveryKey);
   if (rawKey.length !== 32) throw new Error("The sealing recovery key is invalid.");

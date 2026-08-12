@@ -6,6 +6,14 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  createMemoryAuditStore,
+  createPostgresAuditStoreFromEnv,
+} from "./audit.js";
+import {
+  createMemoryCoordinator,
+  createRedisCoordinatorFromEnv,
+} from "./coordination.js";
 import { createMysqlRecordStoreFromEnv } from "./database.js";
 import {
   ApiError,
@@ -95,43 +103,67 @@ function sameDigest(left, right) {
 }
 
 export function createSealRateLimiter({
+  coordinator,
+  scope = "seal",
   limit = 20,
   windowMs = 60 * 60 * 1000,
-  now = () => Date.now(),
 } = {}) {
-  const clients = new Map();
+  const activeCoordinator = coordinator ?? createMemoryCoordinator();
 
-  return (request, response, next) => {
-    const timestamp = now();
-    const key = request.ip || request.socket.remoteAddress || "unknown";
-    const existing = clients.get(key);
-    const entry =
-      existing && existing.resetAt > timestamp
-        ? existing
-        : { count: 0, resetAt: timestamp + windowMs };
-    entry.count += 1;
-    clients.set(key, entry);
+  return async (request, response, next) => {
+    try {
+      const identity =
+        request.ip || request.socket.remoteAddress || "unknown-client";
+      const result = await activeCoordinator.consumeRateLimit({
+        scope,
+        identity,
+        limit,
+        windowMs,
+      });
+      const resetSeconds = Math.max(1, Math.ceil(result.resetInMs / 1000));
+      response.set("RateLimit-Limit", String(result.limit));
+      response.set("RateLimit-Remaining", String(result.remaining));
+      response.set("RateLimit-Reset", String(resetSeconds));
 
-    response.set("RateLimit-Limit", String(limit));
-    response.set("RateLimit-Remaining", String(Math.max(0, limit - entry.count)));
-    response.set(
-      "RateLimit-Reset",
-      String(Math.max(1, Math.ceil((entry.resetAt - timestamp) / 1000))),
-    );
-
-    if (entry.count > limit) {
-      response.set("Retry-After", String(Math.ceil((entry.resetAt - timestamp) / 1000)));
+      if (result.allowed) return next();
+      response.set("Retry-After", String(resetSeconds));
       return response.status(429).json({
         ok: false,
         code: "SEAL_RATE_LIMITED",
         message: "The anonymous sealing limit has been reached. Try again after the reset time.",
       });
+    } catch (error) {
+      console.error(`Distributed rate limiter failed: ${error.message}`);
+      return next(
+        new ApiError(
+          503,
+          "COORDINATION_UNAVAILABLE",
+          "The distributed sealing guard is temporarily unavailable.",
+        ),
+      );
     }
-    return next();
   };
 }
 
-function verificationPayload(record) {
+function auditBoundary(record, audit) {
+  if (record.specimen) {
+    return {
+      state: "NOT_APPLICABLE_SPECIMEN",
+      role: "APPLICATION_AUDIT_ONLY",
+      independentlyAnchored: false,
+    };
+  }
+  return (
+    audit ?? {
+      state: "NOT_RECORDED_LEGACY",
+      role: "APPLICATION_AUDIT_ONLY",
+      independentlyAnchored: false,
+      message: "This receipt predates the v1.3 PostgreSQL operational audit.",
+    }
+  );
+}
+
+function verificationPayload(record, audit = null) {
   return {
     ok: true,
     specimen: Boolean(record.specimen),
@@ -141,7 +173,23 @@ function verificationPayload(record) {
     proofsComplete: false,
     checkedAt: new Date().toISOString(),
     record,
+    operationalAudit: auditBoundary(record, audit),
     scope: scopeForRecord(record),
+  };
+}
+
+function bundleWithAudit(bundle, record, audit) {
+  if (record.specimen) {
+    return {
+      ...bundle,
+      operationalAudit: auditBoundary(record, null),
+    };
+  }
+  return {
+    ...bundle,
+    schemaVersion: "sitesealed.proof-bundle.v1.3",
+    bundleVersion: "1.3",
+    operationalAudit: auditBoundary(record, audit),
   };
 }
 
@@ -156,9 +204,42 @@ function requireRecordId(value) {
 export function createApp({
   recordStore = createMemoryRecordStore(),
   objectStore = createMemoryObjectStore(),
+  auditStore = createMemoryAuditStore(),
+  coordinator = createMemoryCoordinator(),
   sealRateLimit = positiveInteger(process.env.SEAL_RATE_LIMIT_PER_HOUR, 20),
 } = {}) {
   const app = express();
+
+  const findRecord = async (recordId) => {
+    try {
+      const cached = await coordinator.getCachedRecord(recordId);
+      if (cached) return cached;
+    } catch (error) {
+      console.error(`Redis verification cache read failed: ${error.message}`);
+    }
+    const record = await recordStore.findById(recordId);
+    if (record) {
+      await coordinator
+        .setCachedRecord(recordId, record)
+        .catch((error) =>
+          console.error(`Redis verification cache write failed: ${error.message}`),
+        );
+    }
+    return record;
+  };
+
+  const findAudit = async (recordId) => {
+    try {
+      return await auditStore.findByRecordId(recordId);
+    } catch (error) {
+      console.error(`PostgreSQL audit read failed: ${error.message}`);
+      return {
+        state: "TEMPORARILY_UNAVAILABLE",
+        role: "APPLICATION_AUDIT_ONLY",
+        independentlyAnchored: false,
+      };
+    }
+  };
 
   app.set("trust proxy", 1);
   app.disable("x-powered-by");
@@ -191,28 +272,39 @@ export function createApp({
   });
 
   app.get("/api/health", async (_request, response) => {
-    const [database, objectStorage] = await Promise.all([
+    const [database, objectStorage, auditDatabase, coordination] =
+      await Promise.all([
       recordStore.healthCheck(),
       objectStore.healthCheck(),
+      auditStore.healthCheck(),
+      coordinator.healthCheck(),
     ]);
     response.status(200).json({
       ok: true,
       service: "sitesealed",
-      version: "1.2.0",
+      version: "1.3.0",
       sealing: {
         workflow: "IMPORTED_FILE_CLIENT_ENCRYPTED_STORAGE_RECEIPT",
         clientEncryptedObjectStorage: true,
+        operationalAudit: "POSTGRESQL_APPEND_ONLY_HASH_CHAIN",
+        distributedCoordination: true,
         qualifiedTimestamp: false,
         publicChainAnchor: false,
       },
       database,
       objectStorage,
+      auditDatabase,
+      coordination,
     });
   });
 
   app.put(
     "/api/storage/uploads/:submissionId",
-    createSealRateLimiter({ limit: sealRateLimit }),
+    createSealRateLimiter({
+      coordinator,
+      scope: "encrypted-upload",
+      limit: sealRateLimit,
+    }),
     express.raw({
       type: "application/octet-stream",
       limit: MAX_ENCRYPTED_ORIGINAL_BYTES,
@@ -249,41 +341,115 @@ export function createApp({
 
   app.post(
     "/api/records",
-    createSealRateLimiter({ limit: sealRateLimit }),
+    createSealRateLimiter({
+      coordinator,
+      scope: "receipt-create",
+      limit: sealRateLimit,
+    }),
     async (request, response) => {
       const input = validateSealRequest(request.body);
-      await objectStore.assertStored(input.encryptedObject, input);
-      const result = await recordStore.create({
-        ...input,
-        storageProvider: objectStore.mode === "s3" ? "S3_PRIVATE_BUCKET" : "MEMORY",
-      });
-      const status = result.created ? 201 : 200;
-      response
-        .status(status)
-        .location(`/api/verify/${encodeURIComponent(result.record.recordId)}`)
-        .json({
-          ok: true,
-          created: result.created,
-          status: result.created
-            ? "DEVELOPMENT_RECEIPT_CREATED"
-            : "IDEMPOTENT_RECEIPT_REUSED",
-          record: result.record,
-          scope: scopeForRecord(result.record),
-          storage: {
-            persistent: Boolean(recordStore.persistent && objectStore.persistent),
-            database: {
-              mode: recordStore.mode,
-              persistent: Boolean(recordStore.persistent),
-            },
-            objects: {
-              mode: objectStore.mode,
-              persistent: Boolean(objectStore.persistent),
-              state: result.record.storage.state,
-              plaintextReceived: false,
-            },
-          },
-          links: linksFor(request, result.record.recordId),
+      let releaseLock;
+      try {
+        releaseLock = await coordinator.acquireSubmissionLock(
+          input.submissionId,
+        );
+      } catch (error) {
+        console.error(`Submission lock acquisition failed: ${error.message}`);
+        throw new ApiError(
+          503,
+          "COORDINATION_UNAVAILABLE",
+          "Distributed submission coordination is temporarily unavailable.",
+        );
+      }
+      if (!releaseLock) {
+        throw new ApiError(
+          409,
+          "SUBMISSION_IN_PROGRESS",
+          "This submission is already being sealed. Retry shortly with the same submission ID.",
+        );
+      }
+
+      try {
+        await objectStore.assertStored(input.encryptedObject, input);
+        const result = await recordStore.create({
+          ...input,
+          storageProvider:
+            objectStore.mode === "s3" ? "S3_PRIVATE_BUCKET" : "MEMORY",
         });
+        let auditResult;
+        try {
+          auditResult = await auditStore.appendReceipt(result.record, {
+            submissionId: input.submissionId,
+          });
+        } catch (error) {
+          if (error instanceof ApiError) throw error;
+          console.error(`PostgreSQL audit append failed: ${error.message}`);
+          throw new ApiError(
+            503,
+            "AUDIT_UNAVAILABLE",
+            "The operational audit could not be recorded. Retry with the same submission ID.",
+          );
+        }
+        await coordinator
+          .setCachedRecord(result.record.recordId, result.record)
+          .catch((error) =>
+            console.error(
+              `Redis verification cache write failed: ${error.message}`,
+            ),
+          );
+
+        const status = result.created ? 201 : 200;
+        return response
+          .status(status)
+          .location(`/api/verify/${encodeURIComponent(result.record.recordId)}`)
+          .json({
+            ok: true,
+            created: result.created,
+            status: result.created
+              ? "DEVELOPMENT_RECEIPT_CREATED"
+              : "IDEMPOTENT_RECEIPT_REUSED",
+            record: result.record,
+            operationalAudit: auditBoundary(
+              result.record,
+              auditResult.audit,
+            ),
+            scope: scopeForRecord(result.record),
+            storage: {
+              persistent: Boolean(
+                recordStore.persistent &&
+                  objectStore.persistent &&
+                  auditStore.persistent,
+              ),
+              database: {
+                mode: recordStore.mode,
+                persistent: Boolean(recordStore.persistent),
+              },
+              objects: {
+                mode: objectStore.mode,
+                persistent: Boolean(objectStore.persistent),
+                state: result.record.storage.state,
+                plaintextReceived: false,
+              },
+              audit: {
+                mode: auditStore.mode,
+                persistent: Boolean(auditStore.persistent),
+                appendOnly: Boolean(auditStore.appendOnly),
+                hashChained: Boolean(auditStore.hashChained),
+                independentlyAnchored: false,
+              },
+            },
+            coordination: {
+              mode: coordinator.mode,
+              distributed: Boolean(coordinator.distributed),
+              authoritative: false,
+            },
+            links: linksFor(request, result.record.recordId),
+          });
+      } finally {
+        await releaseLock().catch((error) =>
+          console.error(`Submission lock release failed: ${error.message}`),
+        );
+      }
     },
   );
 
@@ -291,7 +457,7 @@ export function createApp({
     const recordId = requireRecordId(
       request.params.recordId ?? request.body?.recordId,
     );
-    const record = await recordStore.findById(recordId);
+    const record = await findRecord(recordId);
     if (!record) {
       return response.status(404).json({
         ok: false,
@@ -299,7 +465,8 @@ export function createApp({
         message: "No SiteSealed record was found for this identifier.",
       });
     }
-    return response.status(200).json(verificationPayload(record));
+    const audit = await findAudit(recordId);
+    return response.status(200).json(verificationPayload(record, audit));
   };
 
   app.get("/api/verify/:recordId", verifyRecord);
@@ -307,25 +474,30 @@ export function createApp({
 
   app.get("/api/records/:recordId/bundle", async (request, response) => {
     const recordId = requireRecordId(request.params.recordId);
-    const bundle = await recordStore.getBundleById(recordId);
-    if (!bundle) {
+    const [bundle, record] = await Promise.all([
+      recordStore.getBundleById(recordId),
+      findRecord(recordId),
+    ]);
+    if (!bundle || !record) {
       return response.status(404).json({
         ok: false,
         code: "RECORD_NOT_FOUND",
         message: "No SiteSealed record was found for this identifier.",
       });
     }
+    const audit = await findAudit(recordId);
+    const publicBundle = bundleWithAudit(bundle, record, audit);
     response.set(
       "Content-Disposition",
       `attachment; filename="SiteSealed_${recordId}_proof-bundle.json"`,
     );
     response.type("application/json");
-    return response.send(`${JSON.stringify(bundle, null, 2)}\n`);
+    return response.send(`${JSON.stringify(publicBundle, null, 2)}\n`);
   });
 
   app.get("/api/records/:recordId/report.pdf", async (request, response) => {
     const recordId = requireRecordId(request.params.recordId);
-    const record = await recordStore.findById(recordId);
+    const record = await findRecord(recordId);
     if (!record) {
       return response.status(404).json({
         ok: false,
@@ -440,7 +612,7 @@ export function createApp({
       return response.status(413).json({
         ok: false,
         code: "REQUEST_TOO_LARGE",
-        message: "The request exceeds the v1.2 encrypted upload limit.",
+        message: "The request exceeds the v1.3 encrypted upload limit.",
       });
     }
     if (error instanceof SyntaxError && error.status === 400) {
@@ -471,6 +643,8 @@ export async function startServer() {
   const host = process.env.HOST || "0.0.0.0";
   let recordStore;
   let objectStore;
+  let auditStore;
+  let coordinator;
   try {
     recordStore =
       (await createMysqlRecordStoreFromEnv(process.env)) ??
@@ -478,14 +652,30 @@ export async function startServer() {
     objectStore =
       (await createS3ObjectStoreFromEnv(process.env)) ??
       createMemoryObjectStore();
+    auditStore =
+      (await createPostgresAuditStoreFromEnv(process.env)) ??
+      createMemoryAuditStore();
+    coordinator =
+      (await createRedisCoordinatorFromEnv(process.env)) ??
+      createMemoryCoordinator();
   } catch (error) {
-    await recordStore?.close().catch(() => {});
+    await Promise.all([
+      recordStore?.close().catch(() => {}),
+      objectStore?.close().catch(() => {}),
+      auditStore?.close().catch(() => {}),
+      coordinator?.close().catch(() => {}),
+    ]);
     throw error;
   }
-  const app = createApp({ recordStore, objectStore });
+  const app = createApp({
+    recordStore,
+    objectStore,
+    auditStore,
+    coordinator,
+  });
   const server = app.listen(port, host, () => {
     console.log(
-      `SiteSealed v1.2 listening on ${host}:${port} with ${recordStore.mode} records and ${objectStore.mode} objects.`,
+      `SiteSealed v1.3 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit and ${coordinator.mode} coordination.`,
     );
   });
 
@@ -498,7 +688,12 @@ export async function startServer() {
     timeout.unref();
     server.close(async () => {
       try {
-        await Promise.all([recordStore.close(), objectStore.close()]);
+        await Promise.all([
+          recordStore.close(),
+          objectStore.close(),
+          auditStore.close(),
+          coordinator.close(),
+        ]);
         clearTimeout(timeout);
         process.exit(0);
       } catch (error) {
@@ -510,7 +705,7 @@ export async function startServer() {
 
   process.once("SIGTERM", () => shutdown("SIGTERM"));
   process.once("SIGINT", () => shutdown("SIGINT"));
-  return { server, recordStore, objectStore };
+  return { server, recordStore, objectStore, auditStore, coordinator };
 }
 
 if (

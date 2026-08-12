@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://app.sitesealed.com/schemas/proof-bundle-v1.3.schema.json",
+  "title": "SiteSealed v1.3 development proof bundle",
+  "description": "A development integrity receipt with client-encrypted object metadata and an internal PostgreSQL operational-audit reference. It is not a qualified timestamp or public-chain anchor.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "bundleVersion",
+    "record",
+    "receipt",
+    "receiptSha256",
+    "encryptedOriginal",
+    "proofs",
+    "operationalAudit",
+    "scope"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "sitesealed.proof-bundle.v1.3"
+    },
+    "bundleVersion": {
+      "const": "1.3"
+    },
+    "record": {
+      "type": "object",
+      "required": [
+        "recordId",
+        "recordClass",
+        "proofLevel",
+        "recordSha256",
+        "manifestSha256",
+        "receivedAt"
+      ]
+    },
+    "receipt": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "recordId",
+        "recordClass",
+        "proofLevel",
+        "recordSha256",
+        "manifestSha256",
+        "receivedAt"
+      ]
+    },
+    "receiptSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "encryptedManifest": {
+      "type": ["object", "null"]
+    },
+    "encryptedOriginal": {
+      "type": "object",
+      "required": [
+        "state",
+        "encryption",
+        "ciphertextSha256",
+        "ciphertextBytes",
+        "plaintextBytes",
+        "privateRetrieval"
+      ],
+      "properties": {
+        "state": { "const": "STORED_ENCRYPTED" },
+        "ciphertextSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "privateRetrieval": { "const": true }
+      }
+    },
+    "proofs": {
+      "type": "object"
+    },
+    "operationalAudit": {
+      "type": "object",
+      "required": ["state", "role", "independentlyAnchored"],
+      "properties": {
+        "state": {
+          "enum": ["RECORDED", "NOT_RECORDED_LEGACY", "TEMPORARILY_UNAVAILABLE"]
+        },
+        "role": { "const": "APPLICATION_AUDIT_ONLY" },
+        "independentlyAnchored": { "const": false },
+        "appendOnly": { "type": "boolean" },
+        "hashChained": { "type": "boolean" },
+        "eventHashValid": { "type": "boolean" },
+        "event": {
+          "type": "object",
+          "required": [
+            "schemaVersion",
+            "sequence",
+            "eventId",
+            "eventType",
+            "recordId",
+            "payload",
+            "payloadSha256",
+            "eventSha256",
+            "recordedAt"
+          ],
+          "properties": {
+            "schemaVersion": {
+              "const": "sitesealed.operational-audit-event.v1"
+            },
+            "sequence": { "type": "string", "pattern": "^[0-9]+$" },
+            "payloadSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "previousEventSha256": {
+              "type": ["string", "null"],
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "eventSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+          }
+        }
+      }
+    },
+    "scope": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

@@ -1251,9 +1251,149 @@ button {
   color: var(--navy-900);
 }
 
+.infrastructure-status {
+  max-width: 1040px;
+  margin: 48px auto 0;
+  border: 1px solid #ced7dc;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 18px 48px rgba(11, 41, 66, 0.08);
+}
+
+.infrastructure-status__heading {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 17px 22px;
+  border-bottom: 1px solid var(--line);
+  background: var(--navy-900);
+  color: var(--white);
+}
+
+.infrastructure-status__heading span,
+.infrastructure-status__heading strong {
+  display: block;
+}
+
+.infrastructure-status__heading span {
+  margin-bottom: 3px;
+  color: var(--amber-400);
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+
+.infrastructure-status__heading strong {
+  font-family: var(--font-condensed);
+  font-size: 1.03rem;
+  letter-spacing: 0.01em;
+}
+
+.infrastructure-status__heading small {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: rgba(255, 255, 255, 0.55);
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.infrastructure-status__heading small::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #9aa8b2;
+  content: "";
+}
+
+.infrastructure-status__heading small.is-online::before {
+  background: #5dd6a7;
+  box-shadow: 0 0 0 4px rgba(93, 214, 167, 0.12);
+}
+
+.infrastructure-status__heading small.is-error::before {
+  background: #ff7d67;
+}
+
+.infrastructure-status__grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.infrastructure-node {
+  display: grid;
+  min-height: 82px;
+  align-items: center;
+  padding: 15px 17px;
+  border-right: 1px solid var(--line);
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+}
+
+.infrastructure-node:last-child {
+  border-right: 0;
+}
+
+.infrastructure-node > i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #b7c0c6;
+}
+
+.infrastructure-node > i.is-online {
+  background: var(--green-600);
+  box-shadow: 0 0 0 4px var(--green-100);
+}
+
+.infrastructure-node > i.is-local {
+  background: var(--amber-500);
+  box-shadow: 0 0 0 4px var(--amber-100);
+}
+
+.infrastructure-node strong,
+.infrastructure-node span {
+  display: block;
+}
+
+.infrastructure-node strong {
+  color: var(--navy-900);
+  font-family: var(--font-condensed);
+  font-size: 0.92rem;
+}
+
+.infrastructure-node span {
+  margin-top: 1px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.infrastructure-node > small {
+  color: #7d8c96;
+  font-family: var(--font-mono);
+  font-size: 0.52rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.infrastructure-status > p {
+  margin: 0;
+  padding: 11px 20px;
+  border-top: 1px solid var(--line);
+  color: #78868f;
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  line-height: 1.5;
+}
+
 .sealing-workbench {
   max-width: 1040px;
-  margin: 68px auto 0;
+  margin: 28px auto 0;
   border: 1px solid #d3dadd;
   background: var(--white);
   box-shadow: var(--shadow);
@@ -2119,6 +2259,48 @@ button {
   cursor: pointer;
   font-family: var(--font-mono);
   font-size: 0.5rem;
+}
+
+.verified-result__audit {
+  margin-top: 9px;
+  padding: 11px 12px;
+  border: 1px solid rgba(93, 214, 167, 0.26);
+  background: rgba(42, 137, 103, 0.07);
+  font-family: var(--font-mono);
+}
+
+.verified-result__audit > span,
+.verified-result__audit > strong,
+.verified-result__audit > code {
+  display: block;
+}
+
+.verified-result__audit > span {
+  color: #76d5ac;
+  font-size: 0.46rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.verified-result__audit > strong {
+  margin-top: 5px;
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 0.54rem;
+}
+
+.verified-result__audit > code {
+  overflow: hidden;
+  margin-top: 4px;
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 0.48rem;
+  text-overflow: ellipsis;
+}
+
+.verified-result__audit > p {
+  margin: 6px 0 0;
+  color: rgba(255, 255, 255, 0.34);
+  font-size: 0.48rem;
+  line-height: 1.5;
 }
 
 .verified-result__disclaimer {

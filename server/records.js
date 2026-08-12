@@ -240,7 +240,7 @@ export function validateSealRequest(body) {
     throw new ApiError(
       400,
       "INVALID_RECORD_CLASS",
-      "The v1.2 web workflow accepts only explicitly labelled imported files.",
+      "The v1.3 web workflow accepts only explicitly labelled imported files.",
     );
   }
 
@@ -384,7 +384,7 @@ export function createDevelopmentRecord(input, options = {}) {
     capturedAt: null,
     qualifiedAt: null,
     receivedAt,
-    position: "Not collected in the v1.2 web import workflow",
+    position: "Not collected in the v1.3 web import workflow",
     sha256: input.recordSha256,
     manifestSha256: input.manifestSha256,
     manifestEncryption: "AES-256-GCM / client-held key",
@@ -411,13 +411,13 @@ export function createDevelopmentRecord(input, options = {}) {
     receiptSha256: sha256Hex(stableStringify(receipt)),
     qualifiedRail: {
       state: "NOT_ISSUED",
-      provider: "Not issued in v1.2",
+      provider: "Not issued in v1.3",
       token: null,
       status: "No qualified RFC 3161 timestamp token has been issued.",
     },
     chainRail: {
       state: "NOT_ANCHORED",
-      chain: "Not anchored in v1.2",
+      chain: "Not anchored in v1.3",
       block: null,
       anchor: null,
       merkleRoot: null,
@@ -447,9 +447,9 @@ export function scopeForRecord(record) {
       "If a locally held file recalculates to the recorded SHA-256 digest, its byte sequence matches this receipt." +
       encryptedStorageStatement,
     attests:
-      "The displayed receipt time is a SiteSealed server database time, not a qualified independent timestamp.",
+      "The displayed receipt time is a SiteSealed server database time. The v1.3 PostgreSQL hash chain is an internal operational audit trail, not an independent timestamp.",
     doesNotProve:
-      "Without the client-held key, SiteSealed cannot inspect the stored plaintext or prove that the ciphertext decrypts to the claimed file. This receipt also does not prove capture time, identity, authorship, location, truthfulness, a qualified eIDAS timestamp or a public blockchain anchor.",
+      "Without the client-held key, SiteSealed cannot inspect the stored plaintext or prove that the ciphertext decrypts to the claimed file. MySQL, PostgreSQL and Redis do not replace either external trust rail. This receipt also does not prove capture time, identity, authorship, location, truthfulness, a qualified eIDAS timestamp or a public blockchain anchor.",
   };
 }
 

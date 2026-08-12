@@ -34,7 +34,7 @@ async function main() {
   const receipt = bundle.receipt ?? bundle.record?.receipt;
   const receiptSha256 = bundle.receiptSha256 ?? bundle.record?.receiptSha256;
   if (!receipt || !receiptSha256) {
-    throw new Error("The JSON file does not contain a v1.2 receipt and receipt digest.");
+    throw new Error("The JSON file does not contain a SiteSealed receipt and receipt digest.");
   }
 
   const calculatedReceiptSha256 = sha256(stableStringify(receipt));
@@ -46,8 +46,35 @@ async function main() {
 
   console.log(`Receipt integrity: PASS (${receipt.recordId})`);
   console.log(`Receipt time: ${receipt.receivedAt}`);
-  console.log("Qualified timestamp: NOT ISSUED in v1.2");
-  console.log("Public-chain anchor: NOT ANCHORED in v1.2");
+  console.log("Qualified timestamp: NOT ISSUED in v1.3");
+  console.log("Public-chain anchor: NOT ANCHORED in v1.3");
+
+  const audit = bundle.operationalAudit;
+  if (audit?.state === "RECORDED" && audit.event) {
+    const payloadSha256 = sha256(stableStringify(audit.event.payload));
+    const auditPreimage = {
+      schemaVersion: audit.event.schemaVersion,
+      eventId: audit.event.eventId,
+      eventType: audit.event.eventType,
+      recordId: audit.event.recordId,
+      payloadSha256: audit.event.payloadSha256,
+      previousEventSha256: audit.event.previousEventSha256 ?? null,
+      recordedAt: audit.event.recordedAt,
+    };
+    const eventSha256 = sha256(stableStringify(auditPreimage));
+    if (
+      payloadSha256 !== audit.event.payloadSha256 ||
+      eventSha256 !== audit.event.eventSha256
+    ) {
+      throw new Error("The PostgreSQL operational-audit event hash is invalid.");
+    }
+    console.log(
+      `Operational audit event: PASS (internal hash chain sequence ${audit.event.sequence})`,
+    );
+    console.log("Operational audit independence: NO - application database only");
+  } else {
+    console.log(`Operational audit event: ${audit?.state ?? "NOT PROVIDED"}`);
+  }
 
   if (originalPath) {
     const original = await readFile(originalPath);

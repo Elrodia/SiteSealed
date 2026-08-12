@@ -96,7 +96,7 @@ export function renderReceiptPdf(record, { baseUrl }) {
         Title: `SiteSealed development seal receipt ${record.recordId}`,
         Author: "The SiteSealed Project",
         Subject: "Development integrity receipt - not a certified Evidence Report",
-        Creator: "SiteSealed v1.2",
+        Creator: "SiteSealed v1.3",
       },
       compress: true,
     });
@@ -126,7 +126,7 @@ export function renderReceiptPdf(record, { baseUrl }) {
       .font("Helvetica")
       .fontSize(7.3)
       .fillColor("#B9C6CF")
-      .text(`SiteSealed v1.2 | ${record.recordId}`, 88, 49);
+      .text(`SiteSealed v1.3 | ${record.recordId}`, 88, 49);
     doc
       .roundedRect(454, 25, 118, 31, 4)
       .lineWidth(1)
@@ -209,47 +209,47 @@ export function renderReceiptPdf(record, { baseUrl }) {
       title: "RAIL B - PUBLIC CHAIN",
       state: "NOT ANCHORED",
       description:
-        "No Merkle inclusion path or public-chain transaction exists for this v1.2 receipt.",
+        "No Merkle inclusion path or public-chain transaction exists for this v1.3 receipt.",
       color: COLORS.amber,
     });
 
-    sectionTitle(doc, "4", "HONEST SCOPE", 550);
+    sectionTitle(doc, "4", "HONEST SCOPE", 543);
     const scope = scopeForRecord(record);
     doc
-      .roundedRect(40, 574, 532, 92, 5)
+      .roundedRect(40, 566, 532, 116, 5)
       .fillAndStroke(COLORS.paper, COLORS.line);
     doc
       .font("Helvetica-Bold")
       .fontSize(7.6)
       .fillColor(COLORS.ink)
-      .text("WHAT THIS RECEIPT CAN SHOW", 53, 586, { characterSpacing: 0.5 });
+      .text("WHAT THIS RECEIPT CAN SHOW", 53, 578, { characterSpacing: 0.5 });
     doc
       .font("Helvetica")
-      .fontSize(7.4)
+      .fontSize(7.1)
       .fillColor(COLORS.ink)
-      .text(scope.proves, 53, 602, { width: 506, lineGap: 1.5 });
+      .text(scope.proves, 53, 594, { width: 506, lineGap: 1.2 });
     doc
       .font("Helvetica-Bold")
       .fontSize(7.6)
       .fillColor(COLORS.red)
-      .text("WHAT IT DOES NOT PROVE", 53, 632, { characterSpacing: 0.5 });
+      .text("WHAT IT DOES NOT PROVE", 53, 628, { characterSpacing: 0.5 });
     doc
       .font("Helvetica")
-      .fontSize(7.2)
+      .fontSize(6.8)
       .fillColor(COLORS.ink)
-      .text(scope.doesNotProve, 53, 648, { width: 506, lineGap: 1.3 });
+      .text(scope.doesNotProve, 53, 644, { width: 506, lineGap: 1.1 });
 
     const verificationUrl = `${String(baseUrl).replace(/\/$/, "")}/verify/${encodeURIComponent(record.recordId)}`;
     doc
       .font("Helvetica-Bold")
       .fontSize(7.4)
       .fillColor(COLORS.navy)
-      .text("VERIFY LOCALLY - NO FILE UPLOAD", 40, 689, { characterSpacing: 0.7 });
+      .text("VERIFY LOCALLY - NO FILE UPLOAD", 40, 699, { characterSpacing: 0.7 });
     doc
       .font("Courier")
       .fontSize(7.2)
       .fillColor(COLORS.navy)
-      .text(verificationUrl, 40, 706, { width: 532, link: verificationUrl });
+      .text(verificationUrl, 40, 716, { width: 532, link: verificationUrl });
     doc
       .font("Helvetica")
       .fontSize(6.9)
@@ -257,7 +257,7 @@ export function renderReceiptPdf(record, { baseUrl }) {
       .text(
         "Select the independently held original in the verifier. Its SHA-256 is recalculated in the browser and is not uploaded.",
         40,
-        723,
+        735,
         { width: 532 },
       );
 
