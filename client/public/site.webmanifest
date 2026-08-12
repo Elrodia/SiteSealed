@@ -4,8 +4,8 @@
   "description": "A neutral proof layer for construction records.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0E2A47",
-  "theme_color": "#0E2A47",
+  "background_color": "#061A2B",
+  "theme_color": "#061A2B",
   "icons": [
     {
       "src": "/icon-192.svg?v=20260812",

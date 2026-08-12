@@ -80,6 +80,73 @@ test("the timestamp worker persists a test-only token and remains idempotent", a
   assert.equal(record.qualifiedRail.legalUse, false);
 });
 
+test("dry-run previews one exact target without contacting Evidency", async () => {
+  const recordStore = createMemoryRecordStore();
+  const created = await recordStore.create(input());
+  let calls = 0;
+  const result = await processTimestampQueue({
+    recordStore,
+    timestampService: {
+      configured: false,
+      async issueTimestamp() {
+        calls += 1;
+      },
+    },
+    auditStore: createMemoryAuditStore(),
+    coordinator: createMemoryCoordinator(),
+    targetRecordId: created.record.recordId,
+    dryRun: true,
+    logger: { info() {} },
+  });
+  assert.equal(result.status, "DRY_RUN");
+  assert.equal(result.attempted, 0);
+  assert.equal(result.selected.length, 1);
+  assert.equal(result.selected[0].recordId, created.record.recordId);
+  assert.equal(calls, 0);
+});
+
+test("targeted mode timestamps only the requested eligible record", async () => {
+  const recordStore = createMemoryRecordStore();
+  const first = await recordStore.create(input());
+  const secondInput = input();
+  secondInput.submissionId = "223e4567-e89b-42d3-a456-426614174000";
+  secondInput.recordSha256 = "1".repeat(64);
+  const second = await recordStore.create(secondInput);
+  const requested = [];
+  const result = await processTimestampQueue({
+    recordStore,
+    auditStore: createMemoryAuditStore(),
+    coordinator: createMemoryCoordinator(),
+    targetRecordId: second.record.recordId,
+    logger: { info() {} },
+    timestampService: {
+      configured: true,
+      async issueTimestamp({ recordId, evidenceDigest }) {
+        requested.push(recordId);
+        return {
+          provider: "Evidency",
+          environment: "SANDBOX",
+          legalUse: false,
+          qualificationStatus: "TEST_ONLY_NOT_QUALIFIED",
+          hashAlgorithm: "SHA256",
+          hashedMessage: evidenceDigest,
+          serialNumber: "serial-target",
+          certifiedAt: "2026-08-12T18:00:00.000Z",
+          tokenBase64: Buffer.alloc(64, 7).toString("base64"),
+          tokenSha256: "7".repeat(64),
+          tsaPolicyId: "1.2.3",
+          providerStatus: 0,
+          responseValidation: "STATUS_ALGORITHM_AND_DIGEST_BOUND",
+          signatureVerification: "NOT_INDEPENDENTLY_VERIFIED",
+        };
+      },
+    },
+  });
+  assert.deepEqual(requested, [second.record.recordId]);
+  assert.equal(result.attempted, 1);
+  assert.equal((await recordStore.findById(first.record.recordId)).qualifiedRail.state, "NOT_ISSUED");
+});
+
 test("the anchor worker skips safely until mainnet credentials are configured", async () => {
   const result = await processAnchorQueue({
     recordStore: createMemoryRecordStore(),

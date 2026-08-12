@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createClient } from "redis";
 
-const KEY_PREFIX = "sitesealed:v1.4-alpha.1";
+const KEY_PREFIX = "sitesealed:v1.4-alpha.2";
 const RATE_LIMIT_SCRIPT = `
 local current = redis.call('INCR', KEYS[1])
 if current == 1 then

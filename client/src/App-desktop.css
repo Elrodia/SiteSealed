@@ -1,22 +1,22 @@
 :root {
-  color-scheme: light;
+  color-scheme: dark;
   --navy-950: #061a2b;
   --navy-900: #0b2942;
   --navy-800: #123b5c;
   --navy-700: #1b4e72;
   --amber-500: #f39a12;
   --amber-400: #ffad2e;
-  --amber-100: #fff0d6;
-  --green-600: #2a8967;
-  --green-100: #e6f3ed;
-  --paper: #f4f1ea;
-  --paper-2: #ece8df;
+  --amber-100: #322615;
+  --green-600: #3cac83;
+  --green-100: #153a2e;
+  --paper: #081723;
+  --paper-2: #0b1d2b;
   --white: #ffffff;
-  --ink: #10283b;
-  --muted: #667581;
-  --line: #d9dfe2;
+  --ink: #edf4f7;
+  --muted: #a6b6c0;
+  --line: #29404f;
   --line-dark: rgba(255, 255, 255, 0.13);
-  --shadow: 0 26px 70px rgba(4, 22, 36, 0.16);
+  --shadow: 0 26px 70px rgba(0, 0, 0, 0.42);
   --font-sans: "Aptos", "Segoe UI", Helvetica, Arial, sans-serif;
   --font-condensed: "Arial Narrow", "Roboto Condensed", "Aptos Narrow", var(--font-sans);
   --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -2753,6 +2753,112 @@ button {
 .footer__bottom a {
   justify-self: end;
   color: var(--amber-400);
+}
+
+/* Permanent dark interface — desktop and mobile share these surfaces. */
+.problem,
+.report,
+.roadmap {
+  background: #0a1b28;
+}
+
+.method,
+.principles {
+  background: #081723;
+}
+
+.section-heading h2,
+.signal-card h3,
+.principle-quote p,
+.pipeline-step h3,
+.offline-note strong,
+.report-points strong,
+.seal-workflow__boundary strong,
+.infrastructure-node strong,
+.privacy-rail b,
+.file-picker > label strong,
+.seal-form__context label,
+.seal-acknowledgement strong,
+.seal-success__title h3,
+.seal-success__facts strong,
+.seal-success__facts code,
+.seal-success__warning strong,
+.principle-card h3,
+.roadmap-card h3 {
+  color: var(--ink);
+}
+
+.pipeline-step,
+.offline-note,
+.seal-workflow__boundary,
+.infrastructure-status,
+.sealing-workbench,
+.privacy-rail,
+.file-picker > label,
+.seal-form__context input,
+.seal-form__context textarea,
+.seal-progress,
+.seal-success,
+.seal-success__facts,
+.principle-card {
+  border-color: var(--line);
+  background: #0d2232;
+}
+
+.pipeline-step:hover,
+.file-picker > label:hover,
+.file-picker > input:focus-visible + label {
+  background: #122c3f;
+}
+
+.seal-acknowledgement,
+.seal-success__warning {
+  border-color: #76561f;
+  background: #2a2114;
+  color: #ddc79e;
+}
+
+.seal-error {
+  background: #321a1d;
+  color: #ffaaa2;
+}
+
+.seal-error p,
+.seal-success__retrieval {
+  color: #e89a92;
+}
+
+.button--outline {
+  border-color: #4a6271;
+  background: #102736;
+  color: var(--ink);
+}
+
+.button--outline:hover {
+  border-color: var(--amber-400);
+  background: #173448;
+}
+
+.text-action {
+  color: var(--amber-400);
+}
+
+.roadmap-card__dot {
+  border-color: #0a1b28;
+}
+
+.roadmap-card em {
+  color: #ffc060;
+}
+
+.report-preview {
+  background: #102736;
+}
+
+/* The report thumbnail intentionally stays white: it previews the printable PDF. */
+.report-preview a {
+  border-color: #465866;
+  background: #ffffff;
 }
 
 @media (prefers-reduced-motion: reduce) {

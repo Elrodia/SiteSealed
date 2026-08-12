@@ -21,14 +21,34 @@ function positiveInteger(value, fallback) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function booleanFlag(value, fallback = false) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  throw new Error("EVIDENCY_DRY_RUN must be true or false.");
+}
+
+function optionalRecordId(value) {
+  const recordId = String(value ?? "").trim();
+  if (!recordId) return null;
+  if (!/^SR-[A-Z0-9-]{8,80}$/i.test(recordId)) {
+    throw new Error("EVIDENCY_TARGET_RECORD_ID is not a valid SiteSealed record ID.");
+  }
+  return recordId;
+}
+
 export async function processTimestampQueue({
   recordStore,
   timestampService,
   auditStore,
   coordinator,
   limit = 50,
+  targetRecordId = null,
+  dryRun = false,
+  logger = console,
 } = {}) {
-  if (!timestampService?.configured) {
+  if (!timestampService?.configured && !dryRun) {
     return { status: "SKIPPED_NOT_CONFIGURED", attempted: 0, issued: 0, failed: [] };
   }
   const release = await coordinator.acquireJobLock("evidency-timestamp", {
@@ -40,9 +60,44 @@ export async function processTimestampQueue({
   const failed = [];
   let issued = 0;
   try {
-    const candidates = await recordStore.listTimestampCandidates(limit);
+    let candidates;
+    if (targetRecordId) {
+      const target = await recordStore.findById(targetRecordId);
+      const eligible =
+        target &&
+        !target.specimen &&
+        target.qualifiedRail?.state === "NOT_ISSUED";
+      candidates = eligible ? [target] : [];
+    } else {
+      candidates = await recordStore.listTimestampCandidates(limit);
+    }
+
+    const selected = candidates.map((record) => ({
+      recordId: record.recordId,
+      evidenceDigest: record.evidenceDigest,
+    }));
+    logger.info?.("SiteSealed Evidency selection", {
+      dryRun,
+      targeted: Boolean(targetRecordId),
+      selected,
+    });
+
+    if (dryRun) {
+      return {
+        status: candidates.length > 0 ? "DRY_RUN" : "DRY_RUN_NO_ELIGIBLE_RECORD",
+        attempted: 0,
+        issued: 0,
+        failed: [],
+        selected,
+      };
+    }
+
     for (const record of candidates) {
       try {
+        logger.info?.("SiteSealed Evidency request starting", {
+          recordId: record.recordId,
+          evidenceDigest: record.evidenceDigest,
+        });
         const proof = await timestampService.issueTimestamp({
           recordId: record.recordId,
           evidenceDigest: record.evidenceDigest,
@@ -54,6 +109,13 @@ export async function processTimestampQueue({
         await auditStore.appendQualifiedTimestamp(stored.record, proof);
         await coordinator.deleteCachedRecord(record.recordId);
         issued += stored.created ? 1 : 0;
+        logger.info?.("SiteSealed Evidency request completed", {
+          recordId: record.recordId,
+          issued: stored.created,
+          environment: proof.environment,
+          qualificationStatus: proof.qualificationStatus,
+          tokenSha256: proof.tokenSha256,
+        });
       } catch (error) {
         failed.push({ recordId: record.recordId, error: error.message });
       }
@@ -63,6 +125,7 @@ export async function processTimestampQueue({
       attempted: candidates.length,
       issued,
       failed,
+      selected,
     };
   } finally {
     await release();
@@ -186,7 +249,12 @@ export async function runRailsWorker(environment = process.env) {
       timestampService,
       auditStore,
       coordinator,
-      limit: positiveInteger(environment.EVIDENCY_BATCH_SIZE, 50),
+      limit: Math.min(
+        positiveInteger(environment.EVIDENCY_BATCH_SIZE, 50),
+        positiveInteger(environment.EVIDENCY_MAX_REQUESTS_PER_RUN, 1),
+      ),
+      targetRecordId: optionalRecordId(environment.EVIDENCY_TARGET_RECORD_ID),
+      dryRun: booleanFlag(environment.EVIDENCY_DRY_RUN, false),
     });
     const anchors = await processAnchorQueue({
       recordStore,

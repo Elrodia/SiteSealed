@@ -1,10 +1,14 @@
-# SiteSealed Genesis v1.4-alpha.1
+# SiteSealed Genesis v1.4-alpha.2
 
 Cette alpha construit les deux rails externes choisis pour le QTSP :
 
 - **Evidency sandbox** pour demander et exporter un jeton RFC 3161 de test ;
 - **Ethereum mainnet (chain ID 1)** comme rail public définitif pour les racines
   Merkle horaires.
+
+L'alpha.2 ajoute un premier essai Evidency contrôlé et une interface sombre
+permanente sur desktop comme sur mobile. Le reçu PDF conserve son fond clair :
+il reste un document imprimable, distinct de l'interface écran.
 
 Le mot `sealed` reste volontairement désactivé. Un jeton Evidency sandbox n'a
 aucun effet juridique et ne devient jamais un horodatage qualifié eIDAS. Même
@@ -65,7 +69,9 @@ mais cette alpha ne peut pas l'atteindre.
 
 Le protocole privé de dépôt reste `1.2` afin de préserver les objets et kits de
 récupération existants. Le reçu et le bundle publics passent en
-`1.4-alpha.1`. La migration MySQL `004_dual_rail_alpha` est additive.
+`1.4-alpha.1` pour préserver la compatibilité des preuves. L'alpha.2 ne modifie
+ni le protocole cryptographique ni le schéma public ; elle sécurise l'exécution
+du worker et l'interface. La migration MySQL `004_dual_rail_alpha` reste additive.
 
 ## Structure utile
 
@@ -172,6 +178,9 @@ EVIDENCY_API_KEY=<secret Railway>
 EVIDENCY_PROJECT_KEY=<clé du projet sandbox>
 EVIDENCY_TIMEOUT_MS=12000
 EVIDENCY_BATCH_SIZE=50
+EVIDENCY_TARGET_RECORD_ID=<identifiant exact du reçu test>
+EVIDENCY_DRY_RUN=true
+EVIDENCY_MAX_REQUESTS_PER_RUN=1
 
 ETHEREUM_ANCHOR_MODE=mainnet
 ETHEREUM_RPC_URL=<endpoint HTTPS/WSS mainnet>
@@ -191,12 +200,23 @@ Déploiement prudent :
 
 1. déployer et vérifier les migrations avec les deux modes laissés à
    `disabled` ;
-2. activer uniquement `EVIDENCY_MODE=sandbox`, lancer le worker manuellement et
-   contrôler un jeton exporté ;
-3. approvisionner le portefeuille dédié, vérifier son adresse et le RPC
+2. créer un reçu de test, renseigner son identifiant dans
+   `EVIDENCY_TARGET_RECORD_ID`, conserver `EVIDENCY_MODE=disabled` et lancer le
+   worker avec `EVIDENCY_DRY_RUN=true` ; le résultat doit être `DRY_RUN`, avec
+   exactement ce reçu dans `selected` et `attempted: 0` ;
+3. après activation Evidency, ajouter les clés, définir
+   `EVIDENCY_MODE=sandbox` et `EVIDENCY_DRY_RUN=false`, puis lancer une seule
+   fois le worker. `EVIDENCY_MAX_REQUESTS_PER_RUN=1` empêche toute émission en
+   masse, même si `EVIDENCY_BATCH_SIZE` vaut 50 ;
+4. vérifier `attempted: 1`, `issued: 1`, le reçu public et le jeton `.tsr`, puis
+   remettre `EVIDENCY_MODE=disabled` ;
+5. approvisionner le portefeuille dédié, vérifier son adresse et le RPC
    mainnet ;
-4. activer `ETHEREUM_ANCHOR_MODE=mainnet`, lancer un premier petit lot sous
+6. activer `ETHEREUM_ANCHOR_MODE=mainnet`, lancer un premier petit lot sous
    surveillance, puis seulement activer le cron horaire.
+
+Ne retire `EVIDENCY_TARGET_RECORD_ID` et n'augmente
+`EVIDENCY_MAX_REQUESTS_PER_RUN` qu'après validation explicite du premier jeton.
 
 Une erreur Evidency, une transaction invalide ou un dépassement du plafond de
 frais fait échouer le run sans transformer le reçu en preuve complète. Les lots

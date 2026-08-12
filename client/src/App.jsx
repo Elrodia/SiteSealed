@@ -1646,7 +1646,7 @@ function App() {
             </div>
             <div>
               <strong>Status</strong>
-              <span>Genesis v1.4 alpha.1</span>
+              <span>Genesis v1.4 alpha.2</span>
               <span>Evidency sandbox test rail</span>
               <span>Ethereum mainnet final rail</span>
             </div>
