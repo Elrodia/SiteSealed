@@ -129,7 +129,7 @@ export function createPostgresPool(config) {
     max: config.connectionLimit,
     connectionTimeoutMillis: 8_000,
     idleTimeoutMillis: 30_000,
-    application_name: "sitesealed-v1.4-alpha.5",
+    application_name: "sitesealed-v1.4-alpha.6",
   });
   pool.on("error", (error) => {
     console.error(`PostgreSQL pool error: ${error.message}`);
@@ -202,6 +202,12 @@ export function qualifiedTimestampAuditPayload(record, proof) {
     tokenSha256: proof.tokenSha256,
     tsaPolicyId: proof.tsaPolicyId,
     signatureVerification: proof.signatureVerification,
+    certificateChainVerification: proof.certificateChainVerification,
+    signingCertificateVerification: proof.signingCertificateVerification,
+    revocationVerification: proof.revocationVerification,
+    validatorVersion: proof.validatorVersion,
+    signerCertificateSha256: proof.signerCertificateSha256,
+    trustAnchorSha256: proof.trustAnchorSha256,
   };
 }
 

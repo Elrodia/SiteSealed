@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { JsonRpcProvider, WebSocketProvider } from "ethers";
+import { verifyRfc3161Token } from "../server/rfc3161.js";
 
 const ANCHOR_CALLDATA_MAGIC = "53534c4401";
 
@@ -136,11 +137,24 @@ async function main() {
     ) {
       throw new Error("The exported Evidency timestamp token digest is invalid.");
     }
-    console.log(`RFC 3161 timestamp: EVIDENCY SANDBOX TOKEN PRESENT (${timestamp.serialNumber})`);
-    console.log("Legal qualification: TEST ONLY - NOT QUALIFIED");
+    const verification = await verifyRfc3161Token({
+      token: tokenBytes,
+      expectedDigest: receipt.evidenceDigest,
+      expectedSerialNumber: timestamp.serialNumber,
+      expectedCertifiedAt: timestamp.certifiedAt,
+      expectedPolicyId: timestamp.tsaPolicyId,
+    });
+    console.log(`RFC 3161 timestamp: PASS (${verification.serialNumber})`);
     console.log(
-      `Token signature: ${timestamp.signatureVerification ?? "NOT INDEPENDENTLY VERIFIED"}`,
+      `CMS signature: ${verification.signatureVerification} (${verification.cmsSignatureAlgorithm})`,
     );
+    console.log(
+      `Certificate path: ${verification.certificateChainVerification} (${verification.certificatePathLength} certificates)`,
+    );
+    console.log(
+      `Signer binding: ${verification.signingCertificateVerification}; revocation: ${verification.revocationVerification}`,
+    );
+    console.log("Legal qualification: TEST ONLY - NOT QUALIFIED");
   } else {
     console.log("RFC 3161 timestamp: NOT ISSUED");
   }

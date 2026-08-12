@@ -95,13 +95,13 @@ after(async () => {
   });
 });
 
-test("health endpoint reports the honest v1.4-alpha.5 capability boundary", async () => {
+test("health endpoint reports the honest v1.4-alpha.6 capability boundary", async () => {
   const response = await fetch(`${baseUrl}/api/health`);
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.ok, true);
   assert.equal(payload.service, "sitesealed");
-  assert.equal(payload.version, "1.4.0-alpha.5");
+  assert.equal(payload.version, "1.4.0-alpha.6");
   assert.equal(payload.sealing.clientEncryptedObjectStorage, true);
   assert.equal(
     payload.sealing.operationalAudit,
@@ -173,7 +173,11 @@ test("health endpoint reads operational Evidency status from the separate worker
     externalCallVerified: true,
     legalUse: false,
     qualificationStatus: "TEST_ONLY_NOT_QUALIFIED",
-    responseValidation: "TOKEN_RECEIVED_DIGEST_BOUND_AND_STORED",
+    responseValidation: "RFC3161_CMS_SIGNATURE_CHAIN_AND_DIGEST_VALID",
+    signatureVerification: "VALID",
+    certificateChainVerification: "VALID_TO_PINNED_SANDBOX_ROOT",
+    validatorVersion: "SITESEALED_RFC3161_VALIDATOR_V1",
+    revocationVerification: "NOT_CHECKED",
     dryRun: false,
     lastCheckedAt: "2026-08-12T20:00:00.000Z",
     lastSuccessAt: "2026-08-12T20:00:00.000Z",
@@ -195,8 +199,47 @@ test("health endpoint reads operational Evidency status from the separate worker
     assert.equal(payload.qualifiedTimestamp.externalCallVerified, true);
     assert.equal(
       payload.sealing.qualifiedTimestamp,
-      "EVIDENCY_SANDBOX_OPERATIONAL_TEST_ONLY",
+      "EVIDENCY_SANDBOX_CRYPTOGRAPHICALLY_VERIFIED_TEST_ONLY",
     );
+  } finally {
+    await new Promise((resolve, reject) =>
+      statusServer.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("health endpoint refuses a stale pre-alpha.6 operational claim", async () => {
+  const coordinator = createMemoryCoordinator();
+  await coordinator.setRailRuntimeStatus("evidency", {
+    mode: "evidency",
+    status: "operational",
+    provider: "Evidency",
+    environment: "SANDBOX",
+    configured: true,
+    externalCallVerified: true,
+    legalUse: false,
+    qualificationStatus: "TEST_ONLY_NOT_QUALIFIED",
+    responseValidation: "TOKEN_RECEIVED_DIGEST_BOUND_AND_STORED",
+    dryRun: false,
+    lastCheckedAt: "2026-08-12T20:00:00.000Z",
+    lastSuccessAt: "2026-08-12T20:00:00.000Z",
+  });
+  const statusApp = createApp({
+    recordStore: createMemoryRecordStore(),
+    coordinator,
+    sealRateLimit: 100,
+  });
+  const statusServer = await new Promise((resolve) => {
+    const instance = statusApp.listen(0, "127.0.0.1", () => resolve(instance));
+  });
+  const address = statusServer.address();
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/health`);
+    const payload = await response.json();
+    assert.equal(payload.qualifiedTimestamp.status, "configured");
+    assert.equal(payload.qualifiedTimestamp.externalCallVerified, false);
+    assert.equal(payload.sealing.qualifiedTimestamp, "EVIDENCY_SANDBOX_READY_TEST_ONLY");
   } finally {
     await new Promise((resolve, reject) =>
       statusServer.close((error) => (error ? reject(error) : resolve())),

@@ -482,7 +482,11 @@ export function externalProofStatus(record) {
   const qualified =
     record?.qualifiedRail?.qualificationStatus === "EIDAS_QUALIFIED" &&
     record?.qualifiedRail?.signatureVerification === "VALID";
-  const sandbox = record?.qualifiedRail?.state === "SANDBOX_TOKEN_ISSUED";
+  const sandbox =
+    record?.qualifiedRail?.state === "SANDBOX_TOKEN_ISSUED" &&
+    record?.qualifiedRail?.signatureVerification === "VALID" &&
+    record?.qualifiedRail?.certificateChainVerification ===
+      "VALID_TO_PINNED_SANDBOX_ROOT";
   const finalized = record?.chainRail?.state === "FINALIZED";
   const anchorRejected = ["FAILED_ON_CHAIN", "INVALID_ON_CHAIN"].includes(
     record?.chainRail?.state,
@@ -509,6 +513,10 @@ export function externalProofStatus(record) {
 export function qualifiedRailFromProof(proof) {
   if (!proof) return null;
   const sandbox = String(proof.environment ?? "").toUpperCase() === "SANDBOX";
+  const independentlyVerified =
+    proof.signatureVerification === "VALID" &&
+    proof.certificateChainVerification ===
+      "VALID_TO_PINNED_SANDBOX_ROOT";
   return {
     state: sandbox ? "SANDBOX_TOKEN_ISSUED" : "TOKEN_ISSUED",
     provider: proof.provider ?? "Evidency",
@@ -528,8 +536,28 @@ export function qualifiedRailFromProof(proof) {
     responseValidation: proof.responseValidation ?? null,
     signatureVerification:
       proof.signatureVerification ?? "NOT_INDEPENDENTLY_VERIFIED",
+    validatorVersion: proof.validatorVersion ?? null,
+    certificateChainVerification:
+      proof.certificateChainVerification ?? "NOT_INDEPENDENTLY_VERIFIED",
+    signingCertificateVerification:
+      proof.signingCertificateVerification ?? "NOT_INDEPENDENTLY_VERIFIED",
+    signingCertificateHashAlgorithm:
+      proof.signingCertificateHashAlgorithm ?? null,
+    cmsAlgorithmProtection: proof.cmsAlgorithmProtection ?? null,
+    revocationVerification: proof.revocationVerification ?? "NOT_CHECKED",
+    cmsDigestAlgorithm: proof.cmsDigestAlgorithm ?? null,
+    cmsSignatureAlgorithm: proof.cmsSignatureAlgorithm ?? null,
+    signerCertificateSha256: proof.signerCertificateSha256 ?? null,
+    trustAnchorSha256: proof.trustAnchorSha256 ?? null,
+    certificatePathLength:
+      proof.certificatePathLength === null ||
+      proof.certificatePathLength === undefined
+        ? null
+        : Number(proof.certificatePathLength),
     status: sandbox
-      ? "Evidency sandbox token issued - test-only, without qualified legal effect."
+      ? independentlyVerified
+        ? "Evidency sandbox token issued; CMS signature, ESSCertIDv2 and certificate path to the pinned sandbox root verified independently. Test-only, without qualified legal effect; revocation not checked."
+        : "Evidency sandbox token issued but not independently verified by this release. Test-only, without qualified legal effect."
       : "Timestamp token issued; qualification must be independently validated.",
   };
 }
@@ -603,7 +631,11 @@ export function scopeForRecord(record) {
 
   const timestampStatement =
     record.qualifiedRail?.state === "SANDBOX_TOKEN_ISSUED"
-      ? " Evidency sandbox returned an RFC 3161 test token bound to the evidence digest; the sandbox expressly has no legal effect."
+      ? record.qualifiedRail?.signatureVerification === "VALID" &&
+        record.qualifiedRail?.certificateChainVerification ===
+          "VALID_TO_PINNED_SANDBOX_ROOT"
+        ? " Evidency sandbox returned an RFC 3161 test token bound to the evidence digest; SiteSealed independently verified its CMS signature, signer binding and certificate path to the pinned sandbox root. Revocation was not checked, and the sandbox expressly has no legal effect."
+        : " Evidency sandbox returned an RFC 3161 test token, but this stored token has not passed the alpha.6 independent signature-and-chain gate. The sandbox expressly has no legal effect."
       : " No external RFC 3161 timestamp token is attached.";
   const chainStatement =
     record.chainRail?.state === "FINALIZED"

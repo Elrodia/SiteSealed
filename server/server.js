@@ -19,6 +19,7 @@ import {
   createDisabledTimestampService,
   createEvidencyTimestampServiceFromEnv,
 } from "./evidency.js";
+import { RFC3161_VALIDATOR_VERSION } from "./rfc3161.js";
 import {
   createDisabledEthereumRail,
   createEthereumAnchorClientFromEnv,
@@ -226,7 +227,27 @@ export function createApp({
   const timestampHealth = async () => {
     const local = await timestampService.healthCheck();
     const shared = await coordinator.getRailRuntimeStatus?.("evidency");
-    return shared ?? local;
+    if (!shared) return local;
+    if (
+      shared.status === "operational" &&
+      (shared.validatorVersion !== RFC3161_VALIDATOR_VERSION ||
+        shared.signatureVerification !== "VALID" ||
+        shared.certificateChainVerification !==
+          "VALID_TO_PINNED_SANDBOX_ROOT")
+    ) {
+      return {
+        ...shared,
+        status: "configured",
+        externalCallVerified: false,
+        responseValidation: "NOT_YET_EXTERNALLY_VERIFIED",
+        signatureVerification: "NOT_YET_VERIFIED",
+        certificateChainVerification: "NOT_YET_VERIFIED",
+        validatorVersion: RFC3161_VALIDATOR_VERSION,
+        message:
+          "A fresh alpha.6 worker result is required before Evidency can be shown as operational.",
+      };
+    }
+    return shared;
   };
 
   const findRecord = async (recordId) => {
@@ -310,7 +331,7 @@ export function createApp({
     response.status(200).json({
       ok: true,
       service: "sitesealed",
-      version: "1.4.0-alpha.5",
+      version: "1.4.0-alpha.6",
       sealing: {
         workflow: "IMPORTED_FILE_CLIENT_ENCRYPTED_STORAGE_RECEIPT",
         clientEncryptedObjectStorage: true,
@@ -318,7 +339,7 @@ export function createApp({
         distributedCoordination: true,
         qualifiedTimestamp:
           qualifiedTimestamp.status === "operational"
-            ? "EVIDENCY_SANDBOX_OPERATIONAL_TEST_ONLY"
+            ? "EVIDENCY_SANDBOX_CRYPTOGRAPHICALLY_VERIFIED_TEST_ONLY"
             : [
                   "configured",
                   "dry_run_ready",
@@ -767,7 +788,7 @@ export async function startServer() {
   });
   const server = app.listen(port, host, () => {
     console.log(
-      `SiteSealed v1.4-alpha.5 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
+      `SiteSealed v1.4-alpha.6 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
     );
   });
 

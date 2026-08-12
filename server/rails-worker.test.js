@@ -39,6 +39,37 @@ function input() {
   });
 }
 
+function verifiedTimestampProof(evidenceDigest, overrides = {}) {
+  return {
+    provider: "Evidency",
+    environment: "SANDBOX",
+    legalUse: false,
+    qualificationStatus: "TEST_ONLY_NOT_QUALIFIED",
+    hashAlgorithm: "SHA256",
+    hashedMessage: evidenceDigest,
+    serialNumber: "serial-test",
+    certifiedAt: "2026-08-12T18:00:00.000Z",
+    tokenBase64: Buffer.alloc(64, 9).toString("base64"),
+    tokenSha256: "e".repeat(64),
+    tsaPolicyId: "1.2.3",
+    providerStatus: 0,
+    responseValidation: "RFC3161_CMS_SIGNATURE_CHAIN_AND_DIGEST_VALID",
+    signatureVerification: "VALID",
+    certificateChainVerification: "VALID_TO_PINNED_SANDBOX_ROOT",
+    signingCertificateVerification: "ESSCERTIDV2_MATCH",
+    signingCertificateHashAlgorithm: "SHA384",
+    cmsAlgorithmProtection: "VALID",
+    revocationVerification: "NOT_CHECKED",
+    validatorVersion: "SITESEALED_RFC3161_VALIDATOR_V1",
+    cmsDigestAlgorithm: "SHA512",
+    cmsSignatureAlgorithm: "RSA_PKCS1_SHA512",
+    signerCertificateSha256: "c".repeat(64),
+    trustAnchorSha256: "d".repeat(64),
+    certificatePathLength: 3,
+    ...overrides,
+  };
+}
+
 test("Evidency runtime becomes ON only after an externally returned token", () => {
   const now = () => new Date("2026-08-12T20:00:00.000Z");
   const ready = deriveEvidencyRuntimeStatus({
@@ -51,7 +82,13 @@ test("Evidency runtime becomes ON only after an externally returned token", () =
 
   const operational = deriveEvidencyRuntimeStatus({
     configured: true,
-    timestamps: { status: "COMPLETED", issued: 1, failed: [], selected: [{}] },
+    timestamps: {
+      status: "COMPLETED",
+      issued: 1,
+      verified: 1,
+      failed: [],
+      selected: [{}],
+    },
     now,
   });
   assert.equal(operational.status, "operational");
@@ -99,22 +136,9 @@ test("the timestamp worker persists a test-only token and remains idempotent", a
   const timestampService = {
     configured: true,
     async issueTimestamp({ evidenceDigest }) {
-      return {
-        provider: "Evidency",
-        environment: "SANDBOX",
-        legalUse: false,
-        qualificationStatus: "TEST_ONLY_NOT_QUALIFIED",
-        hashAlgorithm: "SHA256",
-        hashedMessage: evidenceDigest,
+      return verifiedTimestampProof(evidenceDigest, {
         serialNumber: "serial-a",
-        certifiedAt: "2026-08-12T18:00:00.000Z",
-        tokenBase64: Buffer.alloc(64, 9).toString("base64"),
-        tokenSha256: "e".repeat(64),
-        tsaPolicyId: "1.2.3",
-        providerStatus: 0,
-        responseValidation: "STATUS_ALGORITHM_AND_DIGEST_BOUND",
-        signatureVerification: "NOT_INDEPENDENTLY_VERIFIED",
-      };
+      });
     },
   };
   const first = await processTimestampQueue({
@@ -179,22 +203,11 @@ test("targeted mode timestamps only the requested eligible record", async () => 
       configured: true,
       async issueTimestamp({ recordId, evidenceDigest }) {
         requested.push(recordId);
-        return {
-          provider: "Evidency",
-          environment: "SANDBOX",
-          legalUse: false,
-          qualificationStatus: "TEST_ONLY_NOT_QUALIFIED",
-          hashAlgorithm: "SHA256",
-          hashedMessage: evidenceDigest,
+        return verifiedTimestampProof(evidenceDigest, {
           serialNumber: "serial-target",
-          certifiedAt: "2026-08-12T18:00:00.000Z",
           tokenBase64: Buffer.alloc(64, 7).toString("base64"),
           tokenSha256: "7".repeat(64),
-          tsaPolicyId: "1.2.3",
-          providerStatus: 0,
-          responseValidation: "STATUS_ALGORITHM_AND_DIGEST_BOUND",
-          signatureVerification: "NOT_INDEPENDENTLY_VERIFIED",
-        };
+        });
       },
     },
   });
@@ -226,22 +239,11 @@ test("the worker completes an auditable sandbox-plus-mainnet alpha lifecycle", a
     timestampService: {
       configured: true,
       async issueTimestamp({ evidenceDigest }) {
-        return {
-          provider: "Evidency",
-          environment: "SANDBOX",
-          legalUse: false,
-          qualificationStatus: "TEST_ONLY_NOT_QUALIFIED",
-          hashAlgorithm: "SHA256",
-          hashedMessage: evidenceDigest,
+        return verifiedTimestampProof(evidenceDigest, {
           serialNumber: "serial-final",
-          certifiedAt: "2026-08-12T18:00:00.000Z",
           tokenBase64: Buffer.alloc(64, 8).toString("base64"),
           tokenSha256: "f".repeat(64),
-          tsaPolicyId: "1.2.3",
-          providerStatus: 0,
-          responseValidation: "STATUS_ALGORITHM_AND_DIGEST_BOUND",
-          signatureVerification: "NOT_INDEPENDENTLY_VERIFIED",
-        };
+        });
       },
     },
   });

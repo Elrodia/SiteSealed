@@ -998,9 +998,12 @@ function VerifierV12({ requestedRecord }) {
 
   const qualifiedRailReady = Boolean(
     result?.specimen ||
-      ["SANDBOX_TOKEN_ISSUED", "TOKEN_ISSUED"].includes(
+      (["SANDBOX_TOKEN_ISSUED", "TOKEN_ISSUED"].includes(
         result?.record?.qualifiedRail?.state,
-      ),
+      ) &&
+        result?.record?.qualifiedRail?.signatureVerification === "VALID" &&
+        result?.record?.qualifiedRail?.certificateChainVerification ===
+          "VALID_TO_PINNED_SANDBOX_ROOT"),
   );
   const chainRailReady = Boolean(
     result?.specimen ||
@@ -1019,8 +1022,10 @@ function VerifierV12({ requestedRecord }) {
         ? "ALPHA DUAL RAIL COMPLETE"
         : result?.record?.chainRail?.state === "FINALIZED"
           ? "MAINNET FINALIZED / QTSP PENDING"
-          : result?.record?.qualifiedRail?.state === "SANDBOX_TOKEN_ISSUED"
-            ? "SANDBOX TOKEN / MAINNET PENDING"
+          : qualifiedRailReady
+            ? "SANDBOX VERIFIED / MAINNET PENDING"
+            : result?.record?.qualifiedRail?.state === "SANDBOX_TOKEN_ISSUED"
+              ? "SANDBOX TOKEN / VERIFICATION PENDING"
             : "EXTERNAL RAILS QUEUED";
 
   return (
@@ -1490,10 +1495,11 @@ function App() {
                 <div className="rail-card__body">
                   <span>ALPHA ADAPTER / TEST ONLY</span>
                   <h3>Evidency sandbox RFC 3161</h3>
-                  <p>The alpha sends only the evidence digest to Evidency sandbox and exports the returned token. The sandbox cannot provide qualified legal effect.</p>
+                  <p>The alpha sends only the evidence digest, then verifies the returned CMS signature, ESSCertIDv2 signer binding and certificate path to a release-pinned sandbox root. The sandbox cannot provide qualified legal effect.</p>
                   <ul>
                     <li><Icon name="check" size={15} /> Digest-only API request</li>
-                    <li><Icon name="check" size={15} /> Exportable timestamp response</li>
+                    <li><Icon name="check" size={15} /> Independent signature + chain gate</li>
+                    <li><Icon name="check" size={15} /> Exportable timestamp token</li>
                     <li><Icon name="alert" size={15} /> Not qualified; no legal use</li>
                   </ul>
                 </div>
@@ -1574,8 +1580,8 @@ function App() {
               />
               <div className="seal-workflow__boundary">
                 <span><Icon name="alert" size={18} /> CURRENT BOUNDARY</span>
-                <p><strong>Implemented in alpha:</strong> SHA-256, client-side AES-256-GCM, private S3 ciphertext, MySQL receipts, PostgreSQL append-only audit, Redis coordination, Evidency sandbox RFC 3161 requests, domain-separated Merkle proofs, Ethereum mainnet transactions, public lookup and dynamic PDF/bundle exports.</p>
-                <p><strong>Still not production-qualified:</strong> Evidency production contract and independent qualified-token validation, in-app camera attestation, identity, device trust, GNSS and a formal security review.</p>
+                <p><strong>Implemented in alpha:</strong> SHA-256, client-side AES-256-GCM, private S3 ciphertext, MySQL receipts, PostgreSQL append-only audit, Redis coordination, Evidency sandbox RFC 3161 requests with independent CMS signature and pinned-chain validation, domain-separated Merkle proofs, Ethereum mainnet transactions, public lookup and dynamic PDF/bundle exports.</p>
+                <p><strong>Still not production-qualified:</strong> Evidency production contract and production trust policy, certificate revocation validation, in-app camera attestation, identity, device trust, GNSS and a formal security review.</p>
               </div>
             </div>
             <InfrastructureStatus />
@@ -1691,7 +1697,7 @@ function App() {
             </div>
             <div>
               <strong>Status</strong>
-              <span>Genesis v1.4 alpha.5</span>
+              <span>Genesis v1.4 alpha.6</span>
               <span>Evidency sandbox test rail</span>
               <span>Ethereum mainnet final rail</span>
             </div>

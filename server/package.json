@@ -1,6 +1,6 @@
 {
   "name": "@sitesealed/server",
-  "version": "1.4.0-alpha.5",
+  "version": "1.4.0-alpha.6",
   "private": true,
   "type": "module",
   "main": "server.js",
@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1108.0",
+    "asn1js": "^3.0.10",
     "compression": "^1.8.1",
     "ethers": "^6.15.0",
     "express": "^5.1.0",
@@ -23,6 +24,7 @@
     "mysql2": "^3.23.3",
     "pdfkit": "^0.19.1",
     "pg": "^8.23.0",
+    "pkijs": "^3.4.0",
     "redis": "^6.2.1"
   }
 }

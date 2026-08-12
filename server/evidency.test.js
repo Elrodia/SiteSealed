@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   createEvidencyTimestampService,
@@ -6,8 +7,14 @@ import {
   resolveEvidencyConfig,
 } from "./evidency.js";
 
-const digest = "a".repeat(64);
-const token = Buffer.alloc(64, 7).toString("base64");
+const fixture = JSON.parse(
+  readFileSync(
+    new URL("./fixtures/evidency-sandbox-token-20260812.json", import.meta.url),
+    "utf8",
+  ),
+);
+const digest = fixture.evidenceDigest;
+const token = fixture.tokenBase64;
 
 test("Evidency configuration is disabled by default and strict in sandbox mode", () => {
   assert.equal(resolveEvidencyConfig({}), null);
@@ -52,15 +59,15 @@ test("the sandbox adapter sends only the evidence digest and labels the token te
             status: 0,
             hashAlgorithm: "2.16.840.1.101.3.4.2.1",
             hashedMessage: digest,
-            serialNumber: "abc123",
-            timestamp: "2026-08-12T18:00:00Z",
+            serialNumber: fixture.serialNumber,
+            timestamp: fixture.certifiedAt,
             token,
-            tsaPolicyId: "1.3.6.1.4.1.60053.2.1.1.1.1",
+            tsaPolicyId: fixture.tsaPolicyId,
           }),
           { status: 200, headers: { "content-type": "application/json" } },
         );
       },
-      now: () => Date.parse("2026-08-12T18:01:00.000Z"),
+      now: () => Date.parse("2026-08-12T19:32:00.000Z"),
     },
   );
   const proof = await service.issueTimestamp({
@@ -70,6 +77,7 @@ test("the sandbox adapter sends only the evidence digest and labels the token te
 
   assert.match(request.url, /\/v3\/projects\/project-a\/timestamp$/);
   assert.equal(request.options.headers["x-api-key"], "secret");
+  assert.equal(request.options.headers["user-agent"], "SiteSealed/1.4-alpha.6");
   assert.deepEqual(JSON.parse(request.options.body), {
     hashAlgorithm: "SHA256",
     hashedMessage: digest,
@@ -79,9 +87,15 @@ test("the sandbox adapter sends only the evidence digest and labels the token te
   assert.equal(proof.state, "SANDBOX_TOKEN_ISSUED");
   assert.equal(proof.legalUse, false);
   assert.equal(proof.qualificationStatus, "TEST_ONLY_NOT_QUALIFIED");
-  assert.equal(proof.signatureVerification, "NOT_INDEPENDENTLY_VERIFIED");
-  assert.equal(proof.certifiedAt, "2026-08-12T18:00:00.000Z");
-  assert.match(proof.tokenSha256, /^[a-f0-9]{64}$/);
+  assert.equal(proof.signatureVerification, "VALID");
+  assert.equal(
+    proof.certificateChainVerification,
+    "VALID_TO_PINNED_SANDBOX_ROOT",
+  );
+  assert.equal(proof.signingCertificateVerification, "ESSCERTIDV2_MATCH");
+  assert.equal(proof.revocationVerification, "NOT_CHECKED");
+  assert.equal(proof.certifiedAt, fixture.certifiedAt);
+  assert.equal(proof.tokenSha256, fixture.tokenSha256);
 });
 
 test("the adapter keeps compatibility with the legacy Unix-millisecond timestamp", async () => {
@@ -130,10 +144,10 @@ test("the adapter rejects a token response bound to another digest", async () =>
             status: 0,
             hashAlgorithm: "SHA256",
             hashedMessage: "b".repeat(64),
-            serialNumber: "abc123",
+            serialNumber: fixture.serialNumber,
             timestamp: Date.now(),
             token,
-            tsaPolicyId: "1.2.3",
+            tsaPolicyId: fixture.tsaPolicyId,
           }),
           { status: 200 },
         ),

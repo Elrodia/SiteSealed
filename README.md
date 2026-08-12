@@ -1,4 +1,4 @@
-# SiteSealed Genesis v1.4-alpha.5
+# SiteSealed Genesis v1.4-alpha.6
 
 Cette alpha construit les deux rails externes choisis pour le QTSP :
 
@@ -6,11 +6,13 @@ Cette alpha construit les deux rails externes choisis pour le QTSP :
 - **Ethereum mainnet (chain ID 1)** comme rail public définitif pour les racines
   Merkle horaires.
 
-L'alpha.5 relie le statut public Evidency au worker séparé sans copier ses
-secrets dans le service web. L'indicateur ne devient `ON` qu'après réception,
-contrôle du digest et stockage d'un vrai jeton sandbox. L'interface sombre
-permanente reste active sur desktop et mobile ; le reçu PDF conserve son fond
-clair afin de rester imprimable.
+L'alpha.6 vérifie le jeton Evidency indépendamment avant toute persistance :
+structure RFC 3161/CMS, attributs signés, signature cryptographique,
+`ESSCertIDv2`, profil du certificat TSU, validité à `genTime` et chemin X.509
+jusqu'à une racine Sandbox versionnée et épinglée dans la release. L'indicateur
+ne devient `ON` qu'après stockage d'un jeton ayant franchi cette barrière. La
+révocation reste explicitement `NOT_CHECKED` et le Sandbox reste sans valeur
+qualifiée eIDAS.
 
 Cette version corrige l'incompatibilité observée avec l'API Evidency du
 12 août 2026 : l'OpenAPI actuel renvoie `timestamp` sous forme de chaîne
@@ -40,7 +42,14 @@ avec un ancrage mainnet finalisé, l'état maximal de cette version est
 - evidence digest séparé par domaine, lié aux empreintes du fichier et du
   manifeste ;
 - requête digest-only vers `https://api-sandbox.evidency.io` ;
-- contrôle de la réponse Evidency : statut, algorithme et digest renvoyé ;
+- contrôle croisé des métadonnées Evidency avec le `TSTInfo` signé : digest,
+  numéro de série, `genTime` et policy OID ;
+- vérification du `messageDigest` CMS et de la signature CMS avec le certificat
+  réellement désigné par `SignerInfo` ;
+- vérification de `signingCertificateV2` / `ESSCertIDv2`, de l'EKU critique
+  exclusivement `id-kp-timeStamping`, du `keyUsage` et de la non-CA du TSU ;
+- validation du chemin TSU → Timestamp CA → racine Sandbox épinglée, à l'heure
+  certifiée ;
 - conservation et export du jeton RFC 3161 avec sa propre empreinte SHA-256 ;
 - arbre Merkle SHA-256 avec séparation de domaine entre feuilles et nœuds ;
 - preuve d'inclusion individuelle, sans divulguer les autres reçus ;
@@ -82,7 +91,7 @@ Le statut d'infrastructure Evidency est distinct du statut probatoire d'un reçu
 | `OFF` | worker désactivé ou état récent absent |
 | `DRY RUN` | sélection contrôlée, sans appel à Evidency |
 | `READY` | clés chargées, mais aucun jeton réussi n'est encore enregistré |
-| `ON` | jeton sandbox reçu, lié au digest attendu et enregistré |
+| `ON` | jeton sandbox reçu, signature CMS et chaîne épinglée validées, puis enregistré |
 | `ERROR` | dernière exécution Evidency en échec |
 
 ## Responsabilités
@@ -98,14 +107,19 @@ Le statut d'infrastructure Evidency est distinct du statut probatoire d'un reçu
 
 Le protocole privé de dépôt reste `1.2` afin de préserver les objets et kits de
 récupération existants. Le reçu et le bundle publics passent en
-`1.4-alpha.1` pour préserver la compatibilité des preuves. L'alpha.5 ne modifie
-ni le protocole cryptographique ni le schéma public ; elle rend le statut du
-worker observable sans exposer ses secrets. La migration MySQL
-`004_dual_rail_alpha` reste additive.
+`1.4-alpha.1` pour préserver la compatibilité des preuves. L'alpha.6 ne modifie
+ni le protocole de dépôt ni le schéma JSON public ; elle enrichit les champs de
+preuve compatibles. La migration MySQL additive
+`005_rfc3161_independent_verification` conserve l'état des anciens jetons sans
+les présenter rétroactivement comme vérifiés.
 
 ## Structure utile
 
-- `server/evidency.js` : client sandbox strict et validation de réponse ;
+- `server/evidency.js` : client sandbox strict et barrière avant stockage ;
+- `server/rfc3161.js` : validation DER, CMS, TSTInfo, ESSCertIDv2, certificat et
+  chemin X.509 ;
+- `server/trust/` : racine et CA Timestamp Sandbox publiques, versionnées et
+  contrôlées par empreinte DER SHA-256 ;
 - `server/merkle.js` : arbre et preuves d'inclusion déterministes ;
 - `server/ethereum.js` : transaction mainnet, plafond de frais et inspection ;
 - `server/rails-worker.js` : orchestration idempotente des deux files ;
@@ -115,6 +129,8 @@ worker observable sans exposer ses secrets. La migration MySQL
   d'inclusion Merkle et la liaison du calldata Ethereum ;
 - `scripts/verify-bundle.mjs` : vérification locale du reçu, du jeton et de la
   preuve Merkle ;
+- `scripts/verify-timestamp.mjs` : vérificateur RFC 3161 autonome avec la même
+  racine épinglée ;
 - `railway.json` : service web ;
 - `railway.rails.json` : service cron des rails externes.
 
@@ -152,9 +168,18 @@ ETHEREUM_VERIFY_RPC_URL=https://votre-rpc-mainnet.example \
   npm run verify:bundle -- ./proof-bundle.json ./original.pdf
 ```
 
-Le script ne qualifie pas la signature du jeton sandbox.
-Cette validation exige la chaîne de confiance publiée par le prestataire et un
-outil RFC 3161 indépendant.
+Pour vérifier indépendamment la signature et le chemin du jeton exporté, sans
+appel à Evidency ni accès à l'original :
+
+```bash
+npm run verify:timestamp -- \
+  --token ./SiteSealed_record_Evidency_SANDBOX.tsr \
+  --digest <evidenceDigest-du-bundle>
+```
+
+Les options `--serial`, `--time` et `--policy` permettent aussi de recouper les
+métadonnées externes. Une rotation de certificat non intégrée à la release
+échoue volontairement au lieu d'étendre silencieusement la confiance.
 
 ## Déploiement Railway
 
@@ -231,15 +256,19 @@ Déploiement prudent :
 
 1. déployer et vérifier les migrations avec les deux modes laissés à
    `disabled` ;
-2. créer un reçu de test, renseigner son identifiant dans
-   `EVIDENCY_TARGET_RECORD_ID`, définir `EVIDENCY_MODE=sandbox` et lancer le
-   worker avec `EVIDENCY_DRY_RUN=true` ; le résultat doit être `DRY_RUN`, avec
-   exactement ce reçu dans `selected`, `attempted: 0` et l'indicateur
-   `DRY RUN` ;
+2. créer un nouveau reçu de test sous l'alpha.6, renseigner son identifiant
+   dans `EVIDENCY_TARGET_RECORD_ID`, définir `EVIDENCY_MODE=sandbox` et lancer
+   le worker avec `EVIDENCY_DRY_RUN=true` ; le résultat doit être `DRY_RUN`,
+   avec exactement ce reçu dans `selected`, `attempted: 0` et l'indicateur
+   `DRY RUN`. Un jeton stocké par une alpha antérieure reste volontairement
+   marqué `NOT_INDEPENDENTLY_VERIFIED` et n'est pas réétiqueté sans nouvelle
+   vérification ;
 3. définir `EVIDENCY_DRY_RUN=false`, puis lancer une seule fois le worker.
    `EVIDENCY_MAX_REQUESTS_PER_RUN=1` empêche toute émission en masse, même si
    `EVIDENCY_BATCH_SIZE` vaut 50 ;
-4. vérifier `attempted: 1`, `issued: 1`,
+4. vérifier `attempted: 1`, `issued: 1`, `verified: 1`,
+   `signatureVerification: VALID`,
+   `certificateChainVerification: VALID_TO_PINNED_SANDBOX_ROOT`,
    `runtime.evidency.status: operational`, le reçu public, le jeton `.tsr` et
    l'indicateur `ON` ;
 5. conserver l'identifiant ciblé et le plafond à `1`. Une fois ce contrôle
@@ -262,7 +291,10 @@ silencieusement une seconde transaction.
 ## Limites restantes
 
 - Evidency sandbox : test uniquement, sans valeur qualifiée ;
-- signature du token : conservée mais pas marquée `VALID` par l'alpha ;
+- révocation CRL/OCSP : `NOT_CHECKED` ; la chaîne cryptographique valide ne
+  prouve donc pas l'absence de révocation ;
+- la racine épinglée est exclusivement la racine Sandbox et ne constitue pas
+  une politique de confiance Production/eIDAS ;
 - pas de capture in-app attestée, identité, appareil ou GNSS ;
 - pas de preuve de véracité, d'auteur ou de scène non mise en scène ;
 - pas encore d'audit de sécurité indépendant ni de procédure de gestion de clé

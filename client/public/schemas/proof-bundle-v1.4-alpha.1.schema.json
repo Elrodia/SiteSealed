@@ -68,6 +68,27 @@
             "environment": { "enum": ["SANDBOX", "PRODUCTION"] },
             "legalUse": { "type": "boolean" },
             "hashedMessage": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+            "signatureVerification": {
+              "enum": ["NOT_AVAILABLE", "NOT_INDEPENDENTLY_VERIFIED", "VALID"]
+            },
+            "certificateChainVerification": {
+              "type": ["string", "null"]
+            },
+            "signingCertificateVerification": {
+              "type": ["string", "null"]
+            },
+            "revocationVerification": {
+              "enum": ["NOT_CHECKED", "VALID", null]
+            },
+            "validatorVersion": { "type": ["string", "null"] },
+            "signerCertificateSha256": {
+              "type": ["string", "null"],
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "trustAnchorSha256": {
+              "type": ["string", "null"],
+              "pattern": "^[a-f0-9]{64}$"
+            },
             "token": {
               "type": ["object", "null"],
               "properties": {

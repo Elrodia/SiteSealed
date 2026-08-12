@@ -14,7 +14,10 @@ import {
 } from "./evidency.js";
 import { createEthereumAnchorClientFromEnv } from "./ethereum.js";
 import { buildMerkleTree } from "./merkle.js";
+import { RFC3161_VALIDATOR_VERSION } from "./rfc3161.js";
 import { createMemoryRecordStore } from "./specimen.js";
+
+const VALID_CERTIFICATE_CHAIN = "VALID_TO_PINNED_SANDBOX_ROOT";
 
 function positiveInteger(value, fallback) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -51,12 +54,18 @@ export function deriveEvidencyRuntimeStatus({
     : 0;
   const failures = Array.isArray(timestamps.failed) ? timestamps.failed : [];
   const issued = Number(timestamps.issued ?? 0);
+  const verified = Number(timestamps.verified ?? 0);
   const previouslyVerified =
     previous?.status === "operational" &&
     previous?.externalCallVerified === true &&
+    previous?.validatorVersion === RFC3161_VALIDATOR_VERSION &&
+    previous?.signatureVerification === "VALID" &&
+    previous?.certificateChainVerification === VALID_CERTIFICATE_CHAIN &&
     Boolean(previous?.lastSuccessAt);
-  const targetAlreadyIssued =
-    timestamps.targetState === "SANDBOX_TOKEN_ISSUED";
+  const targetAlreadyVerified =
+    timestamps.targetState === "SANDBOX_TOKEN_ISSUED" &&
+    timestamps.targetSignatureVerification === "VALID" &&
+    timestamps.targetCertificateChainVerification === VALID_CERTIFICATE_CHAIN;
 
   let status;
   let message;
@@ -74,13 +83,13 @@ export function deriveEvidencyRuntimeStatus({
   } else if (failures.length > 0 || timestamps.status === "FAILED") {
     status = "error";
     message = "The latest Evidency sandbox execution failed.";
-  } else if (issued > 0) {
+  } else if (issued > 0 && verified === issued) {
     status = "operational";
-    message = "A sandbox RFC 3161 token was received, digest-bound and stored.";
+    message = "A sandbox RFC 3161 token passed independent CMS signature and pinned-chain verification, then was stored.";
     lastSuccessAt = checkedAt;
-  } else if (previouslyVerified || targetAlreadyIssued) {
+  } else if (previouslyVerified || targetAlreadyVerified) {
     status = "operational";
-    message = "The worker is healthy and a sandbox token has been verified previously.";
+    message = "The worker is healthy and an independently verified sandbox token is already recorded.";
     lastSuccessAt ??= checkedAt;
   } else {
     status = "configured";
@@ -98,8 +107,16 @@ export function deriveEvidencyRuntimeStatus({
     qualificationStatus: "TEST_ONLY_NOT_QUALIFIED",
     responseValidation:
       status === "operational"
-        ? "TOKEN_RECEIVED_DIGEST_BOUND_AND_STORED"
+        ? "RFC3161_CMS_SIGNATURE_CHAIN_AND_DIGEST_VALID"
         : "NOT_YET_EXTERNALLY_VERIFIED",
+    signatureVerification:
+      status === "operational" ? "VALID" : "NOT_YET_VERIFIED",
+    certificateChainVerification:
+      status === "operational"
+        ? VALID_CERTIFICATE_CHAIN
+        : "NOT_YET_VERIFIED",
+    validatorVersion: RFC3161_VALIDATOR_VERSION,
+    revocationVerification: "NOT_CHECKED",
     dryRun: Boolean(dryRun),
     lastCheckedAt: checkedAt,
     lastSuccessAt,
@@ -128,12 +145,19 @@ export async function processTimestampQueue({
   }
   const failed = [];
   let issued = 0;
+  let verified = 0;
   try {
     let candidates;
     let targetState = null;
+    let targetSignatureVerification = null;
+    let targetCertificateChainVerification = null;
     if (targetRecordId) {
       const target = await recordStore.findById(targetRecordId);
       targetState = target?.qualifiedRail?.state ?? "NOT_FOUND";
+      targetSignatureVerification =
+        target?.qualifiedRail?.signatureVerification ?? null;
+      targetCertificateChainVerification =
+        target?.qualifiedRail?.certificateChainVerification ?? null;
       const eligible =
         target &&
         !target.specimen &&
@@ -161,6 +185,8 @@ export async function processTimestampQueue({
         failed: [],
         selected,
         targetState,
+        targetSignatureVerification,
+        targetCertificateChainVerification,
       };
     }
 
@@ -174,6 +200,16 @@ export async function processTimestampQueue({
           recordId: record.recordId,
           evidenceDigest: record.evidenceDigest,
         });
+        if (
+          proof?.validatorVersion !== RFC3161_VALIDATOR_VERSION ||
+          proof?.signatureVerification !== "VALID" ||
+          proof?.certificateChainVerification !== VALID_CERTIFICATE_CHAIN ||
+          proof?.hashedMessage !== record.evidenceDigest
+        ) {
+          throw new Error(
+            "The timestamp proof did not pass the required independent RFC 3161 verification gate.",
+          );
+        }
         const stored = await recordStore.saveQualifiedTimestamp(
           record.recordId,
           proof,
@@ -181,12 +217,17 @@ export async function processTimestampQueue({
         await auditStore.appendQualifiedTimestamp(stored.record, proof);
         await coordinator.deleteCachedRecord(record.recordId);
         issued += stored.created ? 1 : 0;
+        verified += stored.created ? 1 : 0;
         logger.info?.("SiteSealed Evidency request completed", {
           recordId: record.recordId,
           issued: stored.created,
           environment: proof.environment,
           qualificationStatus: proof.qualificationStatus,
           tokenSha256: proof.tokenSha256,
+          signatureVerification: proof.signatureVerification,
+          certificateChainVerification:
+            proof.certificateChainVerification,
+          validatorVersion: proof.validatorVersion,
         });
       } catch (error) {
         failed.push({ recordId: record.recordId, error: error.message });
@@ -196,9 +237,12 @@ export async function processTimestampQueue({
       status: failed.length > 0 ? "COMPLETED_WITH_ERRORS" : "COMPLETED",
       attempted: candidates.length,
       issued,
+      verified,
       failed,
       selected,
       targetState,
+      targetSignatureVerification,
+      targetCertificateChainVerification,
     };
   } finally {
     await release();

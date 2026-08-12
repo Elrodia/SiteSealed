@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { verifyRfc3161Token } from "./rfc3161.js";
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const ISO_8601_TIMESTAMP_PATTERN =
@@ -66,7 +66,7 @@ export function resolveEvidencyConfig(environment = process.env) {
     .toLowerCase();
   if (mode === "disabled") return null;
   if (mode !== "sandbox") {
-    throw new Error('EVIDENCY_MODE must be either "disabled" or "sandbox" in v1.4-alpha.5.');
+    throw new Error('EVIDENCY_MODE must be either "disabled" or "sandbox" in v1.4-alpha.6.');
   }
 
   const apiKey = String(environment.EVIDENCY_API_KEY ?? "").trim();
@@ -128,7 +128,11 @@ export function createDisabledTimestampService() {
 
 export function createEvidencyTimestampService(
   config,
-  { fetchImpl = globalThis.fetch, now = Date.now } = {},
+  {
+    fetchImpl = globalThis.fetch,
+    now = Date.now,
+    tokenVerifier = verifyRfc3161Token,
+  } = {},
 ) {
   if (!config || config.mode !== "sandbox") {
     throw new Error("A valid Evidency sandbox configuration is required.");
@@ -161,7 +165,7 @@ export function createEvidencyTimestampService(
               "content-type": "application/json",
               accept: "application/json",
               "x-api-key": config.apiKey,
-              "user-agent": "SiteSealed/1.4-alpha.5",
+              "user-agent": "SiteSealed/1.4-alpha.6",
             },
             body: JSON.stringify({
               hashAlgorithm: "SHA256",
@@ -221,22 +225,65 @@ export function createEvidencyTimestampService(
         throw new Error("Evidency returned an incomplete timestamp response.");
       }
 
+      let independentVerification;
+      try {
+        independentVerification = await tokenVerifier({
+          token: token.bytes,
+          expectedDigest: digest,
+          expectedSerialNumber: serialNumber,
+          expectedCertifiedAt: certifiedAt,
+          expectedPolicyId: tsaPolicyId,
+        });
+      } catch (error) {
+        const code = String(error?.code ?? "RFC3161_VERIFICATION_FAILED");
+        throw new Error(
+          `Evidency returned a token that failed independent RFC 3161 verification (${code}).`,
+        );
+      }
+
       return {
         state: "SANDBOX_TOKEN_ISSUED",
         provider: "Evidency",
         environment: "SANDBOX",
         legalUse: false,
         qualificationStatus: "TEST_ONLY_NOT_QUALIFIED",
-        hashAlgorithm: "SHA256",
-        hashedMessage: digest,
-        serialNumber,
-        certifiedAt,
+        hashAlgorithm: independentVerification.hashAlgorithm,
+        hashedMessage: independentVerification.hashedMessage,
+        serialNumber: independentVerification.serialNumber,
+        certifiedAt: independentVerification.certifiedAt,
         tokenBase64: token.encoded,
-        tokenSha256: createHash("sha256").update(token.bytes).digest("hex"),
-        tsaPolicyId,
+        tokenSha256: independentVerification.tokenSha256,
+        tsaPolicyId: independentVerification.tsaPolicyId,
         providerStatus: 0,
-        responseValidation: "STATUS_ALGORITHM_AND_DIGEST_BOUND",
-        signatureVerification: "NOT_INDEPENDENTLY_VERIFIED",
+        responseValidation: independentVerification.responseValidation,
+        signatureVerification: independentVerification.signatureVerification,
+        certificateChainVerification:
+          independentVerification.certificateChainVerification,
+        signingCertificateVerification:
+          independentVerification.signingCertificateVerification,
+        signingCertificateHashAlgorithm:
+          independentVerification.signingCertificateHashAlgorithm,
+        cmsAlgorithmProtection:
+          independentVerification.cmsAlgorithmProtection,
+        revocationVerification:
+          independentVerification.revocationVerification,
+        validatorVersion: independentVerification.validatorVersion,
+        cmsDigestAlgorithm: independentVerification.cmsDigestAlgorithm,
+        cmsSignatureAlgorithm: independentVerification.cmsSignatureAlgorithm,
+        signerCertificateSha256:
+          independentVerification.signerCertificateSha256,
+        signerCertificateSubject:
+          independentVerification.signerCertificateSubject,
+        signerCertificateIssuer:
+          independentVerification.signerCertificateIssuer,
+        signerCertificateValidFrom:
+          independentVerification.signerCertificateValidFrom,
+        signerCertificateValidTo:
+          independentVerification.signerCertificateValidTo,
+        trustAnchorSha256: independentVerification.trustAnchorSha256,
+        trustAnchorSubject: independentVerification.trustAnchorSubject,
+        certificatePathLength:
+          independentVerification.certificatePathLength,
         recordId,
       };
     },
@@ -249,7 +296,10 @@ export function createEvidencyTimestampService(
         environment: "SANDBOX",
         legalUse: false,
         endpoint: "api-sandbox.evidency.io",
-        signatureVerification: "ON_EXPORTED_TOKEN_WITH_OPENSSL",
+        signatureVerification: "REQUIRED_BEFORE_STORAGE",
+        certificateChainVerification: "PINNED_SANDBOX_ROOT_REQUIRED",
+        validatorVersion: "SITESEALED_RFC3161_VALIDATOR_V1",
+        revocationVerification: "NOT_CHECKED",
       };
     },
 

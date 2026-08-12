@@ -5,7 +5,7 @@ import {
   mapRecordRow,
   resolveDatabaseConfig,
 } from "./database.js";
-import { validateSealRequest } from "./records.js";
+import { externalProofStatus, validateSealRequest } from "./records.js";
 
 const submissionId = "123e4567-e89b-42d3-a456-426614174000";
 const storageCipherSha256 = "d".repeat(64);
@@ -102,6 +102,81 @@ test("record lookup is parameterized and uses optional proof joins", async () =>
   assert.match(capturedSql, /LEFT JOIN public_chain_proofs/);
   assert.match(capturedSql, /records\.record_id = \?/);
   assert.deepEqual(capturedParameters, ["SR-20260811-ABCDEF0123456789ABCDEF01"]);
+});
+
+test("database rows expose the independently verified RFC 3161 path", () => {
+  const record = mapRecordRow({
+    record_id: "SR-20260812-ABCDEF0123456789ABCDEF01",
+    record_sha256: "a".repeat(64),
+    manifest_sha256: "b".repeat(64),
+    manifest_encryption: "AES-256-GCM / client-held key",
+    record_class: "IMPORTED_FILE",
+    proof_level: "DUAL_RAIL_ALPHA_RECEIPT",
+    receipt_sha256: "c".repeat(64),
+    storage_provider: "S3_PRIVATE_BUCKET",
+    storage_object_key: encryptedObject().objectKey,
+    storage_cipher_sha256: storageCipherSha256,
+    storage_cipher_iv: encryptedObject().iv,
+    storage_cipher_bytes: 32,
+    storage_plaintext_bytes: 16,
+    storage_recovery_token_sha256: "e".repeat(64),
+    storage_status: "STORED_ENCRYPTED",
+    is_specimen: 0,
+    created_at: new Date("2026-08-12T19:00:00.000Z"),
+    qualified_provider: "Evidency",
+    qualified_environment: "SANDBOX",
+    qualified_legal_use: 0,
+    qualification_status: "TEST_ONLY_NOT_QUALIFIED",
+    qualified_hash_algorithm: "SHA256",
+    qualified_hashed_message: "f".repeat(64),
+    qualified_serial_number: "01",
+    certified_at: new Date("2026-08-12T19:01:00.000Z"),
+    token_der: Buffer.alloc(64, 7),
+    qualified_token_sha256: "1".repeat(64),
+    qualified_tsa_policy_id: "1.2.3",
+    qualified_provider_status: 0,
+    qualified_response_validation:
+      "RFC3161_CMS_SIGNATURE_CHAIN_AND_DIGEST_VALID",
+    qualified_signature_verification: "VALID",
+    qualified_validator_version: "SITESEALED_RFC3161_VALIDATOR_V1",
+    qualified_certificate_chain_verification:
+      "VALID_TO_PINNED_SANDBOX_ROOT",
+    qualified_signing_certificate_verification: "ESSCERTIDV2_MATCH",
+    qualified_signing_certificate_hash_algorithm: "SHA384",
+    qualified_cms_algorithm_protection: "VALID",
+    qualified_revocation_verification: "NOT_CHECKED",
+    qualified_cms_digest_algorithm: "SHA512",
+    qualified_cms_signature_algorithm: "RSA_PKCS1_SHA512",
+    qualified_signer_certificate_sha256: "2".repeat(64),
+    qualified_trust_anchor_sha256: "3".repeat(64),
+    qualified_certificate_path_length: 3,
+  });
+
+  assert.equal(record.qualifiedRail.signatureVerification, "VALID");
+  assert.equal(
+    record.qualifiedRail.certificateChainVerification,
+    "VALID_TO_PINNED_SANDBOX_ROOT",
+  );
+  assert.equal(record.qualifiedRail.revocationVerification, "NOT_CHECKED");
+  assert.equal(record.qualifiedRail.certificatePathLength, 3);
+  assert.equal(
+    externalProofStatus(record).state,
+    "SANDBOX_TIMESTAMP_ISSUED_ANCHOR_PENDING",
+  );
+});
+
+test("MySQL persistence rejects an unverified timestamp proof before writing", async () => {
+  const store = createMysqlRecordStore({
+    async getConnection() {
+      throw new Error("The database must not be contacted for an unverified proof.");
+    },
+  });
+  await assert.rejects(
+    store.saveQualifiedTimestamp("SR-20260812-ABCDEF0123456789ABCDEF01", {
+      signatureVerification: "NOT_INDEPENDENTLY_VERIFIED",
+    }),
+    (error) => error.code === "TIMESTAMP_PROOF_NOT_VERIFIED",
+  );
 });
 
 test("automatic rail selection uses validated integer LIMIT literals", async () => {

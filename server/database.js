@@ -353,6 +353,32 @@ const migrations = [
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`);
     },
   },
+  {
+    id: "005_rfc3161_independent_verification",
+    async up(connection) {
+      const verificationColumns = [
+        ["validator_version", "VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER signature_verification"],
+        ["certificate_chain_verification", "VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER validator_version"],
+        ["signing_certificate_verification", "VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER certificate_chain_verification"],
+        ["signing_certificate_hash_algorithm", "VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER signing_certificate_verification"],
+        ["cms_algorithm_protection", "VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER signing_certificate_hash_algorithm"],
+        ["revocation_verification", "VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER cms_algorithm_protection"],
+        ["cms_digest_algorithm", "VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER revocation_verification"],
+        ["cms_signature_algorithm", "VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER cms_digest_algorithm"],
+        ["signer_certificate_sha256", "CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER cms_signature_algorithm"],
+        ["trust_anchor_sha256", "CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER signer_certificate_sha256"],
+        ["certificate_path_length", "TINYINT UNSIGNED NULL AFTER trust_anchor_sha256"],
+      ];
+      for (const [name, definition] of verificationColumns) {
+        await ensureColumn(
+          connection,
+          "qualified_timestamp_proofs",
+          name,
+          definition,
+        );
+      }
+    },
+  },
 ];
 
 function databaseMode(environment) {
@@ -680,6 +706,23 @@ export function mapRecordRow(row) {
           providerStatus: row.qualified_provider_status,
           responseValidation: row.qualified_response_validation,
           signatureVerification: row.qualified_signature_verification,
+          validatorVersion: row.qualified_validator_version,
+          certificateChainVerification:
+            row.qualified_certificate_chain_verification,
+          signingCertificateVerification:
+            row.qualified_signing_certificate_verification,
+          signingCertificateHashAlgorithm:
+            row.qualified_signing_certificate_hash_algorithm,
+          cmsAlgorithmProtection:
+            row.qualified_cms_algorithm_protection,
+          revocationVerification:
+            row.qualified_revocation_verification,
+          cmsDigestAlgorithm: row.qualified_cms_digest_algorithm,
+          cmsSignatureAlgorithm: row.qualified_cms_signature_algorithm,
+          signerCertificateSha256:
+            row.qualified_signer_certificate_sha256,
+          trustAnchorSha256: row.qualified_trust_anchor_sha256,
+          certificatePathLength: row.qualified_certificate_path_length,
         })
       : null;
     const chainRail = row.transaction_hash
@@ -800,6 +843,17 @@ const recordSelect = `SELECT
   qualified.provider_status AS qualified_provider_status,
   qualified.response_validation AS qualified_response_validation,
   qualified.signature_verification AS qualified_signature_verification,
+  qualified.validator_version AS qualified_validator_version,
+  qualified.certificate_chain_verification AS qualified_certificate_chain_verification,
+  qualified.signing_certificate_verification AS qualified_signing_certificate_verification,
+  qualified.signing_certificate_hash_algorithm AS qualified_signing_certificate_hash_algorithm,
+  qualified.cms_algorithm_protection AS qualified_cms_algorithm_protection,
+  qualified.revocation_verification AS qualified_revocation_verification,
+  qualified.cms_digest_algorithm AS qualified_cms_digest_algorithm,
+  qualified.cms_signature_algorithm AS qualified_cms_signature_algorithm,
+  qualified.signer_certificate_sha256 AS qualified_signer_certificate_sha256,
+  qualified.trust_anchor_sha256 AS qualified_trust_anchor_sha256,
+  qualified.certificate_path_length AS qualified_certificate_path_length,
   qualified.verification_status AS qualified_status,
   chain_proof.batch_id AS chain_batch_id,
   chain_proof.chain_name,
@@ -1005,6 +1059,18 @@ export function createMysqlRecordStore(pool) {
     },
 
     async saveQualifiedTimestamp(recordId, proof) {
+      if (
+        proof?.validatorVersion !== "SITESEALED_RFC3161_VALIDATOR_V1" ||
+        proof?.signatureVerification !== "VALID" ||
+        proof?.certificateChainVerification !==
+          "VALID_TO_PINNED_SANDBOX_ROOT"
+      ) {
+        throw new ApiError(
+          409,
+          "TIMESTAMP_PROOF_NOT_VERIFIED",
+          "The timestamp proof did not pass independent RFC 3161 signature and certificate-chain verification.",
+        );
+      }
       const connection = await pool.getConnection();
       try {
         await connection.beginTransaction();
@@ -1052,8 +1118,14 @@ export function createMysqlRecordStore(pool) {
             qualification_status, hash_algorithm, hashed_message,
             serial_number, token_reference, certified_at,
             verification_status, token_der, token_sha256, tsa_policy_id,
-            provider_status, response_validation, signature_verification
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            provider_status, response_validation, signature_verification,
+            validator_version, certificate_chain_verification,
+            signing_certificate_verification,
+            signing_certificate_hash_algorithm, cms_algorithm_protection,
+            revocation_verification, cms_digest_algorithm,
+            cms_signature_algorithm, signer_certificate_sha256,
+            trust_anchor_sha256, certificate_path_length
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             recordId,
             proof.provider,
@@ -1065,13 +1137,24 @@ export function createMysqlRecordStore(pool) {
             proof.serialNumber,
             proof.serialNumber,
             new Date(proof.certifiedAt),
-            "SANDBOX_TOKEN_ISSUED_TEST_ONLY",
+            "SANDBOX_TOKEN_ISSUED_CRYPTOGRAPHICALLY_VERIFIED_TEST_ONLY",
             Buffer.from(proof.tokenBase64, "base64"),
             proof.tokenSha256,
             proof.tsaPolicyId,
             proof.providerStatus,
             proof.responseValidation,
             proof.signatureVerification,
+            proof.validatorVersion,
+            proof.certificateChainVerification,
+            proof.signingCertificateVerification,
+            proof.signingCertificateHashAlgorithm,
+            proof.cmsAlgorithmProtection,
+            proof.revocationVerification,
+            proof.cmsDigestAlgorithm,
+            proof.cmsSignatureAlgorithm,
+            proof.signerCertificateSha256,
+            proof.trustAnchorSha256,
+            proof.certificatePathLength,
           ],
         );
         await connection.commit();
