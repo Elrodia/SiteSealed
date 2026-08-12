@@ -1,4 +1,4 @@
-# SiteSealed Genesis v1.4-alpha.4
+# SiteSealed Genesis v1.4-alpha.5
 
 Cette alpha construit les deux rails externes choisis pour le QTSP :
 
@@ -6,7 +6,7 @@ Cette alpha construit les deux rails externes choisis pour le QTSP :
 - **Ethereum mainnet (chain ID 1)** comme rail public définitif pour les racines
   Merkle horaires.
 
-L'alpha.4 relie le statut public Evidency au worker séparé sans copier ses
+L'alpha.5 relie le statut public Evidency au worker séparé sans copier ses
 secrets dans le service web. L'indicateur ne devient `ON` qu'après réception,
 contrôle du digest et stockage d'un vrai jeton sandbox. L'interface sombre
 permanente reste active sur desktop et mobile ; le reçu PDF conserve son fond
@@ -17,6 +17,14 @@ Cette version corrige l'incompatibilité observée avec l'API Evidency du
 ISO 8601, tandis que l'ancien guide montrait un entier Unix en millisecondes.
 L'adaptateur accepte les deux formats documentés, les normalise en UTC et
 rejette les dates mal formées ou hors de la fenêtre d'émission attendue.
+
+Cette version corrige également la sélection automatique MySQL observée après
+le passage du mode ciblé au cron global. Le protocole binaire de `mysql2`
+transmettait le paramètre numérique de `LIMIT ?` comme un `DOUBLE`, refusé par
+certaines versions MySQL avec `ER_WRONG_ARGUMENTS`. Les deux limites de file
+Evidency et Ethereum sont désormais strictement validées, bornées, puis émises
+comme littéraux entiers via le protocole texte ; toutes les données de reçu et
+de preuve restent paramétrées.
 
 Le mot `sealed` reste volontairement désactivé. Un jeton Evidency sandbox n'a
 aucun effet juridique et ne devient jamais un horodatage qualifié eIDAS. Même
@@ -90,7 +98,7 @@ Le statut d'infrastructure Evidency est distinct du statut probatoire d'un reçu
 
 Le protocole privé de dépôt reste `1.2` afin de préserver les objets et kits de
 récupération existants. Le reçu et le bundle publics passent en
-`1.4-alpha.1` pour préserver la compatibilité des preuves. L'alpha.4 ne modifie
+`1.4-alpha.1` pour préserver la compatibilité des preuves. L'alpha.5 ne modifie
 ni le protocole cryptographique ni le schéma public ; elle rend le statut du
 worker observable sans exposer ses secrets. La migration MySQL
 `004_dual_rail_alpha` reste additive.

@@ -21,6 +21,13 @@ const REQUIRED_CONFIG_KEYS = [
   "MYSQLDATABASE",
 ];
 
+function boundedSqlLimit(value, { fallback, maximum }) {
+  const numeric =
+    typeof value === "number" ? value : Number(String(value ?? "").trim());
+  if (!Number.isSafeInteger(numeric) || numeric <= 0) return fallback;
+  return Math.min(numeric, maximum);
+}
+
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS sealed_records (
     record_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -973,7 +980,11 @@ export function createMysqlRecordStore(pool) {
     },
 
     async listTimestampCandidates(limit = 50) {
-      const [ids] = await pool.execute(
+      const candidateLimit = boundedSqlLimit(limit, {
+        fallback: 50,
+        maximum: 1_000,
+      });
+      const [ids] = await pool.query(
         `SELECT records.record_id
            FROM sealed_records AS records
            LEFT JOIN qualified_timestamp_proofs AS qualified
@@ -982,8 +993,7 @@ export function createMysqlRecordStore(pool) {
             AND records.record_status IN ('DEVELOPMENT_RECEIPT', 'SEALED')
             AND qualified.record_id IS NULL
           ORDER BY records.created_at ASC, records.record_id ASC
-          LIMIT ?`,
-        [Number(limit)],
+          LIMIT ${candidateLimit}`,
       );
       const records = await Promise.all(
         ids.map(async ({ record_id: recordId }) => {
@@ -1076,7 +1086,11 @@ export function createMysqlRecordStore(pool) {
     },
 
     async listAnchorCandidates(limit = 1024) {
-      const [ids] = await pool.execute(
+      const candidateLimit = boundedSqlLimit(limit, {
+        fallback: 1_024,
+        maximum: 10_000,
+      });
+      const [ids] = await pool.query(
         `SELECT records.record_id
            FROM sealed_records AS records
            JOIN qualified_timestamp_proofs AS qualified
@@ -1088,8 +1102,7 @@ export function createMysqlRecordStore(pool) {
             AND qualified.hashed_message IS NOT NULL
             AND member.record_id IS NULL
           ORDER BY records.created_at ASC, records.record_id ASC
-          LIMIT ?`,
-        [Number(limit)],
+          LIMIT ${candidateLimit}`,
       );
       const records = await Promise.all(
         ids.map(async ({ record_id: recordId }) => {

@@ -140,7 +140,7 @@ export function renderReceiptPdf(record, { baseUrl }) {
         Title: `SiteSealed dual-rail alpha receipt ${record.recordId}`,
         Author: "The SiteSealed Project",
         Subject: "Dual-rail alpha receipt - sandbox timestamp is not legally qualified",
-        Creator: "SiteSealed v1.4-alpha.4",
+        Creator: "SiteSealed v1.4-alpha.5",
       },
       compress: true,
     });
@@ -170,7 +170,7 @@ export function renderReceiptPdf(record, { baseUrl }) {
       .font("Helvetica")
       .fontSize(7.3)
       .fillColor("#B9C6CF")
-      .text(`SiteSealed v1.4-alpha.4 | ${record.recordId}`, 88, 49);
+      .text(`SiteSealed v1.4-alpha.5 | ${record.recordId}`, 88, 49);
     doc
       .roundedRect(454, 25, 118, 31, 4)
       .lineWidth(1)

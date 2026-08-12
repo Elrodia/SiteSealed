@@ -104,6 +104,35 @@ test("record lookup is parameterized and uses optional proof joins", async () =>
   assert.deepEqual(capturedParameters, ["SR-20260811-ABCDEF0123456789ABCDEF01"]);
 });
 
+test("automatic rail selection uses validated integer LIMIT literals", async () => {
+  const queries = [];
+  const pool = {
+    async query(sql, parameters) {
+      queries.push({ sql, parameters });
+      return [[], []];
+    },
+    async execute() {
+      throw new Error("Candidate selection must not use prepared LIMIT parameters.");
+    },
+  };
+  const store = createMysqlRecordStore(pool);
+
+  await store.listTimestampCandidates(50);
+  await store.listAnchorCandidates(1024);
+  await store.listTimestampCandidates("1; DROP TABLE sealed_records");
+
+  assert.equal(queries.length, 3);
+  assert.match(queries[0].sql, /LIMIT 50\s*$/);
+  assert.match(queries[1].sql, /LIMIT 1024\s*$/);
+  assert.match(queries[2].sql, /LIMIT 50\s*$/);
+  assert.equal(queries.some(({ sql }) => sql.includes("LIMIT ?")), false);
+  assert.equal(
+    queries.some(({ sql }) => sql.includes("DROP TABLE")),
+    false,
+  );
+  assert.equal(queries.every(({ parameters }) => parameters === undefined), true);
+});
+
 test("MySQL receipt creation stores digests, encrypted manifest and private S3 reference", async () => {
   const calls = [];
   const pool = {
