@@ -127,6 +127,18 @@ export function createMemoryRecordStore() {
     },
 
     async saveQualifiedTimestamp(recordId, proof) {
+      if (
+        proof?.validatorVersion !== "SITESEALED_RFC3161_VALIDATOR_V1" ||
+        proof?.signatureVerification !== "VALID" ||
+        proof?.certificateChainVerification !==
+          "VALID_TO_PINNED_SANDBOX_ROOT"
+      ) {
+        throw new ApiError(
+          409,
+          "TIMESTAMP_PROOF_NOT_VERIFIED",
+          "The timestamp proof did not pass independent RFC 3161 signature and certificate-chain verification.",
+        );
+      }
       const entry = entries.get(recordId);
       if (!entry || entry.record.specimen) {
         throw new ApiError(404, "RECORD_NOT_FOUND", "Record not found.");
@@ -156,6 +168,14 @@ export function createMemoryRecordStore() {
           (record) =>
             !record.specimen &&
             record.qualifiedRail?.state === "SANDBOX_TOKEN_ISSUED" &&
+            record.qualifiedRail.environment === "SANDBOX" &&
+            record.qualifiedRail.validatorVersion ===
+              "SITESEALED_RFC3161_VALIDATOR_V1" &&
+            record.qualifiedRail.signatureVerification === "VALID" &&
+            record.qualifiedRail.certificateChainVerification ===
+              "VALID_TO_PINNED_SANDBOX_ROOT" &&
+            record.qualifiedRail.hashedMessage === record.evidenceDigest &&
+            record.chainRail?.state === "NOT_ANCHORED" &&
             !batchByRecord.has(record.recordId),
         )
         .slice(0, limit)

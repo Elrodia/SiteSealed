@@ -1183,6 +1183,15 @@ export function createMysqlRecordStore(pool) {
           WHERE records.is_specimen = 0
             AND qualified.environment = 'SANDBOX'
             AND qualified.hashed_message IS NOT NULL
+            AND qualified.verification_status =
+              'SANDBOX_TOKEN_ISSUED_CRYPTOGRAPHICALLY_VERIFIED_TEST_ONLY'
+            AND qualified.response_validation =
+              'RFC3161_CMS_SIGNATURE_CHAIN_AND_DIGEST_VALID'
+            AND qualified.validator_version =
+              'SITESEALED_RFC3161_VALIDATOR_V1'
+            AND qualified.signature_verification = 'VALID'
+            AND qualified.certificate_chain_verification =
+              'VALID_TO_PINNED_SANDBOX_ROOT'
             AND member.record_id IS NULL
           ORDER BY records.created_at ASC, records.record_id ASC
           LIMIT ${candidateLimit}`,

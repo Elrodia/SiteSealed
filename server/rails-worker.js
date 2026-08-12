@@ -19,26 +19,62 @@ import { createMemoryRecordStore } from "./specimen.js";
 
 const VALID_CERTIFICATE_CHAIN = "VALID_TO_PINNED_SANDBOX_ROOT";
 
+function operationalErrorMessage(error) {
+  return String(error?.message ?? "External rail operation failed.").replace(
+    /\b(?:https?|wss?):\/\/[^\s'"<>]+/gi,
+    "[redacted external URL]",
+  );
+}
+
 function positiveInteger(value, fallback) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function booleanFlag(value, fallback = false) {
+function exactlyOne(value, variableName) {
+  const normalized = String(value ?? "1").trim();
+  if (normalized !== "1") {
+    throw new Error(`${variableName} must remain exactly 1 in alpha.7.`);
+  }
+  return 1;
+}
+
+function booleanFlag(value, fallback = false, variableName = "BOOLEAN_FLAG") {
   const normalized = String(value ?? "").trim().toLowerCase();
   if (!normalized) return fallback;
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
-  throw new Error("EVIDENCY_DRY_RUN must be true or false.");
+  throw new Error(`${variableName} must be true or false.`);
 }
 
-function optionalRecordId(value) {
+function optionalRecordId(value, variableName = "TARGET_RECORD_ID") {
   const recordId = String(value ?? "").trim();
   if (!recordId) return null;
   if (!/^SR-[A-Z0-9-]{8,80}$/i.test(recordId)) {
-    throw new Error("EVIDENCY_TARGET_RECORD_ID is not a valid SiteSealed record ID.");
+    throw new Error(`${variableName} is not a valid SiteSealed record ID.`);
   }
   return recordId;
+}
+
+function independentlyVerifiedTimestamp(record) {
+  const proof = record?.qualifiedRail;
+  return Boolean(
+    record &&
+      !record.specimen &&
+      proof?.state === "SANDBOX_TOKEN_ISSUED" &&
+      proof.environment === "SANDBOX" &&
+      proof.validatorVersion === RFC3161_VALIDATOR_VERSION &&
+      proof.signatureVerification === "VALID" &&
+      proof.certificateChainVerification === VALID_CERTIFICATE_CHAIN &&
+      proof.hashedMessage === record.evidenceDigest,
+  );
+}
+
+function independentlyVerifiedAnchorCandidate(record) {
+  return Boolean(
+    independentlyVerifiedTimestamp(record) &&
+      record.chainRail?.state === "NOT_ANCHORED",
+  );
 }
 
 export function deriveEvidencyRuntimeStatus({
@@ -230,7 +266,10 @@ export async function processTimestampQueue({
           validatorVersion: proof.validatorVersion,
         });
       } catch (error) {
-        failed.push({ recordId: record.recordId, error: error.message });
+        failed.push({
+          recordId: record.recordId,
+          error: operationalErrorMessage(error),
+        });
       }
     }
     return {
@@ -255,22 +294,102 @@ export async function processAnchorQueue({
   auditStore,
   coordinator,
   maxBatchSize = 1024,
+  targetRecordId = null,
+  dryRun = false,
+  maxTransactionsPerRun = 1,
+  logger = console,
 } = {}) {
   if (!ethereumRail?.configured) {
-    return { status: "SKIPPED_NOT_CONFIGURED", batchId: null, records: 0 };
+    return {
+      status: "SKIPPED_NOT_CONFIGURED",
+      batchId: null,
+      records: 0,
+      selected: [],
+      transactionsSigned: 0,
+      transactionsBroadcast: 0,
+    };
+  }
+  if (maxTransactionsPerRun !== 1) {
+    throw new Error(
+      "ETHEREUM_MAX_TRANSACTIONS_PER_RUN must remain exactly 1 in alpha.7.",
+    );
   }
   const release = await coordinator.acquireJobLock("ethereum-mainnet-anchor", {
     ttlMs: 30 * 60 * 1000,
   });
   if (!release) {
-    return { status: "SKIPPED_LOCKED", batchId: null, records: 0 };
+    return {
+      status: "SKIPPED_LOCKED",
+      batchId: null,
+      records: 0,
+      selected: [],
+      transactionsSigned: 0,
+      transactionsBroadcast: 0,
+    };
   }
   try {
     let batch = await recordStore.getActionableAnchorBatch();
+    if (batch) {
+      const memberRecords = await Promise.all(
+        batch.members.map((member) => recordStore.findById(member.recordId)),
+      );
+      if (!memberRecords.every(independentlyVerifiedTimestamp)) {
+        return {
+          status: "INELIGIBLE_ACTIONABLE_BATCH",
+          batchId: batch.batchId,
+          records: batch.leafCount,
+          selected: batch.members.map(({ recordId, evidenceDigest }) => ({
+            recordId,
+            evidenceDigest,
+          })),
+          transactionsSigned: 0,
+          transactionsBroadcast: 0,
+        };
+      }
+    }
+    if (
+      batch &&
+      targetRecordId &&
+      (batch.members.length !== 1 ||
+        batch.members[0].recordId !== targetRecordId)
+    ) {
+      return {
+        status: "TARGET_MISMATCH_ACTIONABLE_BATCH",
+        batchId: batch.batchId,
+        records: batch.leafCount,
+        selected: batch.members.map(({ recordId, evidenceDigest }) => ({
+          recordId,
+          evidenceDigest,
+        })),
+        transactionsSigned: 0,
+        transactionsBroadcast: 0,
+      };
+    }
+
+    let targetState = null;
+    let candidates = [];
     if (!batch) {
-      const candidates = await recordStore.listAnchorCandidates(maxBatchSize);
+      if (targetRecordId) {
+        const target = await recordStore.findById(targetRecordId);
+        targetState = target?.chainRail?.state ?? "NOT_FOUND";
+        candidates = independentlyVerifiedAnchorCandidate(target) ? [target] : [];
+      } else {
+        candidates = (await recordStore.listAnchorCandidates(maxBatchSize)).filter(
+          independentlyVerifiedAnchorCandidate,
+        );
+      }
       if (candidates.length === 0) {
-        return { status: "NO_ELIGIBLE_RECORDS", batchId: null, records: 0 };
+        return {
+          status: dryRun
+            ? "DRY_RUN_NO_ELIGIBLE_RECORD"
+            : "NO_ELIGIBLE_RECORDS",
+          batchId: null,
+          records: 0,
+          selected: [],
+          targetState,
+          transactionsSigned: 0,
+          transactionsBroadcast: 0,
+        };
       }
       const tree = buildMerkleTree(
         candidates.map((record) => ({
@@ -278,6 +397,30 @@ export async function processAnchorQueue({
           evidenceDigest: record.evidenceDigest,
         })),
       );
+      const selected = tree.members.map(({ recordId, evidenceDigest }) => ({
+        recordId,
+        evidenceDigest,
+      }));
+      logger.info?.("SiteSealed Ethereum selection", {
+        dryRun,
+        targeted: Boolean(targetRecordId),
+        selected,
+        merkleRoot: tree.root,
+      });
+      if (dryRun) {
+        const preview = await ethereumRail.previewAnchor({ merkleRoot: tree.root });
+        return {
+          status: "DRY_RUN",
+          batchId: null,
+          records: tree.leafCount,
+          selected,
+          targetState,
+          merkleRoot: tree.root,
+          preview,
+          transactionsSigned: 0,
+          transactionsBroadcast: 0,
+        };
+      }
       const created = await recordStore.createAnchorBatch({
         batchId: randomUUID(),
         ...tree,
@@ -285,18 +428,46 @@ export async function processAnchorQueue({
       batch = created.batch;
     }
 
+    const selected = batch.members.map(({ recordId, evidenceDigest }) => ({
+      recordId,
+      evidenceDigest,
+    }));
+    if (dryRun) {
+      const preview =
+        batch.state === "PREPARED"
+          ? await ethereumRail.previewAnchor({ merkleRoot: batch.root })
+          : null;
+      return {
+        status: "DRY_RUN_ACTIONABLE_BATCH",
+        actionableState: batch.state,
+        batchId: batch.batchId,
+        records: batch.leafCount,
+        selected,
+        targetState,
+        merkleRoot: batch.root,
+        transactionHash: batch.transactionHash ?? null,
+        preview,
+        transactionsSigned: 0,
+        transactionsBroadcast: 0,
+      };
+    }
+
+    let transactionsSigned = 0;
+    let transactionsBroadcast = 0;
     if (batch.state === "PREPARED") {
       const signed = await ethereumRail.prepareSignedAnchor({
         merkleRoot: batch.root,
       });
       batch = await recordStore.saveSignedAnchor(batch.batchId, signed);
+      transactionsSigned = 1;
     }
     if (batch.state === "SIGNED") {
-      await ethereumRail.broadcastSignedAnchor(
-        batch.signedTransaction,
-        batch.transactionHash,
-      );
+      await ethereumRail.broadcastSignedAnchor({
+        ...batch,
+        merkleRoot: batch.root,
+      });
       batch = await recordStore.markAnchorSubmitted(batch.batchId);
+      transactionsBroadcast = 1;
     }
 
     const stateBeforeInspection = batch.state;
@@ -334,12 +505,132 @@ export async function processAnchorQueue({
       status: batch.state,
       batchId: batch.batchId,
       records: batch.leafCount,
+      selected,
       transactionHash: batch.transactionHash,
       confirmations: batch.confirmations,
+      anchorAddress: batch.anchorAddress,
+      onChainBindingVerified: Boolean(inspection.onChainBindingVerified),
+      finalityVerified: Boolean(inspection.finalityVerified),
+      finalizedAt: inspection.finalizedAt ?? batch.finalizedAt ?? null,
+      transactionsSigned,
+      transactionsBroadcast,
     };
   } finally {
     await release();
   }
+}
+
+export function deriveEthereumRuntimeStatus({
+  configured = false,
+  dryRun = false,
+  anchors = {},
+  previous = null,
+  targetRecordId = null,
+  anchorAddress = null,
+  now = () => new Date(),
+} = {}) {
+  const checkedAt = now().toISOString();
+  const previousFinalized =
+    previous?.status === "finalized" &&
+    previous?.chainId === 1 &&
+    previous?.onChainBindingVerified === true &&
+    previous?.finalityVerified === true &&
+    /^0x[a-f0-9]{64}$/i.test(String(previous?.transactionHash ?? ""));
+  const failed = [
+    "FAILED_ON_CHAIN",
+    "INVALID_ON_CHAIN",
+    "INELIGIBLE_ACTIONABLE_BATCH",
+    "TARGET_MISMATCH_ACTIONABLE_BATCH",
+    "ERROR",
+  ].includes(anchors.status);
+  let status;
+  let message;
+  let lastSubmittedAt = previous?.lastSubmittedAt ?? null;
+  let lastFinalizedAt = previous?.lastFinalizedAt ?? null;
+
+  if (!configured) {
+    status = "not_configured";
+    message = "The Ethereum mainnet anchor worker is disabled.";
+  } else if (failed) {
+    status = "error";
+    message = "The latest Ethereum mainnet execution failed closed.";
+  } else if (dryRun) {
+    status =
+      anchors.status === "DRY_RUN_NO_ELIGIBLE_RECORD"
+        ? "dry_run_no_eligible_record"
+        : "dry_run_ready";
+    message =
+      status === "dry_run_ready"
+        ? "The selected anchor passed read-only RPC, gas, fee and balance checks; no transaction was signed or broadcast."
+        : "Ethereum dry-run completed without an eligible target record.";
+  } else if (anchors.status === "FINALIZED") {
+    status = "finalized";
+    message = "The Ethereum mainnet transaction binding and finalized block were independently checked.";
+    lastSubmittedAt ??= checkedAt;
+    lastFinalizedAt = anchors.finalizedAt ?? checkedAt;
+  } else if (anchors.status === "CONFIRMED") {
+    status = "confirmed";
+    message = "The Ethereum mainnet transaction is confirmed and awaiting finalized-block verification.";
+    lastSubmittedAt ??= checkedAt;
+  } else if (["SUBMITTED", "SIGNED", "PREPARED"].includes(anchors.status)) {
+    status = anchors.status === "SUBMITTED" ? "submitted" : "configured";
+    message =
+      anchors.status === "SUBMITTED"
+        ? "The exact signed transaction was submitted and is awaiting confirmations."
+        : "The Ethereum mainnet worker is configured and has not finalized an anchor yet.";
+    if (anchors.status === "SUBMITTED") lastSubmittedAt ??= checkedAt;
+  } else if (previousFinalized) {
+    status = "finalized";
+    message = "No new eligible receipt was found; the latest verified mainnet anchor remains finalized.";
+  } else {
+    status = "configured";
+    message = "Ethereum mainnet controls are loaded; no finalized anchor is recorded yet.";
+  }
+
+  const transactionHash =
+    anchors.transactionHash ??
+    (status === "finalized" ? previous?.transactionHash ?? null : null);
+  const effectiveAnchorAddress =
+    anchors.anchorAddress ?? anchorAddress ?? previous?.anchorAddress ?? null;
+  const carryingPreviousFinalizedAnchor =
+    status === "finalized" && anchors.status !== "FINALIZED";
+  return {
+    mode: configured ? "ethereum" : "disabled",
+    status,
+    network: "Ethereum mainnet",
+    chainId: 1,
+    configured: Boolean(configured),
+    writesEnabled: Boolean(configured && !dryRun),
+    dryRun: Boolean(dryRun),
+    targetRecordId,
+    anchorAddress: effectiveAnchorAddress,
+    transactionHash,
+    batchId: anchors.batchId ?? (status === "finalized" ? previous?.batchId ?? null : null),
+    records: Number(
+      carryingPreviousFinalizedAnchor
+        ? previous?.records ?? 0
+        : anchors.records ?? 0,
+    ),
+    confirmations: Number(
+      carryingPreviousFinalizedAnchor
+        ? previous?.confirmations ?? 0
+        : anchors.confirmations ?? 0,
+    ),
+    onChainBindingVerified:
+      status === "finalized"
+        ? Boolean(anchors.onChainBindingVerified ?? previous?.onChainBindingVerified)
+        : Boolean(anchors.onChainBindingVerified),
+    finalityVerified:
+      status === "finalized"
+        ? Boolean(anchors.finalityVerified ?? previous?.finalityVerified)
+        : false,
+    transactionsSigned: Number(anchors.transactionsSigned ?? 0),
+    transactionsBroadcast: Number(anchors.transactionsBroadcast ?? 0),
+    lastCheckedAt: checkedAt,
+    lastSubmittedAt,
+    lastFinalizedAt,
+    message,
+  };
 }
 
 async function publishEvidencyRuntimeStatus({
@@ -362,6 +653,34 @@ async function publishEvidencyRuntimeStatus({
   return coordinator.setRailRuntimeStatus("evidency", runtime, { ttlMs });
 }
 
+async function publishEthereumRuntimeStatus({
+  coordinator,
+  ethereumRail,
+  anchors,
+  dryRun,
+  targetRecordId,
+  ttlMs,
+}) {
+  const previous = await coordinator.getRailRuntimeStatus("ethereum");
+  const runtime = deriveEthereumRuntimeStatus({
+    configured: ethereumRail?.configured,
+    dryRun,
+    anchors,
+    previous,
+    targetRecordId,
+    anchorAddress: ethereumRail?.address ?? null,
+  });
+  runtime.expectedAnchorAddress = ethereumRail?.expectedAnchorAddress ?? null;
+  runtime.maxFeeGwei = ethereumRail?.maxFeeGwei ?? null;
+  runtime.maxTransactionFeeEth =
+    ethereumRail?.maxTransactionFeeEth ?? null;
+  runtime.gasLimit = ethereumRail?.gasLimit ?? null;
+  runtime.freshUntil = new Date(
+    new Date(runtime.lastCheckedAt).valueOf() + ttlMs,
+  ).toISOString();
+  return coordinator.setRailRuntimeStatus("ethereum", runtime, { ttlMs });
+}
+
 export async function runRailsWorker(environment = process.env) {
   let recordStore;
   let auditStore;
@@ -379,12 +698,49 @@ export async function runRailsWorker(environment = process.env) {
       (await createRedisCoordinatorFromEnv(environment)) ??
       createMemoryCoordinator();
     timestampService = createEvidencyTimestampServiceFromEnv(environment);
-    ethereumRail = createEthereumAnchorClientFromEnv(environment);
+    try {
+      ethereumRail = createEthereumAnchorClientFromEnv(environment);
+    } catch (error) {
+      const lastCheckedAt = new Date().toISOString();
+      const ttlMs =
+        Math.min(
+          positiveInteger(environment.ETHEREUM_RUNTIME_STATUS_TTL_SECONDS, 90_000),
+          7 * 24 * 60 * 60,
+        ) * 1000;
+      await coordinator
+        .setRailRuntimeStatus(
+          "ethereum",
+          {
+            mode: "ethereum",
+            status: "error",
+            network: "Ethereum mainnet",
+            chainId: 1,
+            configured: false,
+            writesEnabled: false,
+            dryRun: true,
+            onChainBindingVerified: false,
+            finalityVerified: false,
+            lastCheckedAt,
+            freshUntil: new Date(
+              new Date(lastCheckedAt).valueOf() + ttlMs,
+            ).toISOString(),
+            message: "Ethereum mainnet configuration failed closed.",
+          },
+          { ttlMs },
+        )
+        .catch(() => {});
+      throw error;
+    }
 
     const targetRecordId = optionalRecordId(
       environment.EVIDENCY_TARGET_RECORD_ID,
+      "EVIDENCY_TARGET_RECORD_ID",
     );
-    const dryRun = booleanFlag(environment.EVIDENCY_DRY_RUN, false);
+    const dryRun = booleanFlag(
+      environment.EVIDENCY_DRY_RUN,
+      false,
+      "EVIDENCY_DRY_RUN",
+    );
     const statusTtlMs =
       Math.min(
         positiveInteger(environment.EVIDENCY_RUNTIME_STATUS_TTL_SECONDS, 90_000),
@@ -417,7 +773,7 @@ export async function runRailsWorker(environment = process.env) {
         status: "FAILED",
         attempted: 0,
         issued: 0,
-        failed: [{ error: error.message }],
+        failed: [{ error: operationalErrorMessage(error) }],
         selected: [],
       };
       await publishEvidencyRuntimeStatus({
@@ -429,21 +785,79 @@ export async function runRailsWorker(environment = process.env) {
       }).catch(() => {});
       throw error;
     }
-    const anchors = await processAnchorQueue({
-      recordStore,
-      ethereumRail,
-      auditStore,
-      coordinator,
-      maxBatchSize: positiveInteger(environment.ANCHOR_MAX_BATCH_SIZE, 1024),
-    });
+    const ethereumTargetRecordId = optionalRecordId(
+      environment.ETHEREUM_TARGET_RECORD_ID,
+      "ETHEREUM_TARGET_RECORD_ID",
+    );
+    const ethereumDryRun = booleanFlag(
+      environment.ETHEREUM_DRY_RUN,
+      true,
+      "ETHEREUM_DRY_RUN",
+    );
+    const maxTransactionsPerRun = exactlyOne(
+      environment.ETHEREUM_MAX_TRANSACTIONS_PER_RUN,
+      "ETHEREUM_MAX_TRANSACTIONS_PER_RUN",
+    );
+    const ethereumStatusTtlMs =
+      Math.min(
+        positiveInteger(environment.ETHEREUM_RUNTIME_STATUS_TTL_SECONDS, 90_000),
+        7 * 24 * 60 * 60,
+      ) * 1000;
+    let anchors;
+    let ethereumRuntime;
+    try {
+      anchors = await processAnchorQueue({
+        recordStore,
+        ethereumRail,
+        auditStore,
+        coordinator,
+        maxBatchSize: Math.min(
+          positiveInteger(environment.ANCHOR_MAX_BATCH_SIZE, 1),
+          1024,
+        ),
+        targetRecordId: ethereumTargetRecordId,
+        dryRun: ethereumDryRun,
+        maxTransactionsPerRun,
+      });
+      ethereumRuntime = await publishEthereumRuntimeStatus({
+        coordinator,
+        ethereumRail,
+        anchors,
+        dryRun: ethereumDryRun,
+        targetRecordId: ethereumTargetRecordId,
+        ttlMs: ethereumStatusTtlMs,
+      });
+    } catch (error) {
+      const failedAnchors = {
+        status: "ERROR",
+        batchId: null,
+        records: 0,
+        transactionsSigned: 0,
+        transactionsBroadcast: 0,
+      };
+      await publishEthereumRuntimeStatus({
+        coordinator,
+        ethereumRail,
+        anchors: failedAnchors,
+        dryRun: ethereumDryRun,
+        targetRecordId: ethereumTargetRecordId,
+        ttlMs: ethereumStatusTtlMs,
+      }).catch(() => {});
+      throw error;
+    }
     const workerFailed =
       timestamps.failed.length > 0 ||
-      ["FAILED_ON_CHAIN", "INVALID_ON_CHAIN"].includes(anchors.status);
+      [
+        "FAILED_ON_CHAIN",
+        "INVALID_ON_CHAIN",
+        "INELIGIBLE_ACTIONABLE_BATCH",
+        "TARGET_MISMATCH_ACTIONABLE_BATCH",
+      ].includes(anchors.status);
     return {
       ok: !workerFailed,
       timestamps,
       anchors,
-      runtime: { evidency: evidencyRuntime },
+      runtime: { evidency: evidencyRuntime, ethereum: ethereumRuntime },
     };
   } finally {
     await Promise.all([
@@ -463,7 +877,9 @@ if (import.meta.url === new URL(process.argv[1], "file:").href) {
       if (!result.ok) process.exitCode = 1;
     })
     .catch((error) => {
-      console.error(`SiteSealed rail worker failed: ${error.message}`);
+      console.error(
+        `SiteSealed rail worker failed: ${operationalErrorMessage(error)}`,
+      );
       process.exitCode = 1;
     });
 }

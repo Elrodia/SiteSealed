@@ -1306,7 +1306,7 @@ function InfrastructureStatus() {
     <div className="infrastructure-status" aria-live="polite">
       <div className="infrastructure-status__heading">
         <div>
-          <span>V1.4 ALPHA / SIX RUNTIME ROLES</span>
+          <span>V1.4 ALPHA.7 / SIX RUNTIME ROLES</span>
           <strong>Private storage, internal audit and two external proof rails.</strong>
         </div>
         <small className={failed ? "is-error" : health ? "is-online" : ""}>
@@ -1316,16 +1316,24 @@ function InfrastructureStatus() {
       <div className="infrastructure-status__grid">
         {services.map((service) => {
           const status = service.data?.status;
-          const connected = ["connected", "operational"].includes(status);
+          const connected = ["connected", "operational", "finalized"].includes(status);
           const ready = [
             "configured",
             "dry_run_ready",
             "dry_run_no_eligible_record",
+            "submitted",
+            "confirmed",
           ].includes(status);
           const errored = status === "error";
           const local = service.data?.mode === "memory";
           const label = status === "operational"
             ? "ON"
+            : status === "finalized"
+              ? "FINALIZED"
+              : status === "confirmed"
+                ? "CONFIRMED"
+                : status === "submitted"
+                  ? "SUBMITTED"
             : status === "connected"
               ? "ONLINE"
               : status === "configured"
@@ -1697,7 +1705,7 @@ function App() {
             </div>
             <div>
               <strong>Status</strong>
-              <span>Genesis v1.4 alpha.6</span>
+              <span>Genesis v1.4 alpha.7 MVP</span>
               <span>Evidency sandbox test rail</span>
               <span>Ethereum mainnet final rail</span>
             </div>

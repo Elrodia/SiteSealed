@@ -95,13 +95,13 @@ after(async () => {
   });
 });
 
-test("health endpoint reports the honest v1.4-alpha.6 capability boundary", async () => {
+test("health endpoint reports the honest v1.4-alpha.7 capability boundary", async () => {
   const response = await fetch(`${baseUrl}/api/health`);
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.ok, true);
   assert.equal(payload.service, "sitesealed");
-  assert.equal(payload.version, "1.4.0-alpha.6");
+  assert.equal(payload.version, "1.4.0-alpha.7");
   assert.equal(payload.sealing.clientEncryptedObjectStorage, true);
   assert.equal(
     payload.sealing.operationalAudit,
@@ -240,6 +240,81 @@ test("health endpoint refuses a stale pre-alpha.6 operational claim", async () =
     assert.equal(payload.qualifiedTimestamp.status, "configured");
     assert.equal(payload.qualifiedTimestamp.externalCallVerified, false);
     assert.equal(payload.sealing.qualifiedTimestamp, "EVIDENCY_SANDBOX_READY_TEST_ONLY");
+  } finally {
+    await new Promise((resolve, reject) =>
+      statusServer.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("health exposes Ethereum FINALIZED only with binding and finality evidence", async () => {
+  const coordinator = createMemoryCoordinator();
+  await coordinator.setRailRuntimeStatus("ethereum", {
+    mode: "ethereum",
+    status: "finalized",
+    network: "Ethereum mainnet",
+    chainId: 1,
+    configured: true,
+    writesEnabled: true,
+    dryRun: false,
+    anchorAddress: `0x${"1".repeat(40)}`,
+    transactionHash: `0x${"2".repeat(64)}`,
+    onChainBindingVerified: true,
+    finalityVerified: true,
+    lastCheckedAt: "2026-08-12T21:00:00.000Z",
+    lastFinalizedAt: "2026-08-12T20:59:00.000Z",
+  });
+  const statusApp = createApp({
+    recordStore: createMemoryRecordStore(),
+    coordinator,
+    sealRateLimit: 100,
+  });
+  const statusServer = await new Promise((resolve) => {
+    const instance = statusApp.listen(0, "127.0.0.1", () => resolve(instance));
+  });
+  try {
+    const address = statusServer.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/health`);
+    const payload = await response.json();
+    assert.equal(payload.publicChainAnchor.status, "finalized");
+    assert.equal(payload.publicChainAnchor.finalityVerified, true);
+    assert.equal(payload.sealing.publicChainAnchor, "ETHEREUM_MAINNET_FINALIZED");
+  } finally {
+    await new Promise((resolve, reject) =>
+      statusServer.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("health downgrades an unsupported Ethereum finalized claim", async () => {
+  const coordinator = createMemoryCoordinator();
+  await coordinator.setRailRuntimeStatus("ethereum", {
+    mode: "ethereum",
+    status: "finalized",
+    network: "Ethereum mainnet",
+    chainId: 1,
+    configured: true,
+    anchorAddress: `0x${"3".repeat(40)}`,
+    transactionHash: `0x${"4".repeat(64)}`,
+    onChainBindingVerified: true,
+    finalityVerified: false,
+    lastFinalizedAt: "2026-08-12T20:59:00.000Z",
+  });
+  const statusApp = createApp({
+    recordStore: createMemoryRecordStore(),
+    coordinator,
+    sealRateLimit: 100,
+  });
+  const statusServer = await new Promise((resolve) => {
+    const instance = statusApp.listen(0, "127.0.0.1", () => resolve(instance));
+  });
+  try {
+    const address = statusServer.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/health`);
+    const payload = await response.json();
+    assert.equal(payload.publicChainAnchor.status, "configured");
+    assert.equal(payload.publicChainAnchor.finalityVerified, false);
+    assert.equal(payload.sealing.publicChainAnchor, "ETHEREUM_MAINNET_READY");
   } finally {
     await new Promise((resolve, reject) =>
       statusServer.close((error) => (error ? reject(error) : resolve())),

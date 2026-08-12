@@ -3,9 +3,10 @@ import { test } from "node:test";
 import { createMemoryAuditStore } from "./audit.js";
 import { createMemoryCoordinator } from "./coordination.js";
 import { createDisabledEthereumRail } from "./ethereum.js";
-import { verifyMerkleProof } from "./merkle.js";
+import { buildMerkleTree, verifyMerkleProof } from "./merkle.js";
 import {
   deriveEvidencyRuntimeStatus,
+  deriveEthereumRuntimeStatus,
   processAnchorQueue,
   processTimestampQueue,
 } from "./rails-worker.js";
@@ -227,6 +228,185 @@ test("the anchor worker skips safely until mainnet credentials are configured", 
   assert.equal(result.records, 0);
 });
 
+test("Ethereum dry-run targets one independently verified record without mutation", async () => {
+  const recordStore = createMemoryRecordStore();
+  const auditStore = createMemoryAuditStore();
+  const coordinator = createMemoryCoordinator();
+  const created = await recordStore.create(input());
+  await processTimestampQueue({
+    recordStore,
+    auditStore,
+    coordinator,
+    timestampService: {
+      configured: true,
+      async issueTimestamp({ evidenceDigest }) {
+        return verifiedTimestampProof(evidenceDigest);
+      },
+    },
+  });
+  let previews = 0;
+  const result = await processAnchorQueue({
+    recordStore,
+    auditStore,
+    coordinator,
+    targetRecordId: created.record.recordId,
+    dryRun: true,
+    maxBatchSize: 1,
+    logger: { info() {} },
+    ethereumRail: {
+      configured: true,
+      async previewAnchor({ merkleRoot }) {
+        previews += 1;
+        return {
+          merkleRoot,
+          estimatedGas: "22000",
+          maximumAuthorizedFeeWei: "60000000000000",
+        };
+      },
+      async prepareSignedAnchor() {
+        throw new Error("dry-run must never sign");
+      },
+      async broadcastSignedAnchor() {
+        throw new Error("dry-run must never broadcast");
+      },
+    },
+  });
+  assert.equal(result.status, "DRY_RUN");
+  assert.equal(result.records, 1);
+  assert.equal(result.selected[0].recordId, created.record.recordId);
+  assert.equal(result.transactionsSigned, 0);
+  assert.equal(result.transactionsBroadcast, 0);
+  assert.equal(previews, 1);
+  assert.equal(await recordStore.getActionableAnchorBatch(), null);
+  assert.equal(
+    (await recordStore.findById(created.record.recordId)).chainRail.state,
+    "NOT_ANCHORED",
+  );
+});
+
+test("Ethereum targeted mode rejects an unverified receipt and more than one transaction", async () => {
+  const recordStore = createMemoryRecordStore();
+  const created = await recordStore.create(input());
+  const common = {
+    recordStore,
+    auditStore: createMemoryAuditStore(),
+    coordinator: createMemoryCoordinator(),
+    ethereumRail: { configured: true },
+    targetRecordId: created.record.recordId,
+  };
+  const rejected = await processAnchorQueue({ ...common, dryRun: true });
+  assert.equal(rejected.status, "DRY_RUN_NO_ELIGIBLE_RECORD");
+  await assert.rejects(
+    processAnchorQueue({ ...common, maxTransactionsPerRun: 2 }),
+    /must remain exactly 1/,
+  );
+});
+
+test("an actionable legacy batch cannot bypass the independent RFC 3161 gate", async () => {
+  const recordStore = createMemoryRecordStore();
+  const created = await recordStore.create(input());
+  const tree = buildMerkleTree([
+    {
+      recordId: created.record.recordId,
+      evidenceDigest: created.record.evidenceDigest,
+    },
+  ]);
+  await recordStore.createAnchorBatch({ batchId: "legacy-batch", ...tree });
+  let signed = 0;
+  const result = await processAnchorQueue({
+    recordStore,
+    auditStore: createMemoryAuditStore(),
+    coordinator: createMemoryCoordinator(),
+    ethereumRail: {
+      configured: true,
+      async prepareSignedAnchor() {
+        signed += 1;
+      },
+    },
+  });
+  assert.equal(result.status, "INELIGIBLE_ACTIONABLE_BATCH");
+  assert.equal(signed, 0);
+});
+
+test("targeted mode refuses an actionable batch containing any extra record", async () => {
+  const recordStore = createMemoryRecordStore();
+  const first = await recordStore.create(input());
+  const secondInput = input();
+  secondInput.submissionId = "323e4567-e89b-42d3-a456-426614174000";
+  secondInput.recordSha256 = "2".repeat(64);
+  const second = await recordStore.create(secondInput);
+  for (const created of [first, second]) {
+    await recordStore.saveQualifiedTimestamp(
+      created.record.recordId,
+      verifiedTimestampProof(created.record.evidenceDigest),
+    );
+  }
+  const tree = buildMerkleTree(
+    [first, second].map(({ record }) => ({
+      recordId: record.recordId,
+      evidenceDigest: record.evidenceDigest,
+    })),
+  );
+  await recordStore.createAnchorBatch({ batchId: "two-record-batch", ...tree });
+  let signed = 0;
+  const result = await processAnchorQueue({
+    recordStore,
+    auditStore: createMemoryAuditStore(),
+    coordinator: createMemoryCoordinator(),
+    targetRecordId: first.record.recordId,
+    ethereumRail: {
+      configured: true,
+      async prepareSignedAnchor() {
+        signed += 1;
+      },
+    },
+  });
+  assert.equal(result.status, "TARGET_MISMATCH_ACTIONABLE_BATCH");
+  assert.equal(signed, 0);
+});
+
+test("Ethereum runtime distinguishes dry-run, submitted and cryptographically finalized", () => {
+  const now = () => new Date("2026-08-12T21:00:00.000Z");
+  const dryRun = deriveEthereumRuntimeStatus({
+    configured: true,
+    dryRun: true,
+    anchors: { status: "DRY_RUN", records: 1 },
+    now,
+  });
+  assert.equal(dryRun.status, "dry_run_ready");
+  assert.equal(dryRun.writesEnabled, false);
+  assert.equal(dryRun.finalityVerified, false);
+
+  const submitted = deriveEthereumRuntimeStatus({
+    configured: true,
+    anchors: {
+      status: "SUBMITTED",
+      transactionHash: `0x${"1".repeat(64)}`,
+      records: 1,
+      transactionsBroadcast: 1,
+    },
+    now,
+  });
+  assert.equal(submitted.status, "submitted");
+  assert.equal(submitted.finalityVerified, false);
+
+  const finalized = deriveEthereumRuntimeStatus({
+    configured: true,
+    anchors: {
+      status: "FINALIZED",
+      transactionHash: `0x${"2".repeat(64)}`,
+      anchorAddress: `0x${"3".repeat(40)}`,
+      onChainBindingVerified: true,
+      finalityVerified: true,
+      finalizedAt: "2026-08-12T20:59:00.000Z",
+    },
+    now,
+  });
+  assert.equal(finalized.status, "finalized");
+  assert.equal(finalized.onChainBindingVerified, true);
+  assert.equal(finalized.finalityVerified, true);
+});
+
 test("the worker completes an auditable sandbox-plus-mainnet alpha lifecycle", async () => {
   const recordStore = createMemoryRecordStore();
   const auditStore = createMemoryAuditStore();
@@ -279,6 +459,8 @@ test("the worker completes an auditable sandbox-plus-mainnet alpha lifecycle", a
           blockHash: `0x${"3".repeat(64)}`,
           anchoredAt: "2026-08-12T18:01:00.000Z",
           finalizedAt: "2026-08-12T18:15:00.000Z",
+          onChainBindingVerified: true,
+          finalityVerified: true,
           verificationStatus: "TRANSACTION_INPUT_AND_SENDER_MATCH",
         };
       },

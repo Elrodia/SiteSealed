@@ -199,6 +199,12 @@ test("automatic rail selection uses validated integer LIMIT literals", async () 
   assert.equal(queries.length, 3);
   assert.match(queries[0].sql, /LIMIT 50\s*$/);
   assert.match(queries[1].sql, /LIMIT 1024\s*$/);
+  assert.match(queries[1].sql, /SITESEALED_RFC3161_VALIDATOR_V1/);
+  assert.match(queries[1].sql, /signature_verification = 'VALID'/);
+  assert.match(
+    queries[1].sql,
+    /certificate_chain_verification =\s*'VALID_TO_PINNED_SANDBOX_ROOT'/,
+  );
   assert.match(queries[2].sql, /LIMIT 50\s*$/);
   assert.equal(queries.some(({ sql }) => sql.includes("LIMIT ?")), false);
   assert.equal(

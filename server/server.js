@@ -244,7 +244,57 @@ export function createApp({
         certificateChainVerification: "NOT_YET_VERIFIED",
         validatorVersion: RFC3161_VALIDATOR_VERSION,
         message:
-          "A fresh alpha.6 worker result is required before Evidency can be shown as operational.",
+          "A fresh alpha.7 worker result is required before Evidency can be shown as operational.",
+      };
+    }
+    return shared;
+  };
+
+  const ethereumHealth = async () => {
+    const local = await ethereumRail.healthCheck();
+    const shared = await coordinator.getRailRuntimeStatus?.("ethereum");
+    if (!shared) return local;
+    const allowedStatuses = new Set([
+      "not_configured",
+      "error",
+      "dry_run_ready",
+      "dry_run_no_eligible_record",
+      "configured",
+      "submitted",
+      "confirmed",
+      "finalized",
+    ]);
+    const validTransactionClaim =
+      shared.mode === "ethereum" &&
+      shared.network === "Ethereum mainnet" &&
+      shared.chainId === 1 &&
+      /^0x[a-f0-9]{40}$/i.test(String(shared.anchorAddress ?? "")) &&
+      String(shared.anchorAddress).toLowerCase() ===
+        String(shared.expectedAnchorAddress ?? shared.anchorAddress).toLowerCase() &&
+      /^0x[a-f0-9]{64}$/i.test(String(shared.transactionHash ?? ""));
+    const validFinalizedClaim =
+      shared.status !== "finalized" ||
+      (validTransactionClaim &&
+        shared.onChainBindingVerified === true &&
+        shared.finalityVerified === true &&
+        Boolean(shared.lastFinalizedAt));
+    const validPendingClaim =
+      !["submitted", "confirmed"].includes(shared.status) ||
+      (validTransactionClaim &&
+        (shared.status !== "confirmed" ||
+          shared.onChainBindingVerified === true));
+    if (
+      !allowedStatuses.has(shared.status) ||
+      !validFinalizedClaim ||
+      !validPendingClaim
+    ) {
+      return {
+        ...shared,
+        status: "configured",
+        onChainBindingVerified: false,
+        finalityVerified: false,
+        message:
+          "A fresh alpha.7 worker result with a verified transaction binding and finalized block is required.",
       };
     }
     return shared;
@@ -326,12 +376,12 @@ export function createApp({
       auditStore.healthCheck(),
       coordinator.healthCheck(),
       timestampHealth(),
-      ethereumRail.healthCheck(),
+      ethereumHealth(),
     ]);
     response.status(200).json({
       ok: true,
       service: "sitesealed",
-      version: "1.4.0-alpha.6",
+      version: "1.4.0-alpha.7",
       sealing: {
         workflow: "IMPORTED_FILE_CLIENT_ENCRYPTED_STORAGE_RECEIPT",
         clientEncryptedObjectStorage: true,
@@ -348,9 +398,17 @@ export function createApp({
               ? "EVIDENCY_SANDBOX_READY_TEST_ONLY"
               : false,
         publicChainAnchor:
-          publicChainAnchor.mode === "ethereum"
-            ? "ETHEREUM_MAINNET_ENABLED"
-            : false,
+          publicChainAnchor.status === "finalized"
+            ? "ETHEREUM_MAINNET_FINALIZED"
+            : ["submitted", "confirmed"].includes(publicChainAnchor.status)
+              ? "ETHEREUM_MAINNET_PENDING_FINALITY"
+              : [
+                    "configured",
+                    "dry_run_ready",
+                    "dry_run_no_eligible_record",
+                  ].includes(publicChainAnchor.status)
+                ? "ETHEREUM_MAINNET_READY"
+                : false,
         finalSealedStatusEnabled: false,
       },
       database,
@@ -788,7 +846,7 @@ export async function startServer() {
   });
   const server = app.listen(port, host, () => {
     console.log(
-      `SiteSealed v1.4-alpha.6 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
+      `SiteSealed v1.4-alpha.7 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
     );
   });
 

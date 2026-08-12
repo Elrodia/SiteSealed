@@ -1,12 +1,30 @@
-# SiteSealed Genesis v1.4-alpha.6
+# SiteSealed Genesis v1.4-alpha.7 — MVP
 
-Cette alpha construit les deux rails externes choisis pour le QTSP :
+Cette version clôt le MVP technique avec les deux rails externes retenus :
 
 - **Evidency sandbox** pour demander et exporter un jeton RFC 3161 de test ;
 - **Ethereum mainnet (chain ID 1)** comme rail public définitif pour les racines
   Merkle horaires.
 
-L'alpha.6 vérifie le jeton Evidency indépendamment avant toute persistance :
+L'alpha.7 conserve la vérification RFC 3161 indépendante introduite en alpha.6
+et ajoute la barrière de mise en service Ethereum Mainnet :
+
+- sélection d'un reçu exact avec `ETHEREUM_TARGET_RECORD_ID` ;
+- éligibilité limitée aux jetons Sandbox ayant réellement passé le validateur
+  `SITESEALED_RFC3161_VALIDATOR_V1` ;
+- dry-run sans création de lot, sans signature et sans diffusion ;
+- correspondance obligatoire entre la clé et
+  `ETHEREUM_EXPECTED_ANCHOR_ADDRESS` ;
+- contrôle du chain ID, du gas estimé, du solde, du plafond en gwei et du
+  plafond absolu en ETH ;
+- redécodage local de la transaction signée et comparaison de tous les champs
+  autorisés avant sa persistance ;
+- une seule transaction au maximum par exécution, sans remplacement ni hausse
+  automatique de frais ;
+- statut partagé `DRY RUN`, `READY`, `SUBMITTED`, `CONFIRMED`, `FINALIZED` ou
+  `ERROR`, sans présenter une simple configuration comme une finalisation.
+
+Le jeton Evidency est vérifié avant toute persistance :
 structure RFC 3161/CMS, attributs signés, signature cryptographique,
 `ESSCertIDv2`, profil du certificat TSU, validité à `genTime` et chemin X.509
 jusqu'à une racine Sandbox versionnée et épinglée dans la release. L'indicateur
@@ -14,13 +32,13 @@ ne devient `ON` qu'après stockage d'un jeton ayant franchi cette barrière. La
 révocation reste explicitement `NOT_CHECKED` et le Sandbox reste sans valeur
 qualifiée eIDAS.
 
-Cette version corrige l'incompatibilité observée avec l'API Evidency du
+La lignée alpha corrige également l'incompatibilité observée avec l'API Evidency du
 12 août 2026 : l'OpenAPI actuel renvoie `timestamp` sous forme de chaîne
 ISO 8601, tandis que l'ancien guide montrait un entier Unix en millisecondes.
 L'adaptateur accepte les deux formats documentés, les normalise en UTC et
 rejette les dates mal formées ou hors de la fenêtre d'émission attendue.
 
-Cette version corrige également la sélection automatique MySQL observée après
+Elle corrige aussi la sélection automatique MySQL observée après
 le passage du mode ciblé au cron global. Le protocole binaire de `mysql2`
 transmettait le paramètre numérique de `LIMIT ?` comme un `DOUBLE`, refusé par
 certaines versions MySQL avec `ER_WRONG_ARGUMENTS`. Les deux limites de file
@@ -55,8 +73,12 @@ avec un ancrage mainnet finalisé, l'état maximal de cette version est
 - preuve d'inclusion individuelle, sans divulguer les autres reçus ;
 - transaction EIP-1559 auto-adressée dont le calldata contient le préfixe
   `SSLD` version 1 puis la racine Merkle ;
-- signature locale, persistance de la transaction signée avant diffusion,
-  plafond de frais et vérification du réseau 1 ;
+- simulation Mainnet strictement sans écriture, ciblage exact et filtre
+  d'éligibilité RFC 3161 indépendant ;
+- vérification de l'adresse attendue, du réseau 1, du gas estimé, du solde et
+  de deux plafonds de frais (`5 gwei` et `0.00015 ETH` par défaut) ;
+- signature locale, redécodage et comparaison de la transaction, puis
+  persistance avant diffusion ;
 - suivi `SUBMITTED`, `CONFIRMED`, puis `FINALIZED`, avec contrôle du sender, du
   destinataire et du calldata ;
 - bundle JSON v1.4 alpha, jeton `.tsr`, reçu PDF, lien Etherscan et vérificateur
@@ -64,6 +86,8 @@ avec un ancrage mainnet finalisé, l'état maximal de cette version est
 - worker Railway idempotent et verrouillé par Redis.
 - état de fonctionnement Evidency partagé par Redis, avec expiration automatique
   si le worker ne publie plus de contrôle récent ;
+- état Ethereum partagé séparément, avec preuve explicite de la liaison on-chain
+  et de la finalité avant l'affichage `FINALIZED` ;
 - rafraîchissement automatique de l'indicateur web toutes les 30 secondes.
 
 Le serveur ne reçoit jamais l'original lisible, le manifeste lisible ou la clé
@@ -94,6 +118,18 @@ Le statut d'infrastructure Evidency est distinct du statut probatoire d'un reçu
 | `ON` | jeton sandbox reçu, signature CMS et chaîne épinglée validées, puis enregistré |
 | `ERROR` | dernière exécution Evidency en échec |
 
+Le statut Ethereum suit une machine distincte :
+
+| Indicateur | Signification |
+| --- | --- |
+| `OFF` | worker Mainnet désactivé ou état récent absent |
+| `DRY RUN` | sélection et contrôles RPC/coût réussis, zéro signature et zéro diffusion |
+| `READY` | configuration chargée, aucune finalisation prouvée |
+| `SUBMITTED` | transaction exacte diffusée, finalité en attente |
+| `CONFIRMED` | confirmations atteintes, bloc finalisé encore non prouvé |
+| `FINALIZED` | sender, destinataire, calldata, receipt et bloc finalisé vérifiés |
+| `ERROR` | exécution arrêtée sans élargir les frais ni signer une autre transaction |
+
 ## Responsabilités
 
 | Composant | Rôle | Autoritaire | Original lisible |
@@ -107,7 +143,7 @@ Le statut d'infrastructure Evidency est distinct du statut probatoire d'un reçu
 
 Le protocole privé de dépôt reste `1.2` afin de préserver les objets et kits de
 récupération existants. Le reçu et le bundle publics passent en
-`1.4-alpha.1` pour préserver la compatibilité des preuves. L'alpha.6 ne modifie
+`1.4-alpha.1` pour préserver la compatibilité des preuves. L'alpha.7 ne modifie
 ni le protocole de dépôt ni le schéma JSON public ; elle enrichit les champs de
 preuve compatibles. La migration MySQL additive
 `005_rfc3161_independent_verification` conserve l'état des anciens jetons sans
@@ -121,7 +157,8 @@ les présenter rétroactivement comme vérifiés.
 - `server/trust/` : racine et CA Timestamp Sandbox publiques, versionnées et
   contrôlées par empreinte DER SHA-256 ;
 - `server/merkle.js` : arbre et preuves d'inclusion déterministes ;
-- `server/ethereum.js` : transaction mainnet, plafond de frais et inspection ;
+- `server/ethereum.js` : dry-run, plafonds, signature locale vérifiée,
+  transaction mainnet et inspection de finalité ;
 - `server/rails-worker.js` : orchestration idempotente des deux files ;
 - `server/database.js` : migration et persistance des artefacts ;
 - `client/public/schemas/` : schéma JSON du bundle exporté ;
@@ -209,7 +246,8 @@ S3_SECRET_KEY=${{"Bucket S3".SECRET_ACCESS_KEY}}
 
 Les secrets des rails ne doivent pas être placés dans le service web. Le worker
 publie dans Redis un état sanitaire limité et sans secret ; l'API le lit pour
-afficher `OFF`, `DRY RUN`, `READY`, `ON` ou `ERROR`.
+afficher l'état réel de chaque rail. Evidency peut atteindre `ON`; Ethereum ne
+peut atteindre `FINALIZED` qu'après contrôle on-chain et finalité.
 
 ### 2. Service cron `SiteSealed Rails`
 
@@ -233,18 +271,24 @@ EVIDENCY_API_KEY=<secret Railway>
 EVIDENCY_PROJECT_KEY=<clé du projet sandbox>
 EVIDENCY_TIMEOUT_MS=12000
 EVIDENCY_BATCH_SIZE=50
-EVIDENCY_TARGET_RECORD_ID=<identifiant exact du reçu test>
-EVIDENCY_DRY_RUN=true
+EVIDENCY_TARGET_RECORD_ID=
+EVIDENCY_DRY_RUN=false
 EVIDENCY_MAX_REQUESTS_PER_RUN=1
 EVIDENCY_RUNTIME_STATUS_TTL_SECONDS=90000
 
-ETHEREUM_ANCHOR_MODE=disabled
+ETHEREUM_ANCHOR_MODE=mainnet
 ETHEREUM_RPC_URL=<endpoint HTTPS/WSS mainnet>
 ETHEREUM_ANCHOR_PRIVATE_KEY=<secret Railway>
+ETHEREUM_EXPECTED_ANCHOR_ADDRESS=<adresse publique 0x du portefeuille dédié>
+ETHEREUM_DRY_RUN=true
+ETHEREUM_TARGET_RECORD_ID=<identifiant exact du reçu alpha.7>
+ETHEREUM_MAX_TRANSACTIONS_PER_RUN=1
 ETHEREUM_CONFIRMATIONS=12
-ETHEREUM_MAX_FEE_GWEI=60
+ETHEREUM_MAX_FEE_GWEI=5
+ETHEREUM_MAX_TX_FEE_ETH=0.00015
 ETHEREUM_GAS_LIMIT=30000
-ANCHOR_MAX_BATCH_SIZE=1024
+ANCHOR_MAX_BATCH_SIZE=1
+ETHEREUM_RUNTIME_STATUS_TTL_SECONDS=90000
 ```
 
 `ETHEREUM_ANCHOR_PRIVATE_KEY` doit appartenir à un portefeuille dédié, peu
@@ -252,41 +296,42 @@ approvisionné et sans autre usage. Le cron dépense de vrais ETH. Ne colle jama
 la clé privée dans Git, un ticket, un log ou une conversation ; ajoute-la
 directement comme secret Railway.
 
-Déploiement prudent :
+Mise en service contrôlée :
 
-1. déployer et vérifier les migrations avec les deux modes laissés à
-   `disabled` ;
-2. créer un nouveau reçu de test sous l'alpha.6, renseigner son identifiant
-   dans `EVIDENCY_TARGET_RECORD_ID`, définir `EVIDENCY_MODE=sandbox` et lancer
-   le worker avec `EVIDENCY_DRY_RUN=true` ; le résultat doit être `DRY_RUN`,
-   avec exactement ce reçu dans `selected`, `attempted: 0` et l'indicateur
-   `DRY RUN`. Un jeton stocké par une alpha antérieure reste volontairement
-   marqué `NOT_INDEPENDENTLY_VERIFIED` et n'est pas réétiqueté sans nouvelle
-   vérification ;
-3. définir `EVIDENCY_DRY_RUN=false`, puis lancer une seule fois le worker.
-   `EVIDENCY_MAX_REQUESTS_PER_RUN=1` empêche toute émission en masse, même si
-   `EVIDENCY_BATCH_SIZE` vaut 50 ;
-4. vérifier `attempted: 1`, `issued: 1`, `verified: 1`,
-   `signatureVerification: VALID`,
-   `certificateChainVerification: VALID_TO_PINNED_SANDBOX_ROOT`,
-   `runtime.evidency.status: operational`, le reçu public, le jeton `.tsr` et
-   l'indicateur `ON` ;
-5. conserver l'identifiant ciblé et le plafond à `1`. Une fois ce contrôle
-   réussi, le cron horaire peut être activé avec Ethereum toujours désactivé :
-   le reçu déjà horodaté n'est pas éligible à une seconde émission et le worker
-   rafraîchit son état de fonctionnement ;
-6. approvisionner le portefeuille dédié, vérifier son adresse et le RPC
-   mainnet ;
-7. activer `ETHEREUM_ANCHOR_MODE=mainnet`, lancer un premier petit lot sous
-   surveillance, puis seulement activer le cron horaire.
+1. déployer l'alpha.7 avec `ETHEREUM_ANCHOR_MODE=disabled`, puis vérifier le
+   build, les migrations et le fonctionnement Evidency existant ;
+2. créer un portefeuille Ethereum dédié et sans autre actif. Conserver sa clé
+   uniquement comme secret du worker et copier son adresse publique dans
+   `ETHEREUM_EXPECTED_ANCHOR_ADDRESS` ;
+3. approvisionner ce portefeuille du strict montant choisi pour les tests et
+   vérifier l'adresse par une seconde source avant tout transfert ;
+4. créer un reçu alpha.7, attendre son jeton Evidency Sandbox, puis vérifier que
+   `validatorVersion`, `signatureVerification` et
+   `certificateChainVerification` ont les valeurs exigées ;
+5. renseigner l'identifiant exact dans `ETHEREUM_TARGET_RECORD_ID`, garder
+   `ANCHOR_MAX_BATCH_SIZE=1`, activer `ETHEREUM_ANCHOR_MODE=mainnet` et laisser
+   `ETHEREUM_DRY_RUN=true` ;
+6. lancer le worker manuellement. Le résultat attendu est `DRY_RUN`, exactement
+   un élément dans `selected`, `transactionsSigned: 0` et
+   `transactionsBroadcast: 0`. Contrôler l'adresse, la racine, le gas estimé,
+   le solde et `maximumAuthorizedFeeEth` ;
+7. définir seulement `ETHEREUM_DRY_RUN=false`, puis relancer une fois. Noter le
+   `transactionHash`; le résultat normal est `SUBMITTED` tant que le bloc n'est
+   pas finalisé ;
+8. relancer le même worker pour le suivi. Il réinspecte le même hash et ne crée
+   ni transaction de remplacement ni hausse automatique de frais. Attendre
+   `runtime.ethereum.status: finalized`, avec
+   `onChainBindingVerified: true` et `finalityVerified: true` ;
+9. vérifier le reçu, le bundle, le calldata et la finalité avec un RPC
+   indépendant via `npm run verify:bundle` ;
+10. après cette validation seulement, retirer `ETHEREUM_TARGET_RECORD_ID`,
+    passer `ANCHOR_MAX_BATCH_SIZE=1024` et activer le cron horaire. Conserver
+    `ETHEREUM_MAX_TRANSACTIONS_PER_RUN=1` et les deux plafonds de coût.
 
-Ne retire `EVIDENCY_TARGET_RECORD_ID` et n'augmente
-`EVIDENCY_MAX_REQUESTS_PER_RUN` qu'après validation explicite du premier jeton.
-
-Une erreur Evidency, une transaction invalide ou un dépassement du plafond de
-frais fait échouer le run sans transformer le reçu en preuve complète. Les lots
-signés restent en base afin qu'un run ultérieur reprenne sans signer
-silencieusement une seconde transaction.
+Toute incohérence d'adresse, réseau, signature, preuve RFC 3161, gas, frais,
+solde ou liaison on-chain fait échouer le run. Une transaction déjà signée
+reste persistée et sera reprise à l'identique ; l'alpha.7 ne la remplace jamais
+silencieusement.
 
 ## Limites restantes
 
