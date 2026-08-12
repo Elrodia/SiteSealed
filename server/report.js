@@ -1,5 +1,4 @@
 import PDFDocument from "pdfkit";
-import { scopeForRecord } from "./records.js";
 
 const COLORS = {
   navy: "#0B2942",
@@ -87,16 +86,61 @@ function proofCard(doc, { x, y, width, title, state, description, color }) {
     });
 }
 
+function qualifiedProofCopy(record) {
+  const rail = record.qualifiedRail ?? {};
+  if (rail.state === "SANDBOX_TOKEN_ISSUED") {
+    return {
+      state: "SANDBOX TOKEN",
+      description: `Evidency RFC 3161 test token ${rail.serialNumber ?? "issued"}. Test-only; no qualified eIDAS legal effect.`,
+    };
+  }
+  return {
+    state: "NOT ISSUED",
+    description:
+      "No Evidency RFC 3161 token is attached. The server receipt time has no eIDAS presumption.",
+  };
+}
+
+function chainProofCopy(record) {
+  const rail = record.chainRail ?? {};
+  if (rail.state === "INVALID_ON_CHAIN" || rail.state === "FAILED_ON_CHAIN") {
+    return {
+      state: "REJECTED",
+      description:
+        rail.state === "INVALID_ON_CHAIN"
+          ? "The Ethereum transaction did not match the expected sender or Merkle-root calldata."
+          : "The Ethereum transaction failed on-chain and is not a valid anchor.",
+    };
+  }
+  if (rail.state === "FINALIZED") {
+    return {
+      state: "FINALIZED",
+      description: `Ethereum mainnet block ${rail.block ?? "recorded"}; Merkle inclusion path attached and finalized.`,
+    };
+  }
+  if (rail.state === "CONFIRMED" || rail.state === "SUBMITTED") {
+    return {
+      state: rail.state,
+      description: `Ethereum mainnet transaction ${rail.anchor?.slice(0, 18) ?? "submitted"}...; finality pending.`,
+    };
+  }
+  return {
+    state: "NOT ANCHORED",
+    description:
+      "No Ethereum mainnet Merkle transaction is attached to this alpha receipt.",
+  };
+}
+
 export function renderReceiptPdf(record, { baseUrl }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
       size: "LETTER",
       margins: { top: 0, right: 0, bottom: 0, left: 0 },
       info: {
-        Title: `SiteSealed development seal receipt ${record.recordId}`,
+        Title: `SiteSealed dual-rail alpha receipt ${record.recordId}`,
         Author: "The SiteSealed Project",
-        Subject: "Development integrity receipt - not a certified Evidence Report",
-        Creator: "SiteSealed v1.3",
+        Subject: "Dual-rail alpha receipt - sandbox timestamp is not legally qualified",
+        Creator: "SiteSealed v1.4-alpha.1",
       },
       compress: true,
     });
@@ -121,12 +165,12 @@ export function renderReceiptPdf(record, { baseUrl }) {
       .font("Helvetica-Bold")
       .fontSize(15)
       .fillColor(COLORS.white)
-      .text("DEVELOPMENT SEAL RECEIPT", 88, 24, { characterSpacing: 1.8 });
+      .text("DUAL-RAIL ALPHA RECEIPT", 88, 24, { characterSpacing: 1.8 });
     doc
       .font("Helvetica")
       .fontSize(7.3)
       .fillColor("#B9C6CF")
-      .text(`SiteSealed v1.3 | ${record.recordId}`, 88, 49);
+      .text(`SiteSealed v1.4-alpha.1 | ${record.recordId}`, 88, 49);
     doc
       .roundedRect(454, 25, 118, 31, 4)
       .lineWidth(1)
@@ -136,7 +180,7 @@ export function renderReceiptPdf(record, { baseUrl }) {
       .font("Helvetica-Bold")
       .fontSize(6.8)
       .fillColor(COLORS.amber)
-      .text("INTEGRITY RECEIPT", 454, 37, {
+      .text("ALPHA / NOT SEALED", 454, 37, {
         width: 118,
         align: "center",
         characterSpacing: 0.8,
@@ -180,6 +224,15 @@ export function renderReceiptPdf(record, { baseUrl }) {
       532,
       { mono: true, lineGap: 1 },
     );
+    labelValue(
+      doc,
+      "Evidence digest",
+      digestLines(record.evidenceDigest),
+      40,
+      382,
+      532,
+      { mono: true, lineGap: 1 },
+    );
     doc
       .font("Helvetica")
       .fontSize(7.5)
@@ -187,69 +240,78 @@ export function renderReceiptPdf(record, { baseUrl }) {
       .text(
         "The plaintext original never left the browser. Its ciphertext and the manifest were encrypted with AES-256-GCM under a client-held key; only ciphertext was stored privately.",
         130,
-        391,
+        416,
         { width: 442, lineGap: 1.5 },
       );
 
-    sectionTitle(doc, "3", "EXTERNAL PROOF STATUS", 421);
+    sectionTitle(doc, "3", "EXTERNAL PROOF STATUS", 445);
+    const qualified = qualifiedProofCopy(record);
+    const chain = chainProofCopy(record);
     proofCard(doc, {
       x: 40,
-      y: 446,
+      y: 470,
       width: 257,
-      title: "RAIL A - QUALIFIED TIMESTAMP",
-      state: "NOT ISSUED",
-      description:
-        "No qualified RFC 3161 token. The server receipt time has no eIDAS presumption.",
+      title: "RAIL A - RFC 3161 TIME",
+      state: qualified.state,
+      description: qualified.description,
       color: COLORS.green,
     });
     proofCard(doc, {
       x: 315,
-      y: 446,
+      y: 470,
       width: 257,
       title: "RAIL B - PUBLIC CHAIN",
-      state: "NOT ANCHORED",
-      description:
-        "No Merkle inclusion path or public-chain transaction exists for this v1.3 receipt.",
-      color: COLORS.amber,
+      state: chain.state,
+      description: chain.description,
+      color: chain.state === "REJECTED" ? COLORS.red : COLORS.amber,
     });
 
-    sectionTitle(doc, "4", "HONEST SCOPE", 543);
-    const scope = scopeForRecord(record);
+    sectionTitle(doc, "4", "HONEST SCOPE", 567);
     doc
-      .roundedRect(40, 566, 532, 116, 5)
+      .roundedRect(40, 590, 532, 96, 5)
       .fillAndStroke(COLORS.paper, COLORS.line);
     doc
       .font("Helvetica-Bold")
       .fontSize(7.6)
       .fillColor(COLORS.ink)
-      .text("WHAT THIS RECEIPT CAN SHOW", 53, 578, { characterSpacing: 0.5 });
+      .text("WHAT THIS RECEIPT CAN SHOW", 53, 602, { characterSpacing: 0.5 });
     doc
       .font("Helvetica")
       .fontSize(7.1)
       .fillColor(COLORS.ink)
-      .text(scope.proves, 53, 594, { width: 506, lineGap: 1.2 });
+      .text(
+        "A locally recalculated matching SHA-256 shows byte identity with this receipt. The cards above list only the external artefacts actually attached; absence remains explicit.",
+        53,
+        618,
+        { width: 506, lineGap: 1.1 },
+      );
     doc
       .font("Helvetica-Bold")
       .fontSize(7.6)
       .fillColor(COLORS.red)
-      .text("WHAT IT DOES NOT PROVE", 53, 628, { characterSpacing: 0.5 });
+      .text("NON-NEGOTIABLE LIMIT", 53, 651, { characterSpacing: 0.5 });
     doc
       .font("Helvetica")
       .fontSize(6.8)
       .fillColor(COLORS.ink)
-      .text(scope.doesNotProve, 53, 644, { width: 506, lineGap: 1.1 });
+      .text(
+        "Evidency sandbox tokens are test-only and cannot support a QUALIFIED or SEALED status. Imported files also carry no live-capture, identity, location or truthfulness attestation.",
+        53,
+        666,
+        { width: 506, lineGap: 1.0 },
+      );
 
     const verificationUrl = `${String(baseUrl).replace(/\/$/, "")}/verify/${encodeURIComponent(record.recordId)}`;
     doc
       .font("Helvetica-Bold")
       .fontSize(7.4)
       .fillColor(COLORS.navy)
-      .text("VERIFY LOCALLY - NO FILE UPLOAD", 40, 699, { characterSpacing: 0.7 });
+      .text("VERIFY LOCALLY - NO FILE UPLOAD", 40, 704, { characterSpacing: 0.7 });
     doc
       .font("Courier")
       .fontSize(7.2)
       .fillColor(COLORS.navy)
-      .text(verificationUrl, 40, 716, { width: 532, link: verificationUrl });
+      .text(verificationUrl, 40, 721, { width: 532, link: verificationUrl });
     doc
       .font("Helvetica")
       .fontSize(6.9)
@@ -257,7 +319,7 @@ export function renderReceiptPdf(record, { baseUrl }) {
       .text(
         "Select the independently held original in the verifier. Its SHA-256 is recalculated in the browser and is not uploaded.",
         40,
-        735,
+        740,
         { width: 532 },
       );
 
@@ -266,11 +328,11 @@ export function renderReceiptPdf(record, { baseUrl }) {
       .font("Helvetica")
       .fontSize(6.2)
       .fillColor("#B9C6CF")
-      .text("SITESEALED - Every record sealed the moment it is made.", 40, 771);
+      .text("SITESEALED - Every alpha receipt declares its proof state.", 40, 771);
     doc
       .font("Helvetica-Bold")
       .fillColor(COLORS.amber)
-      .text("NOT A CERTIFIED EVIDENCE REPORT", 360, 771, {
+      .text("ALPHA - NOT A CERTIFIED EVIDENCE REPORT", 330, 771, {
         width: 212,
         align: "right",
         characterSpacing: 0.5,

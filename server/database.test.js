@@ -133,12 +133,12 @@ test("MySQL receipt creation stores digests, encrypted manifest and private S3 r
 
   const result = await createMysqlRecordStore(pool).create(input);
   assert.equal(result.created, true);
-  assert.equal(result.record.proofLevel, "DEVELOPMENT_RECEIPT");
+  assert.equal(result.record.proofLevel, "DUAL_RAIL_ALPHA_RECEIPT");
   const insert = calls.find((call) => call.sql.startsWith("INSERT INTO sealed_records"));
   assert.ok(insert);
   assert.equal(insert.parameters.includes(input.recordSha256), true);
   assert.equal(insert.parameters.some((value) => Buffer.isBuffer(value)), true);
-  assert.equal(insert.parameters.some((value) => value === "DEVELOPMENT_RECEIPT"), true);
+  assert.equal(insert.parameters.some((value) => value === "DUAL_RAIL_ALPHA_RECEIPT"), true);
   assert.equal(insert.parameters.includes(encryptedObject().objectKey), true);
   assert.equal(insert.parameters.includes(storageCipherSha256), true);
   assert.equal(insert.parameters.includes("STORED_ENCRYPTED"), true);

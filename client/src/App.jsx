@@ -11,6 +11,7 @@ import {
   formatBytes,
   MAX_FILE_BYTES,
   sha256File,
+  verifyPublicProofArtifacts,
 } from "./sealing.js";
 
 const SPECIMEN_ID = "SR-2026-08-0147-A3";
@@ -32,9 +33,9 @@ const pipeline = [
   },
   {
     number: "03",
-    title: "Qualify",
-    detail: "A qualified trust service provider returns an RFC 3161 timestamp token.",
-    meta: "eIDAS",
+    title: "Timestamp",
+    detail: "The alpha requests an RFC 3161 test token from Evidency sandbox; production qualification remains a separate gate.",
+    meta: "Sandbox",
     icon: "certificate",
   },
   {
@@ -240,7 +241,7 @@ function Icon({ name, size = 20 }) {
 function Brand({ compact = false }) {
   return (
     <a className={`brand${compact ? " brand--compact" : ""}`} href="#top" aria-label="SiteSealed home">
-      <img src="/icon-192.svg" alt="" width="42" height="42" />
+      <img src="/icon-192.svg?v=20260812" alt="" width="42" height="42" />
       <span className="brand__name">SITESEALED</span>
     </a>
   );
@@ -277,12 +278,12 @@ function Header({ onSeal, onVerify }) {
         <Brand />
         <nav className={`nav${menuOpen ? " nav--open" : ""}`} aria-label="Primary navigation">
           <a href="#method" onClick={close}>How it works</a>
-          <a href="#seal" onClick={close}>Seal a file</a>
+          <a href="#seal" onClick={close}>Create a receipt</a>
           <a href="#proof" onClick={close}>Dual rail</a>
           <a href="#principles" onClick={close}>Principles</a>
           <a href="/documents/SiteSealed_Whitepaper_v1.0_Genesis.pdf" onClick={close}>Whitepaper</a>
           <button className="button button--small button--amber nav__cta" type="button" onClick={seal}>
-            Create a seal <Icon name="arrow" size={16} />
+            Create an alpha receipt <Icon name="arrow" size={16} />
           </button>
           <button className="nav__verify" type="button" onClick={verify}>Verify</button>
         </nav>
@@ -304,7 +305,7 @@ function HeroSeal() {
   return (
     <div className="hero-seal" aria-label="Illustration of a SiteSealed record carrying two independent proofs">
       <div className="hero-seal__topbar">
-        <span><i /> LIVE CAPTURE</span>
+        <span><i /> TARGET CAPTURE</span>
         <span>SR-2026-08-0147-A3</span>
       </div>
 
@@ -322,7 +323,7 @@ function HeroSeal() {
       <div className="manifest-strip">
         <span>SHA-256</span>
         <code>9f86d081884c...f00a08</code>
-        <b>SEALED</b>
+        <b>SPECIMEN</b>
       </div>
 
       <div className="proof-rails-mini">
@@ -340,7 +341,7 @@ function HeroSeal() {
 
       <div className="seal-status">
         <span className="seal-status__mark"><Icon name="check" size={18} /></span>
-        <span><small>PROOF BUNDLE</small><strong>Independently checkable</strong></span>
+        <span><small>TARGET PROOF BUNDLE</small><strong>Independently checkable</strong></span>
         <span className="seal-status__pulse" />
       </div>
     </div>
@@ -441,7 +442,7 @@ function SealingWorkbench({ onVerify }) {
     }
     if (file.size > MAX_FILE_BYTES) {
       setStatus("error");
-      setMessage("This v1.3 workflow accepts files up to 25 MB.");
+      setMessage("This v1.4 alpha workflow accepts files up to 25 MB.");
       return;
     }
     if (!acknowledged) {
@@ -595,10 +596,10 @@ function SealingWorkbench({ onVerify }) {
       <div className="sealing-workbench__header">
         <span className="sealing-workbench__icon"><Icon name="shield" size={25} /></span>
         <div>
-          <span>REAL V1.3 WORKFLOW</span>
-          <strong>Create a development seal</strong>
+          <span>V1.4 ALPHA WORKFLOW</span>
+          <strong>Create an imported-file alpha receipt</strong>
         </div>
-        <span className="development-pill">EXTERNAL PROOFS PENDING</span>
+        <span className="development-pill">DUAL RAIL ASYNC</span>
       </div>
 
       <div className="privacy-rail" aria-label="Privacy guarantees">
@@ -662,8 +663,8 @@ function SealingWorkbench({ onVerify }) {
             onChange={(event) => setAcknowledged(event.target.checked)}
           />
           <span>
-            <strong>I understand this is an imported-file receipt.</strong>
-            It is not a live in-app capture, device attestation, qualified eIDAS timestamp or blockchain anchor.
+            <strong>I understand this is an imported-file alpha receipt.</strong>
+            It is not a live capture or qualified eIDAS timestamp. Any Evidency sandbox token is test-only; Ethereum anchoring happens asynchronously.
           </span>
         </label>
 
@@ -676,7 +677,7 @@ function SealingWorkbench({ onVerify }) {
             {progressLabel || "Hash, encrypt and record"}
             {!progressLabel && <Icon name="arrow" size={17} />}
           </button>
-          <p>Anonymous v1.3 limit: 20 receipts per IP and hour, coordinated through Redis.</p>
+          <p>Anonymous v1.4 alpha limit: 20 receipts per IP and hour, coordinated through Redis.</p>
         </div>
       </form>
 
@@ -700,7 +701,7 @@ function SealingWorkbench({ onVerify }) {
             <div className="seal-success__title">
               <span><Icon name="check" size={22} /></span>
               <div>
-                <small>DEVELOPMENT INTEGRITY RECEIPT CREATED</small>
+                <small>V1.4 ALPHA RECEIPT CREATED / EXTERNAL RAILS QUEUED</small>
                 <h3>{result.record.recordId}</h3>
               </div>
               <em>{result.storage?.persistent ? "S3 + MySQL + PostgreSQL persisted" : "Memory only - not persistent"}</em>
@@ -708,7 +709,7 @@ function SealingWorkbench({ onVerify }) {
             <div className="seal-success__facts">
               <div><span>FILE SHA-256</span><code>{result.record.sha256}</code></div>
               <div><span>SERVER RECEIPT TIME</span><strong>{new Date(result.record.receivedAt).toLocaleString()}</strong></div>
-              <div><span>PRIVATE STORAGE</span><strong>Client-encrypted original - external rails pending</strong></div>
+              <div><span>PRIVATE STORAGE</span><strong>Client-encrypted original - proof artefacts attach asynchronously</strong></div>
             </div>
             <div className="seal-success__warning">
               <Icon name="key" size={19} />
@@ -937,8 +938,12 @@ function VerifierV12({ requestedRecord }) {
         };
       }
 
+      const clientProofCheck = payload.specimen
+        ? { state: "SIMULATED_NOT_CHECKED" }
+        : await verifyPublicProofArtifacts(payload.record);
+
       setRecordId(normalized);
-      setResult(payload);
+      setResult({ ...payload, clientProofCheck });
       setFileCheck(nextFileCheck);
       setStatus("success");
       window.history.replaceState({}, "", `/verify/${encodeURIComponent(normalized)}`);
@@ -983,11 +988,40 @@ function VerifierV12({ requestedRecord }) {
 
   const resultTitle = result?.specimen
     ? "SPECIMEN RECORD FOUND"
-    : fileCheck.state === "MATCH"
-      ? "LOCAL FILE MATCH VERIFIED"
-      : fileCheck.state === "MISMATCH"
-        ? "LOCAL FILE DOES NOT MATCH"
-        : "DEVELOPMENT RECEIPT FOUND";
+    : result?.clientProofCheck?.state === "FAIL"
+      ? "PUBLIC PROOF FAILED LOCAL CHECK"
+      : fileCheck.state === "MATCH"
+        ? "LOCAL FILE MATCH VERIFIED"
+        : fileCheck.state === "MISMATCH"
+          ? "LOCAL FILE DOES NOT MATCH"
+          : "V1.4 ALPHA RECEIPT FOUND";
+
+  const qualifiedRailReady = Boolean(
+    result?.specimen ||
+      ["SANDBOX_TOKEN_ISSUED", "TOKEN_ISSUED"].includes(
+        result?.record?.qualifiedRail?.state,
+      ),
+  );
+  const chainRailReady = Boolean(
+    result?.specimen ||
+      ["SUBMITTED", "CONFIRMED", "FINALIZED"].includes(
+        result?.record?.chainRail?.state,
+      ),
+  );
+  const chainRailFailed = ["FAILED_ON_CHAIN", "INVALID_ON_CHAIN"].includes(
+    result?.record?.chainRail?.state,
+  );
+  const externalStateLabel = result?.specimen
+    ? "SIMULATED"
+    : chainRailFailed
+      ? "MAINNET ANCHOR REJECTED"
+      : result?.alphaComplete
+        ? "ALPHA DUAL RAIL COMPLETE"
+        : result?.record?.chainRail?.state === "FINALIZED"
+          ? "MAINNET FINALIZED / QTSP PENDING"
+          : result?.record?.qualifiedRail?.state === "SANDBOX_TOKEN_ISSUED"
+            ? "SANDBOX TOKEN / MAINNET PENDING"
+            : "EXTERNAL RAILS QUEUED";
 
   return (
     <div className="verifier-shell verifier-shell--v12">
@@ -997,7 +1031,7 @@ function VerifierV12({ requestedRecord }) {
           <span>PUBLIC VERIFICATION PORTAL</span>
           <strong>Receipt and local-file checker</strong>
         </div>
-        <span className="live-pill">V1.3 LIVE</span>
+        <span className="live-pill">V1.4 ALPHA</span>
       </div>
 
       <form className="verify-form" onSubmit={verify} noValidate>
@@ -1062,14 +1096,14 @@ function VerifierV12({ requestedRecord }) {
         )}
 
         {status === "success" && result && (
-          <div className={`verified-result${fileCheck.state === "MISMATCH" ? " verified-result--mismatch" : ""}`}>
+          <div className={`verified-result${fileCheck.state === "MISMATCH" || result.clientProofCheck?.state === "FAIL" ? " verified-result--mismatch" : ""}`}>
             <div className="verified-result__title">
-              <span><Icon name={fileCheck.state === "MISMATCH" ? "alert" : "check"} size={22} /></span>
+              <span><Icon name={fileCheck.state === "MISMATCH" || result.clientProofCheck?.state === "FAIL" ? "alert" : "check"} size={22} /></span>
               <div>
                 <small>{resultTitle}</small>
                 <h3>{result.record.recordId}</h3>
               </div>
-              <em>{result.specimen ? "SIMULATED" : "External proofs pending"}</em>
+              <em>{externalStateLabel}</em>
             </div>
 
             {!result.specimen && (
@@ -1090,21 +1124,39 @@ function VerifierV12({ requestedRecord }) {
                     {fileCheck.state === "MATCH"
                       ? "The selected file recalculates to the recorded SHA-256 digest."
                       : fileCheck.state === "MISMATCH"
-                        ? "The selected file is not the same byte sequence as the sealed digest."
+                        ? "The selected file is not the same byte sequence as the recorded digest."
                         : "Select the independently held original above and run verification again."}
                   </p>
                 </div>
               </div>
             )}
 
+            {!result.specimen && (
+              <div className={`local-match local-match--${result.clientProofCheck?.state === "FAIL" ? "mismatch" : result.clientProofCheck?.state === "PASS" ? "match" : "not_checked"}`}>
+                <Icon name={result.clientProofCheck?.state === "FAIL" ? "alert" : "tree"} size={20} />
+                <div>
+                  <strong>
+                    {result.clientProofCheck?.state === "PASS"
+                      ? "Receipt proof artefacts recalculated in this browser"
+                      : result.clientProofCheck?.state === "FAIL"
+                        ? "Public proof bundle failed local recalculation"
+                        : "Receipt digest valid; public anchor not attached yet"}
+                  </strong>
+                  <p>
+                    Evidence digest: {result.clientProofCheck?.evidenceDigest} · Merkle inclusion: {result.clientProofCheck?.merkleInclusion} · Ethereum calldata: {result.clientProofCheck?.transactionBinding}
+                  </p>
+                </div>
+              </div>
+            )}
+
             <div className="verified-result__rails">
-              <article className={`verified-rail verified-rail--green${result.specimen ? "" : " verified-rail--pending"}`}>
-                <span>RAIL A / QUALIFIED TIME</span>
+              <article className={`verified-rail verified-rail--green${qualifiedRailReady ? "" : " verified-rail--pending"}`}>
+                <span>RAIL A / RFC 3161 TIME</span>
                 <strong>{result.record.qualifiedRail.provider}</strong>
                 <p>{result.record.qualifiedRail.status}</p>
               </article>
-              <article className={`verified-rail verified-rail--amber${result.specimen ? "" : " verified-rail--pending"}`}>
-                <span>RAIL B / PUBLIC ANCHOR</span>
+              <article className={`verified-rail verified-rail--amber${chainRailFailed ? " verified-rail--failed" : chainRailReady ? "" : " verified-rail--pending"}`}>
+                <span>RAIL B / ETHEREUM MAINNET</span>
                 <strong>{result.record.chainRail.chain}</strong>
                 <p>{result.record.chainRail.block ? `Block ${result.record.chainRail.block} - ` : ""}{result.record.chainRail.status}</p>
               </article>
@@ -1131,7 +1183,7 @@ function VerifierV12({ requestedRecord }) {
                 ) : (
                   <strong>
                     {result.operationalAudit?.state === "NOT_RECORDED_LEGACY"
-                      ? "Legacy receipt - no v1.3 audit event"
+                      ? "Legacy receipt - no append-only audit event"
                       : "Operational audit temporarily unavailable"}
                   </strong>
                 )}
@@ -1147,6 +1199,20 @@ function VerifierV12({ requestedRecord }) {
                 <a href={`/api/records/${encodeURIComponent(result.record.recordId)}/bundle`}>
                   Public proof bundle <Icon name="download" size={15} />
                 </a>
+                {result.record.qualifiedRail?.token && (
+                  <a href={`/api/records/${encodeURIComponent(result.record.recordId)}/timestamp.tsr`}>
+                    RFC 3161 token <Icon name="download" size={15} />
+                  </a>
+                )}
+                {result.record.chainRail?.anchor && (
+                  <a
+                    href={`https://etherscan.io/tx/${encodeURIComponent(result.record.chainRail.anchor)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Ethereum transaction <Icon name="external" size={15} />
+                  </a>
+                )}
               </div>
             )}
 
@@ -1202,23 +1268,40 @@ function InfrastructureStatus() {
       role: "Distributed guard + cache",
       data: health?.coordination,
     },
+    {
+      name: "Evidency",
+      role: "Sandbox RFC 3161 adapter",
+      data: health?.qualifiedTimestamp,
+    },
+    {
+      name: "Ethereum",
+      role: "Mainnet Merkle anchor",
+      data: health?.publicChainAnchor,
+    },
   ];
 
   return (
     <div className="infrastructure-status" aria-live="polite">
       <div className="infrastructure-status__heading">
         <div>
-          <span>V1.3 APPLICATION PLANE</span>
-          <strong>Four services, four non-overlapping roles.</strong>
+          <span>V1.4 ALPHA / SIX RUNTIME ROLES</span>
+          <strong>Private storage, internal audit and two external proof rails.</strong>
         </div>
         <small className={failed ? "is-error" : health ? "is-online" : ""}>
-          {failed ? "STATUS UNAVAILABLE" : health ? "CONNECTED" : "CHECKING"}
+          {failed ? "STATUS UNAVAILABLE" : health ? "API ONLINE" : "CHECKING"}
         </small>
       </div>
       <div className="infrastructure-status__grid">
         {services.map((service) => {
-          const connected = service.data?.status === "connected";
+          const connected = ["connected", "configured"].includes(service.data?.status);
           const local = service.data?.mode === "memory";
+          const label = connected
+            ? service.data?.status === "configured" ? "TEST READY" : "ONLINE"
+            : local
+              ? "LOCAL"
+              : service.data?.status === "not_configured"
+                ? "OFF"
+                : "...";
           return (
             <div className="infrastructure-node" key={service.name}>
               <i className={connected ? "is-online" : local ? "is-local" : ""} />
@@ -1226,14 +1309,14 @@ function InfrastructureStatus() {
                 <strong>{service.name}</strong>
                 <span>{service.role}</span>
               </div>
-              <small>{connected ? "ONLINE" : local ? "LOCAL" : "..."}</small>
+              <small>{label}</small>
             </div>
           );
         })}
       </div>
       <p>
-        PostgreSQL and Redis strengthen the application layer only. They are not
-        the qualified eIDAS timestamp or the public-chain anchor.
+        Evidency sandbox is test-only and never qualified. Ethereum writes are opt-in,
+        use real ETH and run in the separate hourly Railway worker.
       </p>
     </div>
   );
@@ -1263,14 +1346,14 @@ function App() {
           <div className="hero__mesh" aria-hidden="true" />
           <div className="container hero__inner">
             <div className="hero__copy">
-              <div className="phase-tag"><span>V1.3 LIVE</span> DEVELOPMENT INTEGRITY RECEIPT</div>
+              <div className="phase-tag"><span>V1.4 ALPHA</span> EVIDENCY SANDBOX + ETHEREUM MAINNET</div>
               <h1>Construction records that can <em>verify themselves.</em></h1>
               <p className="hero__lede">
-                Create a real SHA-256 integrity receipt and a private encrypted backup without ever uploading the readable original. Qualified time and public-chain anchoring remain visibly pending until the external rails exist.
+                Create a real SHA-256 integrity receipt and client-encrypted backup, then queue an Evidency sandbox RFC 3161 test token and an hourly Merkle anchor on Ethereum mainnet. Sandbox time has no legal effect, so final “sealed” status stays disabled.
               </p>
               <div className="hero__actions">
                 <button className="button button--amber" type="button" onClick={scrollToSeal}>
-                  Seal a file <Icon name="arrow" size={18} />
+                  Create an alpha receipt <Icon name="arrow" size={18} />
                 </button>
                 <button className="button button--ghost" type="button" onClick={() => scrollToVerifier()}>
                   Verify a record <Icon name="shield" size={17} />
@@ -1281,13 +1364,13 @@ function App() {
               </div>
               <div className="hero__trustline">
                 <span><Icon name="lock" size={16} /> Client-side encrypted original</span>
-                <span><Icon name="shield" size={16} /> S3 + MySQL + PostgreSQL + Redis</span>
+                <span><Icon name="shield" size={16} /> Exportable RFC 3161 + Merkle artefacts</span>
               </div>
             </div>
             <HeroSeal />
           </div>
           <div className="container hero__foot">
-            <p>Every record sealed the moment it&apos;s made.</p>
+            <p>Every alpha receipt states exactly which proofs exist.</p>
             <span>SCROLL TO THE PROOF LAYER</span>
           </div>
         </section>
@@ -1321,8 +1404,8 @@ function App() {
           <div className="container">
             <SectionHeading
               eyebrow="02 / Lens to ledger"
-              title="Five steps. One sealed record."
-              copy="The system uses mature primitives in a capture workflow designed to remain nearly invisible on site."
+              title="Five steps. One explicit proof state."
+              copy="The target system uses mature primitives while the alpha labels every unavailable or test-only capability."
               align="center"
             />
             <div className="pipeline">
@@ -1360,13 +1443,13 @@ function App() {
               <article className="rail-card rail-card--green">
                 <div className="rail-card__number">A</div>
                 <div className="rail-card__body">
-                  <span>STATUTORY RAIL</span>
-                  <h3>eIDAS qualified timestamp</h3>
-                  <p>A qualified RFC 3161 token is designed to carry a presumption of time accuracy and data integrity in EU proceedings.</p>
+                  <span>ALPHA ADAPTER / TEST ONLY</span>
+                  <h3>Evidency sandbox RFC 3161</h3>
+                  <p>The alpha sends only the evidence digest to Evidency sandbox and exports the returned token. The sandbox cannot provide qualified legal effect.</p>
                   <ul>
-                    <li><Icon name="check" size={15} /> Supervised trust provider</li>
-                    <li><Icon name="check" size={15} /> Legally recognised time</li>
-                    <li><Icon name="check" size={15} /> Independent token validation</li>
+                    <li><Icon name="check" size={15} /> Digest-only API request</li>
+                    <li><Icon name="check" size={15} /> Exportable timestamp response</li>
+                    <li><Icon name="alert" size={15} /> Not qualified; no legal use</li>
                   </ul>
                 </div>
               </article>
@@ -1374,26 +1457,26 @@ function App() {
               <div className="rails__record">
                 <span className="rails__line rails__line--top" />
                 <div className="rails__record-seal">SS</div>
-                <strong>SEALED<br />RECORD</strong>
-                <small>Both proofs attached</small>
+                <strong>ALPHA<br />RECEIPT</strong>
+                <small>State machine, never overclaimed</small>
                 <span className="rails__line rails__line--bottom" />
               </div>
 
               <article className="rail-card rail-card--amber">
                 <div className="rail-card__number">B</div>
                 <div className="rail-card__body">
-                  <span>NEUTRAL RAIL</span>
-                  <h3>Public-chain anchor</h3>
-                  <p>A Merkle root on a public blockchain is designed to be jurisdiction-neutral and checkable without SiteSealed.</p>
+                  <span>FINAL PUBLIC RAIL / OPT-IN WRITES</span>
+                  <h3>Ethereum mainnet anchor</h3>
+                  <p>The hourly worker batches evidence digests, writes the Merkle root into transaction calldata and records an inclusion path for each receipt.</p>
                   <ul>
-                    <li><Icon name="check" size={15} /> Public consensus</li>
-                    <li><Icon name="check" size={15} /> Logarithmic inclusion proof</li>
-                    <li><Icon name="check" size={15} /> No sibling data revealed</li>
+                    <li><Icon name="check" size={15} /> Chain ID 1 enforced</li>
+                    <li><Icon name="check" size={15} /> Signed transaction persisted first</li>
+                    <li><Icon name="check" size={15} /> Finality rechecked from public RPC</li>
                   </ul>
                 </div>
               </article>
             </div>
-            <p className="rails__honesty">A hash proves existence and integrity - not that the world in front of the lens was unstaged.</p>
+            <p className="rails__honesty">Alpha-complete means sandbox token plus finalized mainnet anchor. It still does not mean eIDAS-qualified, live-captured or factually true.</p>
           </div>
         </section>
 
@@ -1442,12 +1525,12 @@ function App() {
               <SectionHeading
                 eyebrow="05 / First real workflow"
                 title="Hash locally. Encrypt locally. Record only what is necessary."
-                copy="This v1.3 web workflow creates a persistent development receipt for an imported file, adds an internal hash-chained audit event and coordinates anonymous traffic across instances, while remaining deliberately below the whitepaper's final dual-rail evidentiary standard."
+                copy="This v1.4 alpha creates a persistent imported-file receipt, issues test timestamps through the Evidency sandbox adapter and batches evidence digests for a real Ethereum mainnet anchor, while keeping the whitepaper's final legal threshold visibly out of reach."
               />
               <div className="seal-workflow__boundary">
                 <span><Icon name="alert" size={18} /> CURRENT BOUNDARY</span>
-                <p><strong>Real now:</strong> SHA-256, client-side AES-256-GCM, private S3 ciphertext, MySQL receipts, a PostgreSQL append-only audit chain, Redis coordination, public lookup and a dynamic PDF receipt.</p>
-                <p><strong>Not yet:</strong> in-app camera attestation, identity, GNSS, qualified RFC 3161 time, Merkle batching or public-chain anchoring.</p>
+                <p><strong>Implemented in alpha:</strong> SHA-256, client-side AES-256-GCM, private S3 ciphertext, MySQL receipts, PostgreSQL append-only audit, Redis coordination, Evidency sandbox RFC 3161 requests, domain-separated Merkle proofs, Ethereum mainnet transactions, public lookup and dynamic PDF/bundle exports.</p>
+                <p><strong>Still not production-qualified:</strong> Evidency production contract and independent qualified-token validation, in-app camera attestation, identity, device trust, GNSS and a formal security review.</p>
               </div>
             </div>
             <InfrastructureStatus />
@@ -1461,7 +1544,7 @@ function App() {
               <SectionHeading
                 eyebrow="06 / Open verification"
                 title="A proof held by one side is a claim. A proof checkable by the other is evidence."
-                copy="Look up any v1.3 receipt and optionally select the original file. Its SHA-256 is recalculated entirely in your browser and compared with the persistent record."
+                copy="Look up any v1.4 alpha receipt, inspect each external rail independently and optionally recalculate the original file's SHA-256 entirely in your browser."
                 inverse
               />
               <div className="verify__promise">
@@ -1530,7 +1613,7 @@ function App() {
             </div>
             <div className="closing__actions">
               <button className="button button--amber" type="button" onClick={scrollToSeal}>
-                Create a development seal <Icon name="arrow" size={18} />
+                Create an alpha receipt <Icon name="arrow" size={18} />
               </button>
               <button className="button button--ghost" type="button" onClick={() => scrollToVerifier()}>
                 Verify a record <Icon name="shield" size={17} />
@@ -1563,9 +1646,9 @@ function App() {
             </div>
             <div>
               <strong>Status</strong>
-              <span>Genesis v1.3</span>
-              <span>Development receipts live</span>
-              <span>External proof rails pending</span>
+              <span>Genesis v1.4 alpha.1</span>
+              <span>Evidency sandbox test rail</span>
+              <span>Ethereum mainnet final rail</span>
             </div>
           </div>
         </div>

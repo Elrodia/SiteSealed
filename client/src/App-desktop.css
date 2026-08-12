@@ -1321,7 +1321,7 @@ button {
 
 .infrastructure-status__grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .infrastructure-node {
@@ -1334,8 +1334,12 @@ button {
   gap: 10px;
 }
 
-.infrastructure-node:last-child {
+.infrastructure-node:nth-child(3n) {
   border-right: 0;
+}
+
+.infrastructure-node:nth-child(-n + 3) {
+  border-bottom: 1px solid var(--line);
 }
 
 .infrastructure-node > i {
@@ -2432,6 +2436,11 @@ button {
 .verified-rail--pending {
   border-style: dashed;
   opacity: 0.72;
+}
+
+.verified-rail--failed {
+  border-color: rgba(255, 125, 103, 0.65);
+  background: rgba(168, 68, 68, 0.12);
 }
 
 .verified-result--mismatch .verified-result__title > span {

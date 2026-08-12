@@ -16,8 +16,17 @@ import {
 } from "./coordination.js";
 import { createMysqlRecordStoreFromEnv } from "./database.js";
 import {
+  createDisabledTimestampService,
+  createEvidencyTimestampServiceFromEnv,
+} from "./evidency.js";
+import {
+  createDisabledEthereumRail,
+  createEthereumAnchorClientFromEnv,
+} from "./ethereum.js";
+import {
   ApiError,
   MAX_ENCRYPTED_ORIGINAL_BYTES,
+  externalProofStatus,
   isValidRecordId,
   normalizeRecordId,
   scopeForRecord,
@@ -64,6 +73,7 @@ function linksFor(request, recordId) {
     verify: `${baseUrl}/verify/${encoded}`,
     publicBundle: `${baseUrl}/api/records/${encoded}/bundle`,
     receiptPdf: `${baseUrl}/api/records/${encoded}/report.pdf`,
+    timestampToken: `${baseUrl}/api/records/${encoded}/timestamp.tsr`,
     encryptedOriginal: `${baseUrl}/api/records/${encoded}/encrypted-original`,
   };
 }
@@ -158,19 +168,20 @@ function auditBoundary(record, audit) {
       state: "NOT_RECORDED_LEGACY",
       role: "APPLICATION_AUDIT_ONLY",
       independentlyAnchored: false,
-      message: "This receipt predates the v1.3 PostgreSQL operational audit.",
+      message: "This receipt predates the PostgreSQL operational audit.",
     }
   );
 }
 
 function verificationPayload(record, audit = null) {
+  const proofStatus = externalProofStatus(record);
   return {
     ok: true,
     specimen: Boolean(record.specimen),
-    status: record.specimen
-      ? "SPECIMEN_RECORD_FOUND"
-      : "DEVELOPMENT_RECEIPT_FOUND",
-    proofsComplete: false,
+    status: record.specimen ? "SPECIMEN_RECORD_FOUND" : proofStatus.state,
+    proofsComplete: proofStatus.proofsComplete,
+    alphaComplete: proofStatus.alphaComplete,
+    sealed: proofStatus.sealed,
     checkedAt: new Date().toISOString(),
     record,
     operationalAudit: auditBoundary(record, audit),
@@ -187,8 +198,8 @@ function bundleWithAudit(bundle, record, audit) {
   }
   return {
     ...bundle,
-    schemaVersion: "sitesealed.proof-bundle.v1.3",
-    bundleVersion: "1.3",
+    schemaVersion: "sitesealed.proof-bundle.v1.4-alpha.1",
+    bundleVersion: "1.4-alpha.1",
     operationalAudit: auditBoundary(record, audit),
   };
 }
@@ -206,6 +217,8 @@ export function createApp({
   objectStore = createMemoryObjectStore(),
   auditStore = createMemoryAuditStore(),
   coordinator = createMemoryCoordinator(),
+  timestampService = createDisabledTimestampService(),
+  ethereumRail = createDisabledEthereumRail(),
   sealRateLimit = positiveInteger(process.env.SEAL_RATE_LIMIT_PER_HOUR, 20),
 } = {}) {
   const app = express();
@@ -272,29 +285,48 @@ export function createApp({
   });
 
   app.get("/api/health", async (_request, response) => {
-    const [database, objectStorage, auditDatabase, coordination] =
+    const [
+      database,
+      objectStorage,
+      auditDatabase,
+      coordination,
+      qualifiedTimestamp,
+      publicChainAnchor,
+    ] =
       await Promise.all([
       recordStore.healthCheck(),
       objectStore.healthCheck(),
       auditStore.healthCheck(),
       coordinator.healthCheck(),
+      timestampService.healthCheck(),
+      ethereumRail.healthCheck(),
     ]);
     response.status(200).json({
       ok: true,
       service: "sitesealed",
-      version: "1.3.0",
+      version: "1.4.0-alpha.1",
       sealing: {
         workflow: "IMPORTED_FILE_CLIENT_ENCRYPTED_STORAGE_RECEIPT",
         clientEncryptedObjectStorage: true,
         operationalAudit: "POSTGRESQL_APPEND_ONLY_HASH_CHAIN",
         distributedCoordination: true,
-        qualifiedTimestamp: false,
-        publicChainAnchor: false,
+        qualifiedTimestamp:
+          qualifiedTimestamp.mode === "evidency" &&
+          qualifiedTimestamp.environment === "SANDBOX"
+            ? "EVIDENCY_SANDBOX_TEST_ONLY"
+            : false,
+        publicChainAnchor:
+          publicChainAnchor.mode === "ethereum"
+            ? "ETHEREUM_MAINNET_ENABLED"
+            : false,
+        finalSealedStatusEnabled: false,
       },
       database,
       objectStorage,
       auditDatabase,
       coordination,
+      qualifiedTimestamp,
+      publicChainAnchor,
     });
   });
 
@@ -406,7 +438,7 @@ export function createApp({
             ok: true,
             created: result.created,
             status: result.created
-              ? "DEVELOPMENT_RECEIPT_CREATED"
+              ? "DUAL_RAIL_ALPHA_RECEIPT_CREATED"
               : "IDEMPOTENT_RECEIPT_REUSED",
             record: result.record,
             operationalAudit: auditBoundary(
@@ -511,10 +543,45 @@ export function createApp({
     const pdf = await renderReceiptPdf(record, { baseUrl: safeBaseUrl(request) });
     response.set(
       "Content-Disposition",
-      `attachment; filename="SiteSealed_${recordId}_development-receipt.pdf"`,
+      `attachment; filename="SiteSealed_${recordId}_alpha-receipt.pdf"`,
     );
     response.type("application/pdf");
     return response.send(pdf);
+  });
+
+  app.get("/api/records/:recordId/timestamp.tsr", async (request, response) => {
+    const recordId = requireRecordId(request.params.recordId);
+    const record = await findRecord(recordId);
+    if (!record || !record.qualifiedRail?.token) {
+      return response.status(404).json({
+        ok: false,
+        code: "TIMESTAMP_TOKEN_NOT_FOUND",
+        message: "No exportable RFC 3161 timestamp token is attached to this record.",
+      });
+    }
+    const token = Buffer.from(record.qualifiedRail.token, "base64");
+    if (token.length < 16 || token.toString("base64") !== record.qualifiedRail.token) {
+      throw new ApiError(
+        500,
+        "TIMESTAMP_TOKEN_CORRUPT",
+        "The stored timestamp token failed its Base64 integrity check.",
+      );
+    }
+    if (createHash("sha256").update(token).digest("hex") !== record.qualifiedRail.tokenSha256) {
+      throw new ApiError(
+        500,
+        "TIMESTAMP_TOKEN_CORRUPT",
+        "The stored timestamp token failed its SHA-256 integrity check.",
+      );
+    }
+    response.set({
+      "Content-Disposition": `attachment; filename="SiteSealed_${recordId}_Evidency_SANDBOX.tsr"`,
+      "X-SiteSealed-Environment": record.qualifiedRail.environment,
+      "X-SiteSealed-Legal-Use": String(Boolean(record.qualifiedRail.legalUse)),
+      "X-SiteSealed-Token-Sha256": record.qualifiedRail.tokenSha256,
+    });
+    response.type("application/timestamp-reply");
+    return response.send(token);
   });
 
   app.post(
@@ -577,7 +644,13 @@ export function createApp({
         index: false,
         maxAge: "7d",
         setHeaders(response, filePath) {
-          if (filePath.endsWith(".html")) {
+          if (
+            filePath.endsWith(".html") ||
+            filePath.endsWith("favicon.svg") ||
+            filePath.endsWith("icon-192.svg") ||
+            filePath.endsWith("icon-512.svg") ||
+            filePath.endsWith("site.webmanifest")
+          ) {
             response.setHeader("Cache-Control", "no-cache");
           }
         },
@@ -612,7 +685,7 @@ export function createApp({
       return response.status(413).json({
         ok: false,
         code: "REQUEST_TOO_LARGE",
-        message: "The request exceeds the v1.3 encrypted upload limit.",
+        message: "The request exceeds the v1.4 encrypted upload limit.",
       });
     }
     if (error instanceof SyntaxError && error.status === 400) {
@@ -645,6 +718,8 @@ export async function startServer() {
   let objectStore;
   let auditStore;
   let coordinator;
+  let timestampService;
+  let ethereumRail;
   try {
     recordStore =
       (await createMysqlRecordStoreFromEnv(process.env)) ??
@@ -658,12 +733,16 @@ export async function startServer() {
     coordinator =
       (await createRedisCoordinatorFromEnv(process.env)) ??
       createMemoryCoordinator();
+    timestampService = createEvidencyTimestampServiceFromEnv(process.env);
+    ethereumRail = createEthereumAnchorClientFromEnv(process.env);
   } catch (error) {
     await Promise.all([
       recordStore?.close().catch(() => {}),
       objectStore?.close().catch(() => {}),
       auditStore?.close().catch(() => {}),
       coordinator?.close().catch(() => {}),
+      timestampService?.close().catch(() => {}),
+      ethereumRail?.close().catch(() => {}),
     ]);
     throw error;
   }
@@ -672,10 +751,12 @@ export async function startServer() {
     objectStore,
     auditStore,
     coordinator,
+    timestampService,
+    ethereumRail,
   });
   const server = app.listen(port, host, () => {
     console.log(
-      `SiteSealed v1.3 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit and ${coordinator.mode} coordination.`,
+      `SiteSealed v1.4-alpha.1 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
     );
   });
 
@@ -693,6 +774,8 @@ export async function startServer() {
           objectStore.close(),
           auditStore.close(),
           coordinator.close(),
+          timestampService.close(),
+          ethereumRail.close(),
         ]);
         clearTimeout(timeout);
         process.exit(0);
@@ -705,7 +788,15 @@ export async function startServer() {
 
   process.once("SIGTERM", () => shutdown("SIGTERM"));
   process.once("SIGINT", () => shutdown("SIGINT"));
-  return { server, recordStore, objectStore, auditStore, coordinator };
+  return {
+    server,
+    recordStore,
+    objectStore,
+    auditStore,
+    coordinator,
+    timestampService,
+    ethereumRail,
+  };
 }
 
 if (

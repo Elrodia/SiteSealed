@@ -113,7 +113,7 @@ function positiveIntegerHeader(value, fieldName, maximum) {
     throw new ApiError(
       400,
       "INVALID_UPLOAD_METADATA",
-      `${fieldName} exceeds the v1.3 limit of ${maximum} bytes.`,
+      `${fieldName} exceeds the v1.4 limit of ${maximum} bytes.`,
     );
   }
   return parsed;
@@ -132,7 +132,7 @@ export function validateEncryptedUpload({ submissionId, headers, body }) {
     throw new ApiError(
       413,
       "ENCRYPTED_UPLOAD_TOO_LARGE",
-      "The encrypted original exceeds the v1.3 limit of 25 MB plus its authentication tag.",
+      "The encrypted original exceeds the v1.4 limit of 25 MB plus its authentication tag.",
     );
   }
 

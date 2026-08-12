@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { JsonRpcProvider, WebSocketProvider } from "ethers";
+
+const ANCHOR_CALLDATA_MAGIC = "53534c4401";
 
 function sortJsonValue(value) {
   if (Array.isArray(value)) return value.map(sortJsonValue);
@@ -20,6 +23,81 @@ function stableStringify(value) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function merkleLeafHash(evidenceDigest) {
+  return sha256(
+    Buffer.concat([Buffer.from([0]), Buffer.from(evidenceDigest, "hex")]),
+  );
+}
+
+function merkleParentHash(left, right) {
+  return sha256(
+    Buffer.concat([
+      Buffer.from([1]),
+      Buffer.from(left, "hex"),
+      Buffer.from(right, "hex"),
+    ]),
+  );
+}
+
+async function verifyEthereumTransaction(chain) {
+  const rpcValue = String(process.env.ETHEREUM_VERIFY_RPC_URL ?? "").trim();
+  if (!rpcValue) {
+    console.log(
+      "Ethereum transaction binding: NOT CHECKED (set ETHEREUM_VERIFY_RPC_URL to an independent mainnet RPC)",
+    );
+    return;
+  }
+  const rpcUrl = new URL(rpcValue);
+  if (!["https:", "wss:"].includes(rpcUrl.protocol)) {
+    throw new Error("ETHEREUM_VERIFY_RPC_URL must use HTTPS or WSS.");
+  }
+  const provider = rpcUrl.protocol === "wss:"
+    ? new WebSocketProvider(rpcUrl.toString(), 1, { staticNetwork: true })
+    : new JsonRpcProvider(rpcUrl.toString(), 1, { staticNetwork: true });
+  try {
+    const network = await provider.getNetwork();
+    if (Number(network.chainId) !== 1) {
+      throw new Error(`The verification RPC returned chain ${network.chainId}, not Ethereum mainnet.`);
+    }
+    if (!/^0x[a-f0-9]{64}$/i.test(String(chain.transaction ?? ""))) {
+      throw new Error("The bundle has no valid Ethereum transaction hash.");
+    }
+    const [transaction, receipt, finalizedBlock] = await Promise.all([
+      provider.getTransaction(chain.transaction),
+      provider.getTransactionReceipt(chain.transaction),
+      provider.getBlock("finalized").catch(() => null),
+    ]);
+    if (!transaction || !receipt || Number(receipt.status) !== 1) {
+      throw new Error("The Ethereum anchor transaction is absent, pending or failed.");
+    }
+    const expectedInput = `0x${ANCHOR_CALLDATA_MAGIC}${chain.merkleRoot}`;
+    if (String(transaction.data).toLowerCase() !== expectedInput.toLowerCase()) {
+      throw new Error("The Ethereum transaction calldata does not contain this Merkle root.");
+    }
+    if (
+      !chain.anchorAddress ||
+      String(transaction.from).toLowerCase() !== String(chain.anchorAddress).toLowerCase() ||
+      String(transaction.to).toLowerCase() !== String(chain.anchorAddress).toLowerCase()
+    ) {
+      throw new Error("The Ethereum sender or destination does not match the bundle.");
+    }
+    if (chain.blockHash && String(receipt.blockHash).toLowerCase() !== String(chain.blockHash).toLowerCase()) {
+      throw new Error("The Ethereum block hash does not match the bundle.");
+    }
+    const finalized = Boolean(
+      finalizedBlock && Number(receipt.blockNumber) <= Number(finalizedBlock.number),
+    );
+    if (chain.state === "FINALIZED" && !finalized) {
+      throw new Error("The bundle claims finality but the independent RPC does not.");
+    }
+    console.log(
+      `Ethereum transaction binding: PASS (block ${receipt.blockNumber}, finalized: ${finalized ? "YES" : "NO"})`,
+    );
+  } finally {
+    await provider.destroy();
+  }
 }
 
 async function main() {
@@ -46,8 +124,47 @@ async function main() {
 
   console.log(`Receipt integrity: PASS (${receipt.recordId})`);
   console.log(`Receipt time: ${receipt.receivedAt}`);
-  console.log("Qualified timestamp: NOT ISSUED in v1.3");
-  console.log("Public-chain anchor: NOT ANCHORED in v1.3");
+  const timestamp = bundle.proofs?.qualifiedTimestamp;
+  if (timestamp?.state === "SANDBOX_TOKEN_ISSUED") {
+    if (timestamp.hashedMessage !== receipt.evidenceDigest) {
+      throw new Error("The Evidency timestamp response is bound to another evidence digest.");
+    }
+    const tokenBytes = Buffer.from(timestamp.token?.value ?? "", "base64");
+    if (
+      tokenBytes.length < 16 ||
+      sha256(tokenBytes) !== timestamp.token?.sha256
+    ) {
+      throw new Error("The exported Evidency timestamp token digest is invalid.");
+    }
+    console.log(`RFC 3161 timestamp: EVIDENCY SANDBOX TOKEN PRESENT (${timestamp.serialNumber})`);
+    console.log("Legal qualification: TEST ONLY - NOT QUALIFIED");
+    console.log(
+      `Token signature: ${timestamp.signatureVerification ?? "NOT INDEPENDENTLY VERIFIED"}`,
+    );
+  } else {
+    console.log("RFC 3161 timestamp: NOT ISSUED");
+  }
+
+  const chain = bundle.proofs?.publicChain;
+  if (chain?.merkleRoot && Array.isArray(chain.inclusionPath)) {
+    let calculatedRoot = merkleLeafHash(receipt.evidenceDigest);
+    for (const step of chain.inclusionPath) {
+      calculatedRoot =
+        step.position === "left"
+          ? merkleParentHash(step.sha256, calculatedRoot)
+          : merkleParentHash(calculatedRoot, step.sha256);
+    }
+    if (calculatedRoot !== chain.merkleRoot) {
+      throw new Error("The Ethereum Merkle inclusion path is invalid.");
+    }
+    console.log(`Merkle inclusion: PASS (${chain.merkleRoot})`);
+    console.log(
+      `Public-chain anchor: ${chain.state} (${chain.transaction ?? "transaction pending"})`,
+    );
+    if (chain.transaction) await verifyEthereumTransaction(chain);
+  } else {
+    console.log("Public-chain anchor: NOT ANCHORED");
+  }
 
   const audit = bundle.operationalAudit;
   if (audit?.state === "RECORDED" && audit.event) {

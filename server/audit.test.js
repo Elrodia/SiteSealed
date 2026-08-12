@@ -17,6 +17,7 @@ function record(overrides = {}) {
     sha256: "a".repeat(64),
     manifestSha256: "b".repeat(64),
     receiptSha256: "c".repeat(64),
+    evidenceDigest: "e".repeat(64),
     storage: { ciphertextSha256: "d".repeat(64) },
     qualifiedRail: { state: "NOT_ISSUED" },
     chainRail: { state: "NOT_ANCHORED" },
@@ -43,6 +44,36 @@ test("PostgreSQL configuration accepts Railway DATABASE_URL and enforces require
         DATABASE_URL: "mysql://user:secret@host/database",
       }),
     /postgres:\/\/ or postgresql:\/\//,
+  );
+});
+
+test("public-anchor audit records confirmation and finality once each", async () => {
+  const store = createMemoryAuditStore();
+  const source = record();
+  const proof = {
+    chain: "Ethereum mainnet",
+    chainId: 1,
+    transactionHash: `0x${"1".repeat(64)}`,
+    blockNumber: 100,
+    blockHash: `0x${"2".repeat(64)}`,
+    merkleRoot: "3".repeat(64),
+    leafHash: "4".repeat(64),
+    leafIndex: 0,
+    batchId: "123e4567-e89b-42d3-a456-426614174000",
+    state: "CONFIRMED",
+  };
+  const confirmed = await store.appendPublicAnchor(source, proof);
+  const confirmedAgain = await store.appendPublicAnchor(source, proof);
+  const finalized = await store.appendPublicAnchor(source, {
+    ...proof,
+    state: "FINALIZED",
+  });
+  assert.equal(confirmed.created, true);
+  assert.equal(confirmedAgain.created, false);
+  assert.equal(finalized.created, true);
+  assert.equal(
+    finalized.audit.event.previousEventSha256,
+    confirmed.audit.event.eventSha256,
   );
 });
 
@@ -92,4 +123,3 @@ test("memory audit is append-only, hash-chained and idempotent", async () => {
     (error) => error.code === "AUDIT_EVENT_CONFLICT" && error.status === 409,
   );
 });
-

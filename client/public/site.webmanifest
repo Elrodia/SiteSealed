@@ -4,17 +4,17 @@
   "description": "A neutral proof layer for construction records.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0b2942",
-  "theme_color": "#0b2942",
+  "background_color": "#0E2A47",
+  "theme_color": "#0E2A47",
   "icons": [
     {
-      "src": "/icon-192.svg",
+      "src": "/icon-192.svg?v=20260812",
       "sizes": "192x192",
       "type": "image/svg+xml",
       "purpose": "any maskable"
     },
     {
-      "src": "/icon-512.svg",
+      "src": "/icon-512.svg?v=20260812",
       "sizes": "512x512",
       "type": "image/svg+xml",
       "purpose": "any maskable"

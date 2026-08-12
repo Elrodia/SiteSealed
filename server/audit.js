@@ -6,6 +6,8 @@ const { Pool } = pg;
 
 const AUDIT_EVENT_SCHEMA = "sitesealed.operational-audit-event.v1";
 const RECEIPT_EVENT_TYPE = "RECEIPT_RECORDED";
+const QUALIFIED_EVENT_TYPE = "QUALIFIED_TIMESTAMP_RECORDED";
+const ANCHOR_EVENT_TYPE = "PUBLIC_ANCHOR_RECORDED";
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 const postgresMigrations = [
@@ -51,6 +53,22 @@ const postgresMigrations = [
         FOR EACH STATEMENT EXECUTE FUNCTION sitesealed_reject_audit_mutation()`,
       `COMMENT ON TABLE sitesealed_evidence_events IS
         'Internal append-only, hash-chained operational audit. Not an eIDAS timestamp or public-chain anchor.'`,
+    ],
+  },
+  {
+    id: "002_external_proof_events",
+    statements: [
+      `ALTER TABLE sitesealed_evidence_events
+        DROP CONSTRAINT IF EXISTS sitesealed_evidence_events_event_type_check`,
+      `ALTER TABLE sitesealed_evidence_events
+        ADD CONSTRAINT sitesealed_evidence_events_event_type_check
+        CHECK (event_type IN (
+          'RECEIPT_RECORDED',
+          'QUALIFIED_TIMESTAMP_RECORDED',
+          'PUBLIC_ANCHOR_RECORDED'
+        ))`,
+      `COMMENT ON TABLE sitesealed_evidence_events IS
+        'Internal append-only, hash-chained operational audit of receipts and external proof artefacts. The PostgreSQL chain is not itself an eIDAS timestamp or public-chain anchor.'`,
     ],
   },
 ];
@@ -111,7 +129,7 @@ export function createPostgresPool(config) {
     max: config.connectionLimit,
     connectionTimeoutMillis: 8_000,
     idleTimeoutMillis: 30_000,
-    application_name: "sitesealed-v1.3",
+    application_name: "sitesealed-v1.4-alpha.1",
   });
   pool.on("error", (error) => {
     console.error(`PostgreSQL pool error: ${error.message}`);
@@ -168,6 +186,39 @@ export function receiptAuditPayload(record) {
     encryptedOriginalSha256: record.storage?.ciphertextSha256 ?? null,
     qualifiedTimestampState: record.qualifiedRail?.state ?? "UNKNOWN",
     publicChainState: record.chainRail?.state ?? "UNKNOWN",
+  };
+}
+
+export function qualifiedTimestampAuditPayload(record, proof) {
+  return {
+    recordId: record.recordId,
+    evidenceDigest: record.evidenceDigest,
+    provider: proof.provider,
+    environment: proof.environment,
+    legalUse: Boolean(proof.legalUse),
+    qualificationStatus: proof.qualificationStatus,
+    serialNumber: proof.serialNumber,
+    certifiedAt: proof.certifiedAt,
+    tokenSha256: proof.tokenSha256,
+    tsaPolicyId: proof.tsaPolicyId,
+    signatureVerification: proof.signatureVerification,
+  };
+}
+
+export function publicAnchorAuditPayload(record, proof) {
+  return {
+    recordId: record.recordId,
+    evidenceDigest: record.evidenceDigest,
+    chain: proof.chain ?? "Ethereum mainnet",
+    chainId: Number(proof.chainId ?? 1),
+    transactionHash: proof.transactionHash ?? proof.anchor,
+    blockNumber: proof.blockNumber ?? null,
+    blockHash: proof.blockHash ?? null,
+    merkleRoot: proof.merkleRoot,
+    leafHash: proof.leafHash,
+    leafIndex: proof.leafIndex,
+    batchId: proof.batchId,
+    finalityStatus: proof.state,
   };
 }
 
@@ -247,11 +298,88 @@ function publicAuditEvent(row) {
   };
 }
 
-function idempotencyKeyFor(record) {
-  return `receipt:${record.recordId}`;
+function idempotencyKeyFor(eventType, record, payload) {
+  if (eventType === RECEIPT_EVENT_TYPE) return `receipt:${record.recordId}`;
+  if (eventType === QUALIFIED_EVENT_TYPE) {
+    return `timestamp:${record.recordId}:${payload.tokenSha256}`;
+  }
+  return `anchor:${record.recordId}:${payload.transactionHash}:${payload.finalityStatus}`;
 }
 
 export function createPostgresAuditStore(pool) {
+  async function appendEvent({
+    eventType,
+    record,
+    payload,
+    submissionId = null,
+  }) {
+    if (record.specimen) return { created: false, audit: null };
+    const payloadSha256 = sha256Hex(stableStringify(payload));
+    const idempotencyKey = idempotencyKeyFor(eventType, record, payload);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "LOCK TABLE sitesealed_evidence_events IN EXCLUSIVE MODE",
+      );
+      const existing = await client.query(
+        `SELECT * FROM sitesealed_evidence_events
+          WHERE idempotency_key = $1 LIMIT 1`,
+        [idempotencyKey],
+      );
+      if (existing.rowCount > 0) {
+        const row = existing.rows[0];
+        if (row.payload_sha256 !== payloadSha256) {
+          throw new ApiError(
+            409,
+            "AUDIT_EVENT_CONFLICT",
+            "The PostgreSQL audit event is already bound to different data.",
+          );
+        }
+        await client.query("COMMIT");
+        return { created: false, audit: publicAuditEvent(row) };
+      }
+
+      const tail = await client.query(
+        `SELECT event_sha256 FROM sitesealed_evidence_events
+          ORDER BY sequence DESC LIMIT 1`,
+      );
+      const event = buildAuditEvent({
+        eventType,
+        recordId: record.recordId,
+        payload,
+        previousEventSha256: tail.rows[0]?.event_sha256 ?? null,
+      });
+      const inserted = await client.query(
+        `INSERT INTO sitesealed_evidence_events (
+          event_id, idempotency_key, event_type, record_id, submission_id,
+          payload, payload_sha256, previous_event_sha256, event_sha256,
+          recorded_at
+        ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)
+        RETURNING *`,
+        [
+          event.eventId,
+          idempotencyKey,
+          event.eventType,
+          event.recordId,
+          submissionId,
+          JSON.stringify(event.payload),
+          event.payloadSha256,
+          event.previousEventSha256,
+          event.eventSha256,
+          event.recordedAt,
+        ],
+      );
+      await client.query("COMMIT");
+      return { created: true, audit: publicAuditEvent(inserted.rows[0]) };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   return {
     mode: "postgresql",
     persistent: true,
@@ -259,81 +387,36 @@ export function createPostgresAuditStore(pool) {
     hashChained: true,
 
     async appendReceipt(record, { submissionId = null } = {}) {
-      if (record.specimen) {
-        return { created: false, audit: null };
-      }
-      const payload = receiptAuditPayload(record);
-      const payloadSha256 = sha256Hex(stableStringify(payload));
-      const idempotencyKey = idempotencyKeyFor(record);
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        await client.query(
-          "LOCK TABLE sitesealed_evidence_events IN EXCLUSIVE MODE",
-        );
-        const existing = await client.query(
-          `SELECT * FROM sitesealed_evidence_events
-            WHERE idempotency_key = $1 LIMIT 1`,
-          [idempotencyKey],
-        );
-        if (existing.rowCount > 0) {
-          const row = existing.rows[0];
-          if (row.payload_sha256 !== payloadSha256) {
-            throw new ApiError(
-              409,
-              "AUDIT_EVENT_CONFLICT",
-              "The PostgreSQL audit event is already bound to different receipt data.",
-            );
-          }
-          await client.query("COMMIT");
-          return { created: false, audit: publicAuditEvent(row) };
-        }
+      return appendEvent({
+        eventType: RECEIPT_EVENT_TYPE,
+        record,
+        payload: receiptAuditPayload(record),
+        submissionId,
+      });
+    },
 
-        const tail = await client.query(
-          `SELECT event_sha256 FROM sitesealed_evidence_events
-            ORDER BY sequence DESC LIMIT 1`,
-        );
-        const event = buildAuditEvent({
-          recordId: record.recordId,
-          payload,
-          previousEventSha256: tail.rows[0]?.event_sha256 ?? null,
-        });
-        const inserted = await client.query(
-          `INSERT INTO sitesealed_evidence_events (
-            event_id, idempotency_key, event_type, record_id, submission_id,
-            payload, payload_sha256, previous_event_sha256, event_sha256,
-            recorded_at
-          ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)
-          RETURNING *`,
-          [
-            event.eventId,
-            idempotencyKey,
-            event.eventType,
-            event.recordId,
-            submissionId,
-            JSON.stringify(event.payload),
-            event.payloadSha256,
-            event.previousEventSha256,
-            event.eventSha256,
-            event.recordedAt,
-          ],
-        );
-        await client.query("COMMIT");
-        return { created: true, audit: publicAuditEvent(inserted.rows[0]) };
-      } catch (error) {
-        await client.query("ROLLBACK").catch(() => {});
-        throw error;
-      } finally {
-        client.release();
-      }
+    async appendQualifiedTimestamp(record, proof) {
+      return appendEvent({
+        eventType: QUALIFIED_EVENT_TYPE,
+        record,
+        payload: qualifiedTimestampAuditPayload(record, proof),
+      });
+    },
+
+    async appendPublicAnchor(record, proof) {
+      return appendEvent({
+        eventType: ANCHOR_EVENT_TYPE,
+        record,
+        payload: publicAnchorAuditPayload(record, proof),
+      });
     },
 
     async findByRecordId(recordId) {
       const result = await pool.query(
         `SELECT * FROM sitesealed_evidence_events
-          WHERE record_id = $1 AND event_type = $2
+          WHERE record_id = $1
           ORDER BY sequence DESC LIMIT 1`,
-        [recordId, RECEIPT_EVENT_TYPE],
+        [recordId],
       );
       return publicAuditEvent(result.rows[0]);
     },
@@ -369,6 +452,41 @@ export function createMemoryAuditStore() {
   const events = [];
   const byIdempotency = new Map();
 
+  async function appendEvent(eventType, record, payload) {
+    if (record.specimen) return { created: false, audit: null };
+    const key = idempotencyKeyFor(eventType, record, payload);
+    const payloadSha256 = sha256Hex(stableStringify(payload));
+    const existing = byIdempotency.get(key);
+    if (existing) {
+      if (existing.event.payloadSha256 !== payloadSha256) {
+        throw new ApiError(
+          409,
+          "AUDIT_EVENT_CONFLICT",
+          "The audit event is already bound to different data.",
+        );
+      }
+      return { created: false, audit: existing };
+    }
+    const event = buildAuditEvent({
+      eventType,
+      recordId: record.recordId,
+      payload,
+      previousEventSha256: events.at(-1)?.event.eventSha256 ?? null,
+    });
+    const audit = {
+      state: "RECORDED",
+      role: "APPLICATION_AUDIT_ONLY",
+      independentlyAnchored: false,
+      appendOnly: true,
+      hashChained: true,
+      event: { ...event, sequence: String(events.length + 1) },
+      eventHashValid: verifyAuditEvent(event),
+    };
+    events.push(audit);
+    byIdempotency.set(key, audit);
+    return { created: true, audit };
+  }
+
   return {
     mode: "memory",
     persistent: false,
@@ -376,39 +494,23 @@ export function createMemoryAuditStore() {
     hashChained: true,
 
     async appendReceipt(record) {
-      if (record.specimen) return { created: false, audit: null };
-      const key = idempotencyKeyFor(record);
-      const payload = receiptAuditPayload(record);
-      const payloadSha256 = sha256Hex(stableStringify(payload));
-      const existing = byIdempotency.get(key);
-      if (existing) {
-        if (existing.event.payloadSha256 !== payloadSha256) {
-          throw new ApiError(
-            409,
-            "AUDIT_EVENT_CONFLICT",
-            "The audit event is already bound to different receipt data.",
-          );
-        }
-        return { created: false, audit: existing };
-      }
-      const event = buildAuditEvent({
-        recordId: record.recordId,
-        payload,
-        previousEventSha256:
-          events.at(-1)?.event.eventSha256 ?? null,
-      });
-      const audit = {
-        state: "RECORDED",
-        role: "APPLICATION_AUDIT_ONLY",
-        independentlyAnchored: false,
-        appendOnly: true,
-        hashChained: true,
-        event: { ...event, sequence: String(events.length + 1) },
-        eventHashValid: verifyAuditEvent(event),
-      };
-      events.push(audit);
-      byIdempotency.set(key, audit);
-      return { created: true, audit };
+      return appendEvent(RECEIPT_EVENT_TYPE, record, receiptAuditPayload(record));
+    },
+
+    async appendQualifiedTimestamp(record, proof) {
+      return appendEvent(
+        QUALIFIED_EVENT_TYPE,
+        record,
+        qualifiedTimestampAuditPayload(record, proof),
+      );
+    },
+
+    async appendPublicAnchor(record, proof) {
+      return appendEvent(
+        ANCHOR_EVENT_TYPE,
+        record,
+        publicAnchorAuditPayload(record, proof),
+      );
     },
 
     async findByRecordId(recordId) {

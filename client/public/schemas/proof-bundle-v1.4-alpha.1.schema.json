@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://app.sitesealed.com/schemas/proof-bundle-v1.4-alpha.1.schema.json",
+  "title": "SiteSealed v1.4-alpha.1 dual-rail proof bundle",
+  "description": "A client-encrypted imported-file receipt with an optional Evidency sandbox RFC 3161 test token and an optional Ethereum mainnet Merkle inclusion proof. Sandbox tokens have no legal effect.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "bundleVersion",
+    "record",
+    "receipt",
+    "receiptSha256",
+    "encryptedOriginal",
+    "proofs",
+    "proofStatus",
+    "operationalAudit",
+    "scope"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "sitesealed.proof-bundle.v1.4-alpha.1" },
+    "bundleVersion": { "const": "1.4-alpha.1" },
+    "record": {
+      "type": "object",
+      "required": [
+        "recordId",
+        "recordClass",
+        "proofLevel",
+        "recordSha256",
+        "manifestSha256",
+        "evidenceDigest",
+        "receivedAt"
+      ],
+      "properties": {
+        "recordSha256": { "$ref": "#/$defs/sha256" },
+        "manifestSha256": { "$ref": "#/$defs/sha256" },
+        "evidenceDigest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "recordId",
+        "recordClass",
+        "proofLevel",
+        "recordSha256",
+        "manifestSha256",
+        "receivedAt"
+      ],
+      "properties": {
+        "evidenceDigest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "receiptSha256": { "$ref": "#/$defs/sha256" },
+    "encryptedManifest": { "type": ["object", "null"] },
+    "encryptedOriginal": { "type": "object" },
+    "proofs": {
+      "type": "object",
+      "required": ["qualifiedTimestamp", "publicChain"],
+      "properties": {
+        "qualifiedTimestamp": {
+          "type": "object",
+          "required": ["state", "environment", "legalUse"],
+          "properties": {
+            "state": {
+              "enum": ["NOT_ISSUED", "SANDBOX_TOKEN_ISSUED", "TOKEN_ISSUED"]
+            },
+            "environment": { "enum": ["SANDBOX", "PRODUCTION"] },
+            "legalUse": { "type": "boolean" },
+            "hashedMessage": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+            "token": {
+              "type": ["object", "null"],
+              "properties": {
+                "mediaType": { "const": "application/timestamp-reply" },
+                "encoding": { "const": "base64" },
+                "sha256": { "$ref": "#/$defs/sha256" }
+              }
+            }
+          }
+        },
+        "publicChain": {
+          "type": "object",
+          "required": ["state", "chain", "chainId"],
+          "properties": {
+            "state": {
+              "enum": [
+                "NOT_ANCHORED",
+                "SUBMITTED",
+                "CONFIRMED",
+                "FINALIZED",
+                "FAILED_ON_CHAIN",
+                "INVALID_ON_CHAIN"
+              ]
+            },
+            "chain": { "const": "Ethereum mainnet" },
+            "chainId": { "const": 1 },
+            "merkleRoot": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+            "inclusionPath": { "type": ["array", "null"] },
+            "transaction": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    "proofStatus": {
+      "type": "object",
+      "required": ["state", "proofsComplete", "alphaComplete", "sealed"],
+      "properties": {
+        "state": {
+          "enum": [
+            "EXTERNAL_PROOFS_PENDING",
+            "SANDBOX_TIMESTAMP_ISSUED_ANCHOR_PENDING",
+            "MAINNET_ANCHORED_QTSP_PENDING",
+            "ALPHA_DUAL_RAIL_COMPLETE",
+            "DUAL_RAIL_COMPLETE",
+            "PUBLIC_ANCHOR_REJECTED"
+          ]
+        },
+        "proofsComplete": { "type": "boolean" },
+        "alphaComplete": { "type": "boolean" },
+        "sealed": { "type": "boolean" }
+      }
+    },
+    "operationalAudit": { "type": "object" },
+    "scope": { "type": "object" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  },
+  "additionalProperties": true
+}

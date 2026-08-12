@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createClient } from "redis";
 
-const KEY_PREFIX = "sitesealed:v1.3";
+const KEY_PREFIX = "sitesealed:v1.4-alpha.1";
 const RATE_LIMIT_SCRIPT = `
 local current = redis.call('INCR', KEYS[1])
 if current == 1 then
@@ -53,6 +53,11 @@ function cacheKey(recordId) {
 
 function lockKey(submissionId) {
   return `${KEY_PREFIX}:submission-lock:${submissionId}`;
+}
+
+function jobLockKey(name) {
+  const safeName = String(name ?? "job").replace(/[^a-z0-9:_-]/gi, "_");
+  return `${KEY_PREFIX}:job-lock:${safeName}`;
 }
 
 export function resolveRedisConfig(environment = process.env) {
@@ -133,9 +138,29 @@ export function createRedisCoordinator(client, options = {}) {
       });
     },
 
+    async deleteCachedRecord(recordId) {
+      await client.del(cacheKey(recordId));
+    },
+
     async acquireSubmissionLock(submissionId, { ttlMs = 30_000 } = {}) {
       const token = randomUUID();
       const key = lockKey(submissionId);
+      const acquired = await client.set(key, token, { NX: true, PX: ttlMs });
+      if (acquired !== "OK") return null;
+      let released = false;
+      return async () => {
+        if (released) return;
+        released = true;
+        await client.eval(RELEASE_LOCK_SCRIPT, {
+          keys: [key],
+          arguments: [token],
+        });
+      };
+    },
+
+    async acquireJobLock(name, { ttlMs = 10 * 60 * 1000 } = {}) {
+      const token = randomUUID();
+      const key = jobLockKey(name);
       const acquired = await client.set(key, token, { NX: true, PX: ttlMs });
       if (acquired !== "OK") return null;
       let released = false;
@@ -231,10 +256,29 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
       });
     },
 
+    async deleteCachedRecord(recordId) {
+      cachedRecords.delete(cacheKey(recordId));
+    },
+
     async acquireSubmissionLock(submissionId, { ttlMs = 30_000 } = {}) {
       const timestamp = now();
       removeExpired(timestamp);
       const key = lockKey(submissionId);
+      if (locks.has(key)) return null;
+      const token = randomUUID();
+      locks.set(key, { token, expiresAt: timestamp + ttlMs });
+      let released = false;
+      return async () => {
+        if (released) return;
+        released = true;
+        if (locks.get(key)?.token === token) locks.delete(key);
+      };
+    },
+
+    async acquireJobLock(name, { ttlMs = 10 * 60 * 1000 } = {}) {
+      const timestamp = now();
+      removeExpired(timestamp);
+      const key = jobLockKey(name);
       if (locks.has(key)) return null;
       const token = randomUUID();
       locks.set(key, { token, expiresAt: timestamp + ttlMs });

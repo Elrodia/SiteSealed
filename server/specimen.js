@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import {
   ApiError,
+  chainRailFromProof,
   createDevelopmentRecord,
   createProofBundle,
+  qualifiedRailFromProof,
   scopeForRecord,
 } from "./records.js";
 
@@ -72,6 +74,8 @@ export function createMemoryRecordStore() {
     ],
   ]);
   const submissionIndex = new Map();
+  const batches = new Map();
+  const batchByRecord = new Map();
 
   return {
     mode: "memory",
@@ -109,6 +113,130 @@ export function createMemoryRecordStore() {
       });
       submissionIndex.set(input.submissionId, record.recordId);
       return { record, created: true };
+    },
+
+    async listTimestampCandidates(limit = 50) {
+      return [...entries.values()]
+        .map((entry) => entry.record)
+        .filter(
+          (record) =>
+            !record.specimen && record.qualifiedRail?.state === "NOT_ISSUED",
+        )
+        .slice(0, limit)
+        .map((record) => structuredClone(record));
+    },
+
+    async saveQualifiedTimestamp(recordId, proof) {
+      const entry = entries.get(recordId);
+      if (!entry || entry.record.specimen) {
+        throw new ApiError(404, "RECORD_NOT_FOUND", "Record not found.");
+      }
+      if (entry.record.qualifiedRail?.state === "SANDBOX_TOKEN_ISSUED") {
+        if (entry.record.qualifiedRail.hashedMessage !== proof.hashedMessage) {
+          throw new ApiError(
+            409,
+            "TIMESTAMP_PROOF_CONFLICT",
+            "This record already carries a timestamp for another digest.",
+          );
+        }
+        return { created: false, record: structuredClone(entry.record) };
+      }
+      entry.record = {
+        ...entry.record,
+        qualifiedAt: proof.certifiedAt,
+        qualifiedRail: qualifiedRailFromProof(proof),
+      };
+      return { created: true, record: structuredClone(entry.record) };
+    },
+
+    async listAnchorCandidates(limit = 1024) {
+      return [...entries.values()]
+        .map((entry) => entry.record)
+        .filter(
+          (record) =>
+            !record.specimen &&
+            record.qualifiedRail?.state === "SANDBOX_TOKEN_ISSUED" &&
+            !batchByRecord.has(record.recordId),
+        )
+        .slice(0, limit)
+        .map((record) => structuredClone(record));
+    },
+
+    async createAnchorBatch(batch) {
+      if (batches.has(batch.batchId)) {
+        return { created: false, batch: structuredClone(batches.get(batch.batchId)) };
+      }
+      for (const member of batch.members) {
+        if (batchByRecord.has(member.recordId)) {
+          throw new ApiError(
+            409,
+            "ANCHOR_MEMBER_CONFLICT",
+            "A record is already assigned to an anchor batch.",
+          );
+        }
+      }
+      const stored = {
+        ...structuredClone(batch),
+        state: "PREPARED",
+        chain: "Ethereum mainnet",
+        chainId: 1,
+        createdAt: new Date().toISOString(),
+      };
+      batches.set(batch.batchId, stored);
+      for (const member of batch.members) {
+        batchByRecord.set(member.recordId, batch.batchId);
+      }
+      return { created: true, batch: structuredClone(stored) };
+    },
+
+    async getActionableAnchorBatch() {
+      const batch = [...batches.values()].find((candidate) =>
+        ["PREPARED", "SIGNED", "SUBMITTED", "CONFIRMED"].includes(
+          candidate.state,
+        ),
+      );
+      return batch ? structuredClone(batch) : null;
+    },
+
+    async saveSignedAnchor(batchId, signed) {
+      const batch = batches.get(batchId);
+      if (!batch) throw new ApiError(404, "ANCHOR_BATCH_NOT_FOUND", "Anchor batch not found.");
+      Object.assign(batch, structuredClone(signed), {
+        state: "SIGNED",
+        signedAt: new Date().toISOString(),
+      });
+      return structuredClone(batch);
+    },
+
+    async markAnchorSubmitted(batchId) {
+      const batch = batches.get(batchId);
+      if (!batch) throw new ApiError(404, "ANCHOR_BATCH_NOT_FOUND", "Anchor batch not found.");
+      batch.state = "SUBMITTED";
+      batch.submittedAt ??= new Date().toISOString();
+      return structuredClone(batch);
+    },
+
+    async updateAnchorBatch(batchId, update) {
+      const batch = batches.get(batchId);
+      if (!batch) throw new ApiError(404, "ANCHOR_BATCH_NOT_FOUND", "Anchor batch not found.");
+      Object.assign(batch, structuredClone(update));
+      for (const member of batch.members) {
+        const entry = entries.get(member.recordId);
+        if (!entry) continue;
+        entry.record = {
+          ...entry.record,
+          chainRail: chainRailFromProof({
+            ...batch,
+            ...member,
+            transactionHash: batch.transactionHash,
+            batchId: batch.batchId,
+            batchSize: batch.leafCount,
+            merkleRoot: batch.root,
+            merkleProtocol: batch.protocol,
+          }),
+        };
+      }
+      return structuredClone(batch);
     },
 
     async findById(recordId) {

@@ -32,6 +32,25 @@ function bytesToHex(bytes) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+function hexToBytes(value, label) {
+  const hex = String(value ?? "").trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(hex)) {
+    throw new Error(`${label} is not a SHA-256 digest.`);
+  }
+  return Uint8Array.from(hex.match(/.{2}/g), (byte) => Number.parseInt(byte, 16));
+}
+
+function concatBytes(...values) {
+  const length = values.reduce((sum, value) => sum + value.length, 0);
+  const result = new Uint8Array(length);
+  let offset = 0;
+  for (const value of values) {
+    result.set(value, offset);
+    offset += value.length;
+  }
+  return result;
+}
+
 function bytesToBase64(bytes) {
   let binary = "";
   const chunkSize = 0x8000;
@@ -54,11 +73,105 @@ async function sha256Bytes(bytes) {
   return bytesToHex(nobleSha256(new Uint8Array(bytes)));
 }
 
+export async function recalculateEvidenceDigest(recordSha256, manifestSha256) {
+  return sha256Bytes(
+    concatBytes(
+      new TextEncoder().encode("SiteSealed evidence digest v1\0"),
+      hexToBytes(recordSha256, "recordSha256"),
+      hexToBytes(manifestSha256, "manifestSha256"),
+    ),
+  );
+}
+
+async function merkleLeafHash(evidenceDigest) {
+  return sha256Bytes(
+    concatBytes(
+      new Uint8Array([0]),
+      hexToBytes(evidenceDigest, "evidenceDigest"),
+    ),
+  );
+}
+
+async function merkleParentHash(left, right) {
+  return sha256Bytes(
+    concatBytes(
+      new Uint8Array([1]),
+      hexToBytes(left, "left Merkle node"),
+      hexToBytes(right, "right Merkle node"),
+    ),
+  );
+}
+
+export async function verifyPublicProofArtifacts(record) {
+  try {
+    const evidenceDigest = await recalculateEvidenceDigest(
+      record?.sha256,
+      record?.manifestSha256,
+    );
+    if (evidenceDigest !== record?.evidenceDigest) {
+      return {
+        state: "FAIL",
+        evidenceDigest: "MISMATCH",
+        merkleInclusion: "NOT_CHECKED",
+        transactionBinding: "NOT_CHECKED",
+      };
+    }
+
+    const rail = record?.chainRail ?? {};
+    if (
+      !rail.merkleRoot ||
+      !Array.isArray(rail.inclusionPath) ||
+      !rail.anchor
+    ) {
+      return {
+        state: "RECEIPT_VALID_EXTERNAL_PENDING",
+        evidenceDigest: "PASS",
+        merkleInclusion: "NOT_ATTACHED",
+        transactionBinding: "NOT_ATTACHED",
+      };
+    }
+
+    let calculatedRoot = await merkleLeafHash(evidenceDigest);
+    const leafMatches = !rail.leafHash || rail.leafHash === calculatedRoot;
+    for (const step of rail.inclusionPath) {
+      if (!step || !["left", "right"].includes(step.position)) {
+        throw new Error("Invalid Merkle path step.");
+      }
+      calculatedRoot = step.position === "left"
+        ? await merkleParentHash(step.sha256, calculatedRoot)
+        : await merkleParentHash(calculatedRoot, step.sha256);
+    }
+    const merklePass = leafMatches && calculatedRoot === rail.merkleRoot;
+    const expectedInput = `0x53534c4401${rail.merkleRoot}`;
+    const currentAlpha =
+      record?.receipt?.schemaVersion === "sitesealed.receipt.v1.4-alpha.1";
+    const transactionBinding = rail.transactionInput
+      ? Number(rail.chainId) === 1 &&
+        String(rail.transactionInput).toLowerCase() === expectedInput
+      : !currentAlpha;
+    return {
+      state: merklePass && transactionBinding ? "PASS" : "FAIL",
+      evidenceDigest: "PASS",
+      merkleInclusion: merklePass ? "PASS" : "MISMATCH",
+      transactionBinding: rail.transactionInput
+        ? transactionBinding ? "PASS" : "MISMATCH"
+        : currentAlpha ? "MISSING" : "NOT_AVAILABLE_LEGACY",
+    };
+  } catch {
+    return {
+      state: "FAIL",
+      evidenceDigest: "INVALID",
+      merkleInclusion: "INVALID",
+      transactionBinding: "INVALID",
+    };
+  }
+}
+
 export async function sha256File(file) {
   if (!(file instanceof Blob)) throw new TypeError("A browser File or Blob is required.");
   if (file.size <= 0) throw new Error("The selected file is empty.");
   if (file.size > MAX_FILE_BYTES) {
-    throw new Error("This v1.3 workflow accepts files up to 25 MB.");
+    throw new Error("This v1.4 alpha workflow accepts files up to 25 MB.");
   }
   return sha256Bytes(await file.arrayBuffer());
 }
@@ -134,7 +247,7 @@ export async function encryptManifest(manifest) {
 export async function encryptOriginal(file, recoveryKey) {
   if (!(file instanceof Blob)) throw new TypeError("A browser File or Blob is required.");
   if (file.size <= 0 || file.size > MAX_FILE_BYTES) {
-    throw new Error("This v1.3 workflow accepts files from 1 byte up to 25 MB.");
+    throw new Error("This v1.4 alpha workflow accepts files from 1 byte up to 25 MB.");
   }
   const rawKey = base64ToBytes(recoveryKey);
   if (rawKey.length !== 32) throw new Error("The sealing recovery key is invalid.");

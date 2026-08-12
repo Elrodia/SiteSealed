@@ -9,9 +9,13 @@ import {
   createSealRequest,
   encryptManifest,
   encryptOriginal,
+  recalculateEvidenceDigest,
   sha256File,
   stableStringify,
+  verifyPublicProofArtifacts,
 } from "../client/src/sealing.js";
+import { buildMerkleTree } from "./merkle.js";
+import { createEvidenceDigest } from "./records.js";
 
 function fromBase64(value) {
   return Uint8Array.from(Buffer.from(value, "base64"));
@@ -135,4 +139,80 @@ test("the local cryptography fallback works outside a secure Web Crypto context"
       value: originalCrypto,
     });
   }
+});
+
+test("the browser independently recalculates the evidence digest and Ethereum Merkle binding", async () => {
+  const recordSha256 =
+    "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+  const manifestSha256 = "1".repeat(64);
+  const evidenceDigest = createEvidenceDigest({
+    recordSha256,
+    manifestSha256,
+  });
+  assert.equal(
+    await recalculateEvidenceDigest(recordSha256, manifestSha256),
+    evidenceDigest,
+  );
+
+  const tree = buildMerkleTree([
+    { recordId: "SR-BROWSER-1", evidenceDigest },
+    { recordId: "SR-BROWSER-2", evidenceDigest: "2".repeat(64) },
+  ]);
+  const member = tree.members[0];
+  const record = {
+    sha256: recordSha256,
+    manifestSha256,
+    evidenceDigest,
+    receipt: { schemaVersion: "sitesealed.receipt.v1.4-alpha.1" },
+    chainRail: {
+      anchor: `0x${"3".repeat(64)}`,
+      chainId: 1,
+      merkleRoot: tree.root,
+      leafHash: member.leafHash,
+      inclusionPath: member.inclusionPath,
+      transactionInput: `0x53534c4401${tree.root}`,
+    },
+  };
+
+  assert.deepEqual(await verifyPublicProofArtifacts(record), {
+    state: "PASS",
+    evidenceDigest: "PASS",
+    merkleInclusion: "PASS",
+    transactionBinding: "PASS",
+  });
+
+  record.chainRail.transactionInput = `0x53534c4401${"f".repeat(64)}`;
+  assert.deepEqual(await verifyPublicProofArtifacts(record), {
+    state: "FAIL",
+    evidenceDigest: "PASS",
+    merkleInclusion: "PASS",
+    transactionBinding: "MISMATCH",
+  });
+
+  delete record.chainRail.transactionInput;
+  assert.deepEqual(await verifyPublicProofArtifacts(record), {
+    state: "FAIL",
+    evidenceDigest: "PASS",
+    merkleInclusion: "PASS",
+    transactionBinding: "MISSING",
+  });
+});
+
+test("the browser reports a valid local receipt while its external anchor is pending", async () => {
+  const recordSha256 = "4".repeat(64);
+  const manifestSha256 = "5".repeat(64);
+  const record = {
+    sha256: recordSha256,
+    manifestSha256,
+    evidenceDigest: createEvidenceDigest({ recordSha256, manifestSha256 }),
+    receipt: { schemaVersion: "sitesealed.receipt.v1.4-alpha.1" },
+    chainRail: { anchor: null, merkleRoot: null, inclusionPath: null },
+  };
+
+  assert.deepEqual(await verifyPublicProofArtifacts(record), {
+    state: "RECEIPT_VALID_EXTERNAL_PENDING",
+    evidenceDigest: "PASS",
+    merkleInclusion: "NOT_ATTACHED",
+    transactionBinding: "NOT_ATTACHED",
+  });
 });

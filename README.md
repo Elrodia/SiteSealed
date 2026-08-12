@@ -1,112 +1,134 @@
-# SiteSealed Genesis v1.3
+# SiteSealed Genesis v1.4-alpha.1
 
-SiteSealed v1.3 prolonge le premier parcours réel de scellement avec une couche
-d'exploitation distribuée, sans modifier la limite de preuve du Founding
-Whitepaper v1.0.
+Cette alpha construit les deux rails externes choisis pour le QTSP :
 
-## Ce qui est réellement fonctionnel
+- **Evidency sandbox** pour demander et exporter un jeton RFC 3161 de test ;
+- **Ethereum mainnet (chain ID 1)** comme rail public définitif pour les racines
+  Merkle horaires.
 
-- sélection d'un fichier réel dans le navigateur ;
-- calcul local de l'empreinte SHA-256 ;
-- chiffrement local AES-256-GCM du manifeste et de l'original ;
-- clé AES et jeton de récupération conservés uniquement dans le kit privé ;
+Le mot `sealed` reste volontairement désactivé. Un jeton Evidency sandbox n'a
+aucun effet juridique et ne devient jamais un horodatage qualifié eIDAS. Même
+avec un ancrage mainnet finalisé, l'état maximal de cette version est
+`ALPHA_DUAL_RAIL_COMPLETE`.
+
+## Ce qui fonctionne réellement
+
+- SHA-256 du fichier dans le navigateur ;
+- AES-256-GCM du manifeste et de l'original avant tout envoi ;
 - stockage du seul ciphertext dans un Bucket S3 privé ;
-- registre persistant des reçus, empreintes et références S3 dans MySQL ;
-- journal opérationnel append-only et hash-chaîné dans PostgreSQL ;
-- limitation de débit distribuée, verrou d'idempotence court et cache de
-  vérification public dans Redis ;
-- identifiant public, vérification locale, bundle JSON, récupération chiffrée
-  et reçu PDF dynamique.
+- registre MySQL, audit PostgreSQL append-only et coordination Redis ;
+- evidence digest séparé par domaine, lié aux empreintes du fichier et du
+  manifeste ;
+- requête digest-only vers `https://api-sandbox.evidency.io` ;
+- contrôle de la réponse Evidency : statut, algorithme et digest renvoyé ;
+- conservation et export du jeton RFC 3161 avec sa propre empreinte SHA-256 ;
+- arbre Merkle SHA-256 avec séparation de domaine entre feuilles et nœuds ;
+- preuve d'inclusion individuelle, sans divulguer les autres reçus ;
+- transaction EIP-1559 auto-adressée dont le calldata contient le préfixe
+  `SSLD` version 1 puis la racine Merkle ;
+- signature locale, persistance de la transaction signée avant diffusion,
+  plafond de frais et vérification du réseau 1 ;
+- suivi `SUBMITTED`, `CONFIRMED`, puis `FINALIZED`, avec contrôle du sender, du
+  destinataire et du calldata ;
+- bundle JSON v1.4 alpha, jeton `.tsr`, reçu PDF, lien Etherscan et vérificateur
+  public ;
+- worker Railway idempotent et verrouillé par Redis.
 
 Le serveur ne reçoit jamais l'original lisible, le manifeste lisible ou la clé
-AES. PostgreSQL ne reçoit que des empreintes et références publiques du reçu.
-Redis ne contient aucune donnée faisant autorité et peut être vidé sans perdre
-un reçu ou un objet.
+AES. Evidency reçoit uniquement l'evidence digest. Ethereum reçoit uniquement
+une racine de lot, jamais un nom de fichier, une empreinte directe de fichier ou
+un identifiant de reçu.
 
-## Limite honnête de la v1.3
+## Machine d'état honnête
 
-La chaîne PostgreSQL détecte les altérations accidentelles et ordonne les
-événements applicatifs, mais elle reste administrée par SiteSealed. Elle n'est
-donc ni une preuve indépendante, ni un horodatage qualifié, ni un ancrage
-public. La v1.3 ne fournit toujours pas :
-
-- de jeton qualifié RFC 3161 émis par un QTSP ;
-- de racine Merkle ancrée sur une blockchain publique ;
-- de capture in-app attestée avec identité, appareil et GNSS ;
-- de preuve que la scène était vraie ou non mise en scène.
-
-MySQL, PostgreSQL, Redis et S3 sont des composants d'exploitation. Aucun ne
-remplace les deux rails externes exigés par le whitepaper.
-
-## Répartition stricte des responsabilités
-
-| Service | Rôle | Source de vérité | Données lisibles originales |
+| État | Evidency | Ethereum | `sealed` |
 | --- | --- | --- | --- |
-| MySQL | Registre opérationnel des reçus et références S3 | Oui, pour l'index applicatif v1.3 | Non |
-| Bucket S3 | Ciphertexts AES-256-GCM privés | Oui, pour les octets chiffrés | Non |
-| PostgreSQL | Événements de reçus append-only, reliés par SHA-256 | Oui, pour l'audit interne uniquement | Non |
-| Redis | Limites distribuées, verrous courts et cache public | Non | Non |
+| `EXTERNAL_PROOFS_PENDING` | absent | absent | `false` |
+| `SANDBOX_TIMESTAMP_ISSUED_ANCHOR_PENDING` | test sandbox | absent | `false` |
+| `MAINNET_ANCHORED_QTSP_PENDING` | non qualifié/absent | finalisé | `false` |
+| `ALPHA_DUAL_RAIL_COMPLETE` | test sandbox | finalisé | `false` |
+| `DUAL_RAIL_COMPLETE` | qualifié + signature validée | finalisé | `true` |
 
-Le protocole de dépôt chiffré reste `1.2` pour préserver les objets et kits déjà
-créés. La version de l'application et du bundle enrichi est `1.3`.
+La dernière ligne existe dans le modèle de données pour la future production,
+mais cette alpha ne peut pas l'atteindre.
 
-## Structure
+## Responsabilités
 
-- `client/` : React 19, Vite, Web Crypto et interface responsive ;
-- `server/database.js` : registre MySQL et migrations `001` à `003` ;
-- `server/storage.js` : validation et stockage S3 du ciphertext ;
-- `server/audit.js` : migration PostgreSQL, événements append-only et chaîne SHA-256 ;
-- `server/coordination.js` : Redis distribué et adaptateur mémoire local ;
-- `server/server.js` : API Express, healthcheck et service du build React ;
-- `scripts/verify-bundle.mjs` : vérification locale du reçu et de l'événement d'audit ;
-- `railway.json` : build, migrations préalables, démarrage et healthcheck.
+| Composant | Rôle | Autoritaire | Original lisible |
+| --- | --- | --- | --- |
+| MySQL | Reçus, preuves externes et lots Merkle | Oui pour l'index applicatif | Non |
+| Bucket S3 | Ciphertexts AES-256-GCM | Oui pour les octets chiffrés | Non |
+| PostgreSQL | Événements internes hash-chaînés | Audit interne uniquement | Non |
+| Redis | Limites, verrous et cache | Non | Non |
+| Evidency sandbox | Jeton RFC 3161 de test | Artefact externe de test | Non, digest seulement |
+| Ethereum mainnet | Racine Merkle publique | Rail public | Non, racine seulement |
 
-## Développement local
+Le protocole privé de dépôt reste `1.2` afin de préserver les objets et kits de
+récupération existants. Le reçu et le bundle publics passent en
+`1.4-alpha.1`. La migration MySQL `004_dual_rail_alpha` est additive.
+
+## Structure utile
+
+- `server/evidency.js` : client sandbox strict et validation de réponse ;
+- `server/merkle.js` : arbre et preuves d'inclusion déterministes ;
+- `server/ethereum.js` : transaction mainnet, plafond de frais et inspection ;
+- `server/rails-worker.js` : orchestration idempotente des deux files ;
+- `server/database.js` : migration et persistance des artefacts ;
+- `client/public/schemas/` : schéma JSON du bundle exporté ;
+- le portail web recalcule dans le navigateur l'evidence digest, la preuve
+  d'inclusion Merkle et la liaison du calldata Ethereum ;
+- `scripts/verify-bundle.mjs` : vérification locale du reçu, du jeton et de la
+  preuve Merkle ;
+- `railway.json` : service web ;
+- `railway.rails.json` : service cron des rails externes.
+
+## Développement et tests
 
 ```bash
 npm ci
-npm run dev:full
-```
-
-Avec `DATABASE_MODE=optional`, les services absents sont remplacés par des
-adaptateurs mémoire réservés au développement. Ils disparaissent au redémarrage.
-
-Pour utiliser les quatre dépendances localement, copie `.env.example` vers
-`.env`, adapte les URL et les cinq variables S3, puis exécute :
-
-```bash
-npm run db:migrate
-npm run dev:full
-```
-
-## Tests
-
-```bash
 npm test
 ```
 
-La suite compile React et contrôle notamment le chiffrement client, les limites
-de taille, MySQL, le stockage S3, la chaîne d'audit, l'idempotence, le cache,
-la limitation de débit, les bundles, les reçus PDF et la limite honnête des
-preuves externes.
+Pour un démarrage local sans dépendances persistantes :
 
-Un bundle peut aussi être vérifié hors du site :
+```bash
+cp .env.example .env
+npm run dev:full
+```
+
+Avec `DATABASE_MODE=optional`, les adaptateurs mémoire sont réservés au
+développement et disparaissent au redémarrage. Les deux rails externes sont
+désactivés par défaut : aucun appel Evidency et aucune dépense ETH ne peuvent se
+produire sans activation explicite.
+
+Pour vérifier un bundle hors du site :
 
 ```bash
 npm run verify:bundle -- ./proof-bundle.json ./original.pdf ./encrypted-original.ssenc
 ```
 
+Le script valide l'intégrité du reçu, la liaison du token exporté à l'evidence
+digest et le chemin Merkle. Pour vérifier aussi le calldata, le sender, le bloc
+et la finalité via un RPC mainnet indépendant :
+
+```bash
+ETHEREUM_VERIFY_RPC_URL=https://votre-rpc-mainnet.example \
+  npm run verify:bundle -- ./proof-bundle.json ./original.pdf
+```
+
+Le script ne qualifie pas la signature du jeton sandbox.
+Cette validation exige la chaîne de confiance publiée par le prestataire et un
+outil RFC 3161 indépendant.
+
 ## Déploiement Railway
 
-Le projet comprend cinq services :
+Le projet Railway contient les services existants `SiteSealed`, `MySQL`,
+`Bucket S3`, `Postgres` et `Redis`, plus un nouveau service **SiteSealed Rails**
+créé depuis le même dépôt GitHub.
 
-- `SiteSealed` : React compilé, Express et API ;
-- `MySQL` : registre persistant ;
-- `Bucket S3` : originaux chiffrés côté client ;
-- `Postgres` : audit opérationnel append-only ;
-- `Redis` : coordination distribuée non autoritaire.
+### 1. Service web `SiteSealed`
 
-Dans **SiteSealed > Variables**, configure exactement :
+Il garde `/railway.json` comme chemin de configuration. Ses variables sont :
 
 ```text
 DATABASE_MODE=required
@@ -124,46 +146,70 @@ S3_REGION=${{"Bucket S3".REGION}}
 S3_SECRET_KEY=${{"Bucket S3".SECRET_ACCESS_KEY}}
 ```
 
-Ne copie jamais les valeurs réelles dans Git : utilise les références Railway.
-Avec `DATABASE_MODE=required`, le démarrage échoue volontairement si MySQL,
-PostgreSQL, Redis ou S3 n'est pas complètement configuré.
+Les secrets des rails n'ont pas besoin d'être placés dans le service web.
+L'API affiche donc leur runner comme `OFF`; les états des reçus, eux, proviennent
+des artefacts réellement enregistrés par le worker.
 
-Railway exécute `npm run build`, puis `npm run db:migrate` en pre-deploy, puis
-`npm start`. La commande de migration applique MySQL et PostgreSQL de manière
-idempotente ; Redis ne requiert aucun schéma.
+### 2. Service cron `SiteSealed Rails`
 
-Après déploiement, `/api/health` doit notamment indiquer :
+Dans **Settings**, définir le chemin de configuration sur
+`/railway.rails.json`. Ne configure pas encore de cron pendant le premier test.
+Après le premier ancrage contrôlé, ajoute `0 * * * *` dans **Cron Schedule**
+(au début de chaque heure, UTC). Ce processus traite les reçus, vérifie les lots
+déjà soumis et se termine ; il ne doit pas être déployé comme serveur permanent.
 
-```json
-{
-  "ok": true,
-  "service": "sitesealed",
-  "version": "1.3.0",
-  "database": {
-    "mode": "mysql",
-    "status": "connected",
-    "persistent": true
-  },
-  "objectStorage": {
-    "mode": "s3",
-    "status": "connected",
-    "clientEncryptedOnly": true
-  },
-  "auditDatabase": {
-    "mode": "postgresql",
-    "status": "connected",
-    "appendOnly": true,
-    "hashChained": true,
-    "independentlyAnchored": false
-  },
-  "coordination": {
-    "mode": "redis",
-    "status": "connected",
-    "authoritative": false,
-    "distributed": true
-  }
-}
+Variables de ce service :
+
+```text
+DATABASE_MODE=required
+MYSQL_URL=${{MySQL.MYSQL_URL}}
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+REDIS_URL=${{Redis.REDIS_URL}}
+
+EVIDENCY_MODE=sandbox
+EVIDENCY_API_BASE_URL=https://api-sandbox.evidency.io
+EVIDENCY_API_KEY=<secret Railway>
+EVIDENCY_PROJECT_KEY=<clé du projet sandbox>
+EVIDENCY_TIMEOUT_MS=12000
+EVIDENCY_BATCH_SIZE=50
+
+ETHEREUM_ANCHOR_MODE=mainnet
+ETHEREUM_RPC_URL=<endpoint HTTPS/WSS mainnet>
+ETHEREUM_ANCHOR_PRIVATE_KEY=<secret Railway>
+ETHEREUM_CONFIRMATIONS=12
+ETHEREUM_MAX_FEE_GWEI=60
+ETHEREUM_GAS_LIMIT=30000
+ANCHOR_MAX_BATCH_SIZE=1024
 ```
 
-Les URL privées `DATABASE_URL` et `REDIS_URL` sont les variables standard
-fournies par les services Railway du même projet.
+`ETHEREUM_ANCHOR_PRIVATE_KEY` doit appartenir à un portefeuille dédié, peu
+approvisionné et sans autre usage. Le cron dépense de vrais ETH. Ne colle jamais
+la clé privée dans Git, un ticket, un log ou une conversation ; ajoute-la
+directement comme secret Railway.
+
+Déploiement prudent :
+
+1. déployer et vérifier les migrations avec les deux modes laissés à
+   `disabled` ;
+2. activer uniquement `EVIDENCY_MODE=sandbox`, lancer le worker manuellement et
+   contrôler un jeton exporté ;
+3. approvisionner le portefeuille dédié, vérifier son adresse et le RPC
+   mainnet ;
+4. activer `ETHEREUM_ANCHOR_MODE=mainnet`, lancer un premier petit lot sous
+   surveillance, puis seulement activer le cron horaire.
+
+Une erreur Evidency, une transaction invalide ou un dépassement du plafond de
+frais fait échouer le run sans transformer le reçu en preuve complète. Les lots
+signés restent en base afin qu'un run ultérieur reprenne sans signer
+silencieusement une seconde transaction.
+
+## Limites restantes
+
+- Evidency sandbox : test uniquement, sans valeur qualifiée ;
+- signature du token : conservée mais pas marquée `VALID` par l'alpha ;
+- pas de capture in-app attestée, identité, appareil ou GNSS ;
+- pas de preuve de véracité, d'auteur ou de scène non mise en scène ;
+- pas encore d'audit de sécurité indépendant ni de procédure de gestion de clé
+  institutionnelle.
+
+L'alpha prouve ce qu'elle peut recalculer et expose explicitement tout le reste.

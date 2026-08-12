@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 export const RECORD_CLASS_IMPORTED = "IMPORTED_FILE";
 export const PROOF_LEVEL_DEVELOPMENT = "DEVELOPMENT_RECEIPT";
+export const PROOF_LEVEL_DUAL_RAIL_ALPHA = "DUAL_RAIL_ALPHA_RECEIPT";
 export const SEAL_PROTOCOL_VERSION = "1.2";
 export const MAX_ENCRYPTED_MANIFEST_BYTES = 64 * 1024;
 export const MAX_ORIGINAL_BYTES = 25 * 1024 * 1024;
@@ -65,6 +66,18 @@ export function stableStringify(value) {
 
 export function sha256Hex(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+export function createEvidenceDigest({ recordSha256, manifestSha256 }) {
+  const recordDigest = normalizeDigest(recordSha256, "recordSha256");
+  const manifestDigest = normalizeDigest(manifestSha256, "manifestSha256");
+  return sha256Hex(
+    Buffer.concat([
+      Buffer.from("SiteSealed evidence digest v1\0", "utf8"),
+      Buffer.from(recordDigest, "hex"),
+      Buffer.from(manifestDigest, "hex"),
+    ]),
+  );
 }
 
 export function normalizeRecordId(value) {
@@ -240,7 +253,7 @@ export function validateSealRequest(body) {
     throw new ApiError(
       400,
       "INVALID_RECORD_CLASS",
-      "The v1.3 web workflow accepts only explicitly labelled imported files.",
+      "The v1.4 alpha web workflow accepts only explicitly labelled imported files.",
     );
   }
 
@@ -329,18 +342,28 @@ export function createReceiptPayload({
   manifestSha256,
   encryptedObject,
   receivedAt,
+  receiptVersion = "1.4-alpha.1",
+  proofLevel = PROOF_LEVEL_DUAL_RAIL_ALPHA,
 }) {
+  const evidenceDigest = createEvidenceDigest({
+    recordSha256,
+    manifestSha256,
+  });
+  const alphaReceipt = receiptVersion === "1.4-alpha.1";
   const receipt = {
-    schemaVersion: encryptedObject
-      ? "sitesealed.receipt.v1.2"
-      : "sitesealed.receipt.v1",
+    schemaVersion: alphaReceipt
+      ? "sitesealed.receipt.v1.4-alpha.1"
+      : encryptedObject
+        ? "sitesealed.receipt.v1.2"
+        : "sitesealed.receipt.v1",
     recordId,
     recordClass,
-    proofLevel: PROOF_LEVEL_DEVELOPMENT,
+    proofLevel: alphaReceipt ? proofLevel : PROOF_LEVEL_DEVELOPMENT,
     recordSha256,
     manifestSha256,
     receivedAt,
   };
+  if (alphaReceipt) receipt.evidenceDigest = evidenceDigest;
   if (encryptedObject) {
     receipt.encryptedOriginal = {
       state: "STORED_ENCRYPTED",
@@ -357,6 +380,12 @@ export function createReceiptPayload({
 export function createDevelopmentRecord(input, options = {}) {
   const receivedAt = (options.receivedAt ?? new Date()).toISOString();
   const recordId = options.recordId ?? createRecordId(new Date(receivedAt));
+  const receiptVersion = options.receiptVersion ?? "1.4-alpha.1";
+  const proofLevel =
+    options.proofLevel ??
+    (receiptVersion === "1.4-alpha.1"
+      ? PROOF_LEVEL_DUAL_RAIL_ALPHA
+      : PROOF_LEVEL_DEVELOPMENT);
   const receipt = createReceiptPayload({
     recordId,
     recordClass: input.recordClass,
@@ -364,6 +393,8 @@ export function createDevelopmentRecord(input, options = {}) {
     manifestSha256: input.manifestSha256,
     encryptedObject: input.encryptedObject,
     receivedAt,
+    receiptVersion,
+    proofLevel,
   });
 
   const encryptedObject = input.encryptedObject ?? null;
@@ -372,7 +403,7 @@ export function createDevelopmentRecord(input, options = {}) {
     recordId,
     specimen: false,
     recordClass: input.recordClass,
-    proofLevel: PROOF_LEVEL_DEVELOPMENT,
+    proofLevel,
     classification: "Imported file - web sealing workflow",
     project: "Encrypted in the client-held manifest",
     description:
@@ -384,9 +415,13 @@ export function createDevelopmentRecord(input, options = {}) {
     capturedAt: null,
     qualifiedAt: null,
     receivedAt,
-    position: "Not collected in the v1.3 web import workflow",
+    position: "Not collected in the v1.4 web import workflow",
     sha256: input.recordSha256,
     manifestSha256: input.manifestSha256,
+    evidenceDigest: createEvidenceDigest({
+      recordSha256: input.recordSha256,
+      manifestSha256: input.manifestSha256,
+    }),
     manifestEncryption: "AES-256-GCM / client-held key",
     storage: encryptedObject
       ? {
@@ -411,19 +446,143 @@ export function createDevelopmentRecord(input, options = {}) {
     receiptSha256: sha256Hex(stableStringify(receipt)),
     qualifiedRail: {
       state: "NOT_ISSUED",
-      provider: "Not issued in v1.3",
+      provider: "Evidency sandbox",
       token: null,
-      status: "No qualified RFC 3161 timestamp token has been issued.",
+      environment: "SANDBOX",
+      legalUse: false,
+      qualificationStatus: "NOT_ISSUED",
+      signatureVerification: "NOT_AVAILABLE",
+      status: "No Evidency sandbox RFC 3161 token has been issued.",
     },
     chainRail: {
       state: "NOT_ANCHORED",
-      chain: "Not anchored in v1.3",
+      chain: "Ethereum mainnet",
+      chainId: 1,
       block: null,
       anchor: null,
       merkleRoot: null,
       batchSize: null,
-      status: "No public-chain Merkle anchor has been created.",
+      inclusionPath: null,
+      confirmations: 0,
+      finalityStatus: "NOT_ANCHORED",
+      status: "No Ethereum mainnet Merkle anchor has been created.",
     },
+  };
+}
+
+export function externalProofStatus(record) {
+  if (record?.specimen) {
+    return {
+      state: "SPECIMEN",
+      proofsComplete: false,
+      alphaComplete: false,
+      sealed: false,
+    };
+  }
+  const qualified =
+    record?.qualifiedRail?.qualificationStatus === "EIDAS_QUALIFIED" &&
+    record?.qualifiedRail?.signatureVerification === "VALID";
+  const sandbox = record?.qualifiedRail?.state === "SANDBOX_TOKEN_ISSUED";
+  const finalized = record?.chainRail?.state === "FINALIZED";
+  const anchorRejected = ["FAILED_ON_CHAIN", "INVALID_ON_CHAIN"].includes(
+    record?.chainRail?.state,
+  );
+  return {
+    state:
+      anchorRejected
+        ? "PUBLIC_ANCHOR_REJECTED"
+        : qualified && finalized
+        ? "DUAL_RAIL_COMPLETE"
+        : sandbox && finalized
+          ? "ALPHA_DUAL_RAIL_COMPLETE"
+          : sandbox
+            ? "SANDBOX_TIMESTAMP_ISSUED_ANCHOR_PENDING"
+            : finalized
+              ? "MAINNET_ANCHORED_QTSP_PENDING"
+              : "EXTERNAL_PROOFS_PENDING",
+    proofsComplete: Boolean(qualified && finalized),
+    alphaComplete: Boolean(sandbox && finalized),
+    sealed: Boolean(qualified && finalized),
+  };
+}
+
+export function qualifiedRailFromProof(proof) {
+  if (!proof) return null;
+  const sandbox = String(proof.environment ?? "").toUpperCase() === "SANDBOX";
+  return {
+    state: sandbox ? "SANDBOX_TOKEN_ISSUED" : "TOKEN_ISSUED",
+    provider: proof.provider ?? "Evidency",
+    environment: sandbox ? "SANDBOX" : "PRODUCTION",
+    legalUse: Boolean(proof.legalUse) && !sandbox,
+    qualificationStatus:
+      proof.qualificationStatus ??
+      (sandbox ? "TEST_ONLY_NOT_QUALIFIED" : "UNDETERMINED"),
+    hashAlgorithm: proof.hashAlgorithm ?? "SHA256",
+    hashedMessage: proof.hashedMessage ?? null,
+    serialNumber: proof.serialNumber ?? null,
+    certifiedAt: proof.certifiedAt ?? null,
+    token: proof.tokenBase64 ?? null,
+    tokenSha256: proof.tokenSha256 ?? null,
+    tsaPolicyId: proof.tsaPolicyId ?? null,
+    providerStatus: proof.providerStatus ?? null,
+    responseValidation: proof.responseValidation ?? null,
+    signatureVerification:
+      proof.signatureVerification ?? "NOT_INDEPENDENTLY_VERIFIED",
+    status: sandbox
+      ? "Evidency sandbox token issued - test-only, without qualified legal effect."
+      : "Timestamp token issued; qualification must be independently validated.",
+  };
+}
+
+export function chainRailFromProof(proof) {
+  if (!proof) return null;
+  const state = String(proof.state ?? "SUBMITTED").toUpperCase();
+  return {
+    state,
+    chain: proof.chain ?? "Ethereum mainnet",
+    chainId: Number(proof.chainId ?? 1),
+    block:
+      proof.blockNumber === null || proof.blockNumber === undefined
+        ? null
+        : Number(proof.blockNumber).toLocaleString("en-US"),
+    blockNumber:
+      proof.blockNumber === null || proof.blockNumber === undefined
+        ? null
+        : Number(proof.blockNumber),
+    blockHash: proof.blockHash ?? null,
+    anchor: proof.transactionHash ?? null,
+    transactionInput: proof.transactionInput ?? null,
+    anchorAddress: proof.anchorAddress ?? null,
+    merkleProtocol: proof.merkleProtocol ?? "SITESEALED_MERKLE_SHA256_V1",
+    merkleRoot: proof.merkleRoot ?? null,
+    leafHash: proof.leafHash ?? null,
+    leafIndex:
+      proof.leafIndex === null || proof.leafIndex === undefined
+        ? null
+        : Number(proof.leafIndex),
+    inclusionPath: proof.inclusionPath ?? null,
+    batchId: proof.batchId ?? null,
+    batchSize:
+      proof.batchSize === null || proof.batchSize === undefined
+        ? null
+        : Number(proof.batchSize),
+    confirmations: Number(proof.confirmations ?? 0),
+    finalityStatus: state,
+    anchoredAt: proof.anchoredAt ?? null,
+    finalizedAt: proof.finalizedAt ?? null,
+    verificationStatus: proof.verificationStatus ?? null,
+    status:
+      state === "FINALIZED"
+        ? "Merkle inclusion bound to a finalized Ethereum mainnet transaction."
+        : state === "INVALID_ON_CHAIN"
+          ? "Ethereum transaction binding mismatch; this anchor was rejected."
+          : state === "FAILED_ON_CHAIN"
+            ? "Ethereum transaction failed on-chain; this receipt is not anchored."
+        : state === "CONFIRMED"
+          ? "Ethereum mainnet transaction confirmed; finality pending."
+          : state === "SUBMITTED"
+            ? "Ethereum mainnet transaction submitted; confirmations pending."
+            : "Ethereum mainnet anchor is pending.",
   };
 }
 
@@ -442,21 +601,36 @@ export function scopeForRecord(record) {
       ? " SiteSealed also stored a client-encrypted ciphertext bound to the receipt by its own SHA-256 digest."
       : " No encrypted original is attached to this legacy development receipt.";
 
+  const timestampStatement =
+    record.qualifiedRail?.state === "SANDBOX_TOKEN_ISSUED"
+      ? " Evidency sandbox returned an RFC 3161 test token bound to the evidence digest; the sandbox expressly has no legal effect."
+      : " No external RFC 3161 timestamp token is attached.";
+  const chainStatement =
+    record.chainRail?.state === "FINALIZED"
+      ? " Its Merkle inclusion path resolves to a root recorded in a finalized Ethereum mainnet transaction."
+      : record.chainRail?.state === "CONFIRMED" ||
+          record.chainRail?.state === "SUBMITTED"
+        ? " An Ethereum mainnet anchor exists but has not reached SiteSealed's finality state."
+        : " No Ethereum mainnet anchor is attached.";
+
   return {
     proves:
       "If a locally held file recalculates to the recorded SHA-256 digest, its byte sequence matches this receipt." +
-      encryptedStorageStatement,
+      encryptedStorageStatement +
+      timestampStatement +
+      chainStatement,
     attests:
-      "The displayed receipt time is a SiteSealed server database time. The v1.3 PostgreSQL hash chain is an internal operational audit trail, not an independent timestamp.",
+      "The displayed receipt time is a SiteSealed server database time. PostgreSQL is an internal operational audit trail; only the exported Evidency token and Ethereum transaction are external proof artefacts.",
     doesNotProve:
-      "Without the client-held key, SiteSealed cannot inspect the stored plaintext or prove that the ciphertext decrypts to the claimed file. MySQL, PostgreSQL and Redis do not replace either external trust rail. This receipt also does not prove capture time, identity, authorship, location, truthfulness, a qualified eIDAS timestamp or a public blockchain anchor.",
+      "Without the client-held key, SiteSealed cannot inspect the stored plaintext or prove that the ciphertext decrypts to the claimed file. This imported-file workflow does not prove live capture time, identity, authorship, location or truthfulness. An Evidency sandbox token is test-only and must never be described as a qualified eIDAS timestamp.",
   };
 }
 
 export function createProofBundle(record, encryptedManifest = null) {
+  const proofStatus = externalProofStatus(record);
   return {
-    schemaVersion: "sitesealed.proof-bundle.v1.2",
-    bundleVersion: "1.2",
+    schemaVersion: "sitesealed.proof-bundle.v1.4-alpha.1",
+    bundleVersion: "1.4-alpha.1",
     generatedAt: new Date().toISOString(),
     record: {
       recordId: record.recordId,
@@ -464,6 +638,7 @@ export function createProofBundle(record, encryptedManifest = null) {
       proofLevel: record.proofLevel,
       recordSha256: record.sha256,
       manifestSha256: record.manifestSha256,
+      evidenceDigest: record.evidenceDigest,
       receivedAt: record.receivedAt,
     },
     receipt: record.receipt,
@@ -472,17 +647,22 @@ export function createProofBundle(record, encryptedManifest = null) {
     encryptedOriginal: record.storage,
     proofs: {
       qualifiedTimestamp: {
-        state: record.qualifiedRail.state,
-        provider: record.qualifiedRail.provider,
-        token: record.qualifiedRail.token,
+        ...record.qualifiedRail,
+        token: record.qualifiedRail.token
+          ? {
+              mediaType: "application/timestamp-reply",
+              encoding: "base64",
+              value: record.qualifiedRail.token,
+              sha256: record.qualifiedRail.tokenSha256,
+            }
+          : null,
       },
       publicChain: {
-        state: record.chainRail.state,
-        chain: record.chainRail.chain,
+        ...record.chainRail,
         transaction: record.chainRail.anchor,
-        merkleRoot: record.chainRail.merkleRoot,
       },
     },
+    proofStatus,
     scope: scopeForRecord(record),
   };
 }

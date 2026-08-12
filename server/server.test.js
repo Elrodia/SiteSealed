@@ -94,13 +94,13 @@ after(async () => {
   });
 });
 
-test("health endpoint reports the honest v1.3 capability boundary", async () => {
+test("health endpoint reports the honest v1.4-alpha.1 capability boundary", async () => {
   const response = await fetch(`${baseUrl}/api/health`);
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.ok, true);
   assert.equal(payload.service, "sitesealed");
-  assert.equal(payload.version, "1.3.0");
+  assert.equal(payload.version, "1.4.0-alpha.1");
   assert.equal(payload.sealing.clientEncryptedObjectStorage, true);
   assert.equal(
     payload.sealing.operationalAudit,
@@ -109,6 +109,7 @@ test("health endpoint reports the honest v1.3 capability boundary", async () => 
   assert.equal(payload.sealing.distributedCoordination, true);
   assert.equal(payload.sealing.qualifiedTimestamp, false);
   assert.equal(payload.sealing.publicChainAnchor, false);
+  assert.equal(payload.sealing.finalSealedStatusEnabled, false);
   assert.deepEqual(payload.database, {
     mode: "memory",
     status: "not_configured",
@@ -143,6 +144,20 @@ test("health endpoint reports the honest v1.3 capability boundary", async () => 
     rateLimiting: true,
     verificationCache: true,
   });
+  assert.deepEqual(payload.qualifiedTimestamp, {
+    mode: "disabled",
+    status: "not_configured",
+    provider: "Evidency",
+    environment: "SANDBOX",
+    legalUse: false,
+  });
+  assert.deepEqual(payload.publicChainAnchor, {
+    mode: "disabled",
+    status: "not_configured",
+    network: "Ethereum mainnet",
+    chainId: 1,
+    writesEnabled: false,
+  });
 });
 
 test("a real digest receipt binds a client-encrypted original without receiving plaintext", async () => {
@@ -151,7 +166,8 @@ test("a real digest receipt binds a client-encrypted original without receiving 
   assert.equal(payload.ok, true);
   assert.equal(payload.created, true);
   assert.match(payload.record.recordId, /^SR-\d{8}-[A-F0-9]{24}$/);
-  assert.equal(payload.record.proofLevel, "DEVELOPMENT_RECEIPT");
+  assert.equal(payload.record.proofLevel, "DUAL_RAIL_ALPHA_RECEIPT");
+  assert.match(payload.record.evidenceDigest, /^[a-f0-9]{64}$/);
   assert.equal(payload.record.qualifiedRail.state, "NOT_ISSUED");
   assert.equal(payload.record.chainRail.state, "NOT_ANCHORED");
   assert.equal(payload.record.storage.state, "STORED_ENCRYPTED");
@@ -208,7 +224,7 @@ test("a created receipt is publicly retrievable with pending rails", async () =>
   );
   assert.equal(response.status, 200);
   const payload = await response.json();
-  assert.equal(payload.status, "DEVELOPMENT_RECEIPT_FOUND");
+  assert.equal(payload.status, "EXTERNAL_PROOFS_PENDING");
   assert.equal(payload.proofsComplete, false);
   assert.equal(payload.record.sha256, created.payload.record.sha256);
   assert.equal(payload.operationalAudit.state, "RECORDED");
@@ -224,8 +240,8 @@ test("public bundle binds both encrypted manifest and encrypted-original digest"
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-disposition"), /proof-bundle\.json/);
   const payload = await response.json();
-  assert.equal(payload.schemaVersion, "sitesealed.proof-bundle.v1.3");
-  assert.equal(payload.bundleVersion, "1.3");
+  assert.equal(payload.schemaVersion, "sitesealed.proof-bundle.v1.4-alpha.1");
+  assert.equal(payload.bundleVersion, "1.4-alpha.1");
   assert.equal(payload.receiptSha256, created.payload.record.receiptSha256);
   assert.equal(payload.encryptedManifest.algorithm, "AES-256-GCM");
   assert.equal(payload.encryptedOriginal.state, "STORED_ENCRYPTED");
@@ -280,7 +296,7 @@ test("each real receipt has a dynamic one-page PDF endpoint", async () => {
   );
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type"), /application\/pdf/);
-  assert.match(response.headers.get("content-disposition"), /development-receipt\.pdf/);
+  assert.match(response.headers.get("content-disposition"), /alpha-receipt\.pdf/);
   const bytes = Buffer.from(await response.arrayBuffer());
   assert.equal(bytes.subarray(0, 5).toString("ascii"), "%PDF-");
   assert.ok(bytes.length > 2_000);
@@ -317,17 +333,32 @@ test("unknown records fail honestly", async () => {
   assert.equal(payload.code, "RECORD_NOT_FOUND");
 });
 
-test("the production server serves the React application and v1.3 proof documents", async () => {
-  const [homeResponse, iconResponse, reportResponse, schemaResponse] = await Promise.all([
+test("the production server serves the React application, official brand assets and v1.4 proof documents", async () => {
+  const [homeResponse, faviconResponse, iconResponse, icon512Response, manifestResponse, reportResponse, schemaResponse] = await Promise.all([
     fetch(`${baseUrl}/`),
+    fetch(`${baseUrl}/favicon.svg?v=20260812`),
     fetch(`${baseUrl}/icon-192.svg`),
+    fetch(`${baseUrl}/icon-512.svg?v=20260812`),
+    fetch(`${baseUrl}/site.webmanifest`),
     fetch(`${baseUrl}/documents/SiteSealed_EvidenceReport_SPECIMEN.pdf`),
-    fetch(`${baseUrl}/schemas/proof-bundle-v1.3.schema.json`),
+    fetch(`${baseUrl}/schemas/proof-bundle-v1.4-alpha.1.schema.json`),
   ]);
   assert.equal(homeResponse.status, 200);
-  assert.match(await homeResponse.text(), /id="root"/);
+  const homeHtml = await homeResponse.text();
+  assert.match(homeHtml, /id="root"/);
+  assert.match(homeHtml, /favicon\.svg\?v=20260812/);
+  assert.equal(faviconResponse.status, 200);
+  assert.match(faviconResponse.headers.get("content-type"), /image\/svg\+xml/);
+  assert.match(faviconResponse.headers.get("cache-control"), /no-cache/);
   assert.equal(iconResponse.status, 200);
   assert.match(iconResponse.headers.get("content-type"), /image\/svg\+xml/);
+  assert.match(iconResponse.headers.get("cache-control"), /no-cache/);
+  assert.equal(icon512Response.status, 200);
+  assert.match(icon512Response.headers.get("content-type"), /image\/svg\+xml/);
+  assert.match(icon512Response.headers.get("cache-control"), /no-cache/);
+  assert.equal(manifestResponse.status, 200);
+  assert.match(manifestResponse.headers.get("content-type"), /manifest\+json|application\/json/);
+  assert.match(manifestResponse.headers.get("cache-control"), /no-cache/);
   assert.equal(reportResponse.status, 200);
   assert.match(reportResponse.headers.get("content-type"), /application\/pdf/);
   assert.equal(schemaResponse.status, 200);
