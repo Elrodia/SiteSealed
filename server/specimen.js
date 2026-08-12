@@ -1,4 +1,10 @@
 import { createHash } from "node:crypto";
+import {
+  ApiError,
+  createDevelopmentRecord,
+  createProofBundle,
+  scopeForRecord,
+} from "./records.js";
 
 export const SPECIMEN_ID = "SR-2026-08-0147-A3";
 
@@ -24,19 +30,27 @@ function deepFreeze(value) {
 export const specimenRecord = deepFreeze({
   recordId: SPECIMEN_ID,
   specimen: true,
+  recordClass: "LIVE_CAPTURE_SPECIMEN",
+  proofLevel: "SIMULATED_DUAL_RAIL",
   ...specimenManifest,
+  receivedAt: "2026-08-10T11:47:09.000Z",
   qualifiedAt: "2026-08-10T11:47:09.000Z",
   sha256:
     "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
   manifestSha256: createHash("sha256")
     .update(JSON.stringify(specimenManifest))
     .digest("hex"),
+  manifestEncryption: "PUBLIC_SPECIMEN",
+  receipt: null,
+  receiptSha256: null,
   qualifiedRail: {
+    state: "SIMULATED",
     provider: "CertEurope Qualified TSA (simulated)",
     token: "RFC 3161 - serial 00A4-77F2-19C3-8B21",
     status: "Signature valid - CRL check passed (simulated)",
   },
   chainRail: {
+    state: "SIMULATED",
     chain: "Ethereum mainnet (simulated)",
     block: "21,904,553",
     anchor: "0x6b1e...9c4d",
@@ -46,20 +60,80 @@ export const specimenRecord = deepFreeze({
   },
 });
 
-export function normalizeRecordId(value) {
-  return String(value ?? "")
-    .trim()
-    .toUpperCase()
-    .replace(/\s+/g, "");
-}
-
 export function createMemoryRecordStore() {
+  const entries = new Map([
+    [
+      SPECIMEN_ID,
+      {
+        record: specimenRecord,
+        encryptedManifest: null,
+        submissionId: null,
+      },
+    ],
+  ]);
+  const submissionIndex = new Map();
+
   return {
     mode: "memory",
     persistent: false,
 
+    async create(input) {
+      const existingId = submissionIndex.get(input.submissionId);
+      if (existingId) {
+        const existing = entries.get(existingId);
+        if (
+          existing.record.sha256 !== input.recordSha256 ||
+          existing.record.manifestSha256 !== input.manifestSha256 ||
+          existing.encryptedObject?.ciphertextSha256 !==
+            input.encryptedObject.ciphertextSha256 ||
+          existing.encryptedObject?.recoveryTokenSha256 !==
+            input.encryptedObject.recoveryTokenSha256
+        ) {
+          throw new ApiError(
+            409,
+            "SUBMISSION_ID_CONFLICT",
+            "This submission ID is already bound to a different encrypted record.",
+          );
+        }
+        return { record: existing.record, created: false };
+      }
+
+      const record = createDevelopmentRecord(input, {
+        storageProvider: input.storageProvider ?? "MEMORY",
+      });
+      entries.set(record.recordId, {
+        record,
+        encryptedManifest: input.encryptedManifest,
+        encryptedObject: input.encryptedObject,
+        submissionId: input.submissionId,
+      });
+      submissionIndex.set(input.submissionId, record.recordId);
+      return { record, created: true };
+    },
+
     async findById(recordId) {
-      return recordId === SPECIMEN_ID ? specimenRecord : null;
+      return entries.get(recordId)?.record ?? null;
+    },
+
+    async getBundleById(recordId) {
+      const entry = entries.get(recordId);
+      if (!entry) return null;
+      if (entry.record.specimen) {
+        return {
+          schemaVersion: "sitesealed.specimen-bundle.v1",
+          bundleVersion: "SPECIMEN",
+          generatedAt: new Date().toISOString(),
+          record: entry.record,
+          scope: scopeForRecord(entry.record),
+        };
+      }
+      return createProofBundle(entry.record, entry.encryptedManifest);
+    },
+
+    async getEncryptedObjectReferenceById(recordId) {
+      const entry = entries.get(recordId);
+      if (!entry || entry.record.specimen) return null;
+      return entry.encryptedObject ?? null;
     },
 
     async healthCheck() {
@@ -67,6 +141,7 @@ export function createMemoryRecordStore() {
         mode: "memory",
         status: "not_configured",
         persistent: false,
+        writable: true,
       };
     },
 

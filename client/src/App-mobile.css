@@ -604,3 +604,141 @@
     grid-template-columns: 1fr;
   }
 }
+
+@media (max-width: 1040px) {
+  .nav__verify {
+    width: 100%;
+    justify-content: flex-start;
+    padding: 17px 2px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    color: rgba(255, 255, 255, 0.78);
+    font-size: 0.85rem;
+  }
+}
+
+@media (max-width: 960px) {
+  .seal-workflow__intro {
+    grid-template-columns: 1fr;
+    gap: 38px;
+  }
+
+  .seal-workflow__boundary {
+    max-width: 720px;
+  }
+}
+
+@media (max-width: 760px) {
+  .sealing-workbench {
+    margin-top: 52px;
+  }
+
+  .sealing-workbench__header {
+    padding: 14px 19px;
+  }
+
+  .development-pill {
+    display: none;
+  }
+
+  .privacy-rail span {
+    justify-content: flex-start;
+  }
+
+  .seal-form {
+    padding: 25px 23px 23px;
+  }
+
+  .seal-form__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .seal-form__submit {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .seal-success {
+    padding: 24px 23px 27px;
+  }
+
+  .seal-success__facts {
+    grid-template-columns: 1fr;
+  }
+
+  .seal-success__facts > div {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .seal-success__facts > div:last-child {
+    border-bottom: 0;
+  }
+
+  .seal-success__actions .button {
+    flex: 1 1 220px;
+  }
+}
+
+@media (max-width: 600px) {
+  .privacy-rail {
+    grid-template-columns: 1fr;
+  }
+
+  .privacy-rail span {
+    min-height: 49px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .privacy-rail span:last-child {
+    border-bottom: 0;
+  }
+
+  .sealing-workbench__header {
+    grid-template-columns: auto 1fr;
+  }
+
+  .sealing-workbench__header div > strong {
+    font-size: 0.9rem;
+  }
+
+  .file-picker > label {
+    min-height: 157px;
+  }
+
+  .seal-success__title {
+    grid-template-columns: auto 1fr;
+  }
+
+  .seal-success__title em {
+    display: none;
+  }
+
+  .seal-success__title h3 {
+    overflow-wrap: anywhere;
+  }
+
+  .seal-success__actions .button,
+  .seal-success__actions .text-action {
+    width: 100%;
+    flex: 1 1 100%;
+  }
+
+  .local-file-check {
+    grid-template-columns: 1fr;
+  }
+
+  .local-file-check > label {
+    max-width: 100%;
+    text-align: center;
+  }
+
+  .live-pill {
+    display: none;
+  }
+
+  .verified-result__downloads {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

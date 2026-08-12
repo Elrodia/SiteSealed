@@ -1,4 +1,17 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import {
+  buildManifest,
+  createEncryptedUploadHeaders,
+  createPrivateRecoveryKit,
+  createRecoveryToken,
+  createRandomUuid,
+  createSealRequest,
+  encryptManifest,
+  encryptOriginal,
+  formatBytes,
+  MAX_FILE_BYTES,
+  sha256File,
+} from "./sealing.js";
 
 const SPECIMEN_ID = "SR-2026-08-0147-A3";
 
@@ -46,7 +59,7 @@ const principles = [
   ["03", "Dual rail, always", "Qualified time supplies the statutory rail; a public chain supplies the neutral rail."],
   ["04", "Capture is sacred", "Live captures are sealed on-device; imported files remain a separate, visible class."],
   ["05", "Honest scope", "Reports distinguish what is proven, what is attested and what is not claimed."],
-  ["06", "Privacy by architecture", "Originals remain client-encrypted. Only hashes need to leave the client's control."],
+  ["06", "Privacy by architecture", "Plaintext originals remain client-controlled; private storage receives only client-encrypted ciphertext."],
   ["07", "Fees on value", "Verification stays free; revenue comes from sealing capacity and report generation."],
 ];
 
@@ -169,6 +182,31 @@ function Icon({ name, size = 20 }) {
         <path d="M8 10V7a4 4 0 0 1 8 0v3" />
       </>
     ),
+    upload: (
+      <>
+        <path d="M12 16V4" />
+        <path d="m7 9 5-5 5 5" />
+        <path d="M5 14v6h14v-6" />
+      </>
+    ),
+    file: (
+      <>
+        <path d="M6 3h8l4 4v14H6z" />
+        <path d="M14 3v5h5M9 13h6M9 17h6" />
+      </>
+    ),
+    key: (
+      <>
+        <circle cx="8" cy="15" r="4" />
+        <path d="m11 12 8-8M15 8l2 2M17 6l2 2" />
+      </>
+    ),
+    alert: (
+      <>
+        <path d="M12 3 2.5 20h19z" />
+        <path d="M12 9v5M12 17.5h.01" />
+      </>
+    ),
     menu: (
       <>
         <path d="M4 7h16M4 12h16M4 17h16" />
@@ -208,7 +246,7 @@ function Brand({ compact = false }) {
   );
 }
 
-function Header({ onVerify }) {
+function Header({ onSeal, onVerify }) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
@@ -228,6 +266,10 @@ function Header({ onVerify }) {
     close();
     onVerify();
   };
+  const seal = () => {
+    close();
+    onSeal();
+  };
 
   return (
     <header className="site-header">
@@ -235,13 +277,14 @@ function Header({ onVerify }) {
         <Brand />
         <nav className={`nav${menuOpen ? " nav--open" : ""}`} aria-label="Primary navigation">
           <a href="#method" onClick={close}>How it works</a>
+          <a href="#seal" onClick={close}>Seal a file</a>
           <a href="#proof" onClick={close}>Dual rail</a>
           <a href="#principles" onClick={close}>Principles</a>
-          <a href="#roadmap" onClick={close}>Roadmap</a>
           <a href="/documents/SiteSealed_Whitepaper_v1.0_Genesis.pdf" onClick={close}>Whitepaper</a>
-          <button className="button button--small button--amber nav__cta" type="button" onClick={verify}>
-            Verify a record <Icon name="arrow" size={16} />
+          <button className="button button--small button--amber nav__cta" type="button" onClick={seal}>
+            Create a seal <Icon name="arrow" size={16} />
           </button>
+          <button className="nav__verify" type="button" onClick={verify}>Verify</button>
         </nav>
         <button
           className="menu-toggle"
@@ -314,6 +357,400 @@ function SectionHeading({ eyebrow, title, copy, align = "left", inverse = false 
   );
 }
 
+function downloadBlob(fileName, blob) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function downloadJson(fileName, value) {
+  downloadBlob(
+    fileName,
+    new Blob([`${JSON.stringify(value, null, 2)}\n`], {
+      type: "application/json",
+    }),
+  );
+}
+
+async function readApiJson(response) {
+  const text = await response.text();
+  if (!text) {
+    throw new Error(`The SiteSealed API returned an empty response (${response.status}).`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`The SiteSealed API returned an unreadable response (${response.status}).`);
+  }
+}
+
+function recordIdFromPath() {
+  const match = window.location.pathname.match(/^\/verify\/([^/]+)\/?$/i);
+  if (!match) return "";
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return "";
+  }
+}
+
+function SealingWorkbench({ onVerify }) {
+  const fileInputId = useId();
+  const projectInputId = useId();
+  const descriptionInputId = useId();
+  const [file, setFile] = useState(null);
+  const [projectReference, setProjectReference] = useState("");
+  const [description, setDescription] = useState("");
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [status, setStatus] = useState("idle");
+  const [message, setMessage] = useState("");
+  const [result, setResult] = useState(null);
+  const [recoveryKit, setRecoveryKit] = useState(null);
+  const [backupStatus, setBackupStatus] = useState("idle");
+  const [submissionId, setSubmissionId] = useState(() => createRandomUuid());
+  const preparedAttemptRef = useRef(null);
+
+  const selectFile = (event) => {
+    const nextFile = event.target.files?.[0] ?? null;
+    setFile(nextFile);
+    setStatus("idle");
+    setMessage("");
+    setResult(null);
+    setRecoveryKit(null);
+    setBackupStatus("idle");
+    preparedAttemptRef.current = null;
+    setSubmissionId(createRandomUuid());
+  };
+
+  const seal = async (event) => {
+    event.preventDefault();
+    setMessage("");
+    setResult(null);
+    setRecoveryKit(null);
+    setBackupStatus("idle");
+
+    if (!file) {
+      setStatus("error");
+      setMessage("Select a file to create an integrity receipt.");
+      return;
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      setStatus("error");
+      setMessage("This v1.2 workflow accepts files up to 25 MB.");
+      return;
+    }
+    if (!acknowledged) {
+      setStatus("error");
+      setMessage("Confirm that this is an imported file, not an attested live capture.");
+      return;
+    }
+
+    try {
+      let attempt = preparedAttemptRef.current;
+      const attemptMatches =
+        attempt?.file === file &&
+        attempt?.projectReference === projectReference &&
+        attempt?.description === description;
+      let activeSubmissionId = submissionId;
+
+      if (!attemptMatches) {
+        if (attempt) {
+          activeSubmissionId = createRandomUuid();
+          setSubmissionId(activeSubmissionId);
+        }
+        setStatus("hashing");
+        const recordSha256 = await sha256File(file);
+        const manifest = buildManifest(file, { projectReference, description });
+
+        setStatus("encrypting");
+        const encrypted = await encryptManifest(manifest);
+        const encryptedOriginal = await encryptOriginal(file, encrypted.recoveryKey);
+        const recoveryToken = await createRecoveryToken();
+        attempt = {
+          file,
+          projectReference,
+          description,
+          submissionId: activeSubmissionId,
+          recordSha256,
+          manifest,
+          encrypted,
+          encryptedOriginal,
+          recoveryToken,
+        };
+        preparedAttemptRef.current = attempt;
+      } else {
+        activeSubmissionId = attempt.submissionId;
+      }
+
+      const {
+        recordSha256,
+        manifest,
+        encrypted,
+        encryptedOriginal,
+        recoveryToken,
+      } = attempt;
+
+      setStatus("uploading");
+      const uploadResponse = await fetch(
+        `/api/storage/uploads/${encodeURIComponent(activeSubmissionId)}`,
+        {
+          method: "PUT",
+          headers: createEncryptedUploadHeaders({
+            recordSha256,
+            encryptedOriginal,
+            recoveryTokenSha256: recoveryToken.sha256,
+          }),
+          body: encryptedOriginal.ciphertext,
+        },
+      );
+      const uploadPayload = await readApiJson(uploadResponse);
+      if (!uploadResponse.ok) {
+        throw new Error(
+          uploadPayload.message || "The encrypted original could not be stored.",
+        );
+      }
+
+      const requestBody = createSealRequest({
+        recordSha256,
+        manifestSha256: encrypted.manifestSha256,
+        envelope: encrypted.envelope,
+        encryptedObject: uploadPayload.encryptedObject,
+        submissionId: activeSubmissionId,
+      });
+
+      setStatus("recording");
+      const response = await fetch("/api/records", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(requestBody),
+      });
+      const payload = await readApiJson(response);
+      if (!response.ok) throw new Error(payload.message || "The receipt could not be created.");
+
+      const kit = createPrivateRecoveryKit({
+        manifest,
+        envelope: encrypted.envelope,
+        recoveryKey: encrypted.recoveryKey,
+        encryptedObject: uploadPayload.encryptedObject,
+        recoveryToken: recoveryToken.token,
+        serverResponse: payload,
+      });
+      setRecoveryKit(kit);
+      setResult(payload);
+      setStatus("success");
+    } catch (error) {
+      setStatus("error");
+      setMessage(error instanceof Error ? error.message : "The receipt could not be created.");
+    }
+  };
+
+  const downloadRecoveryKit = () => {
+    if (!recoveryKit || !result) return;
+    downloadJson(
+      `SiteSealed_${result.record.recordId}_PRIVATE-recovery-kit.json`,
+      recoveryKit,
+    );
+  };
+
+  const downloadEncryptedBackup = async () => {
+    const retrieval = recoveryKit?.encryptedOriginal?.retrieval;
+    if (!retrieval || !result) return;
+    setBackupStatus("loading");
+    try {
+      const response = await fetch(retrieval.url, {
+        method: retrieval.method,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(retrieval.requestBody),
+      });
+      if (!response.ok) {
+        const payload = await readApiJson(response);
+        throw new Error(payload.message || "The encrypted backup could not be retrieved.");
+      }
+      downloadBlob(
+        `SiteSealed_${result.record.recordId}_encrypted-original.ssenc`,
+        await response.blob(),
+      );
+      setBackupStatus("success");
+    } catch (error) {
+      setBackupStatus(
+        error instanceof Error ? error.message : "The encrypted backup could not be retrieved.",
+      );
+    }
+  };
+
+  const progressLabel = {
+    hashing: "Hashing the file locally...",
+    encrypting: "Encrypting the manifest and original locally...",
+    uploading: "Sending only encrypted ciphertext to the private Bucket...",
+    recording: "Binding the S3 object and digest receipt in MySQL...",
+  }[status];
+
+  return (
+    <div className="sealing-workbench">
+      <div className="sealing-workbench__header">
+        <span className="sealing-workbench__icon"><Icon name="shield" size={25} /></span>
+        <div>
+          <span>REAL V1.2 WORKFLOW</span>
+          <strong>Create a development seal</strong>
+        </div>
+        <span className="development-pill">EXTERNAL PROOFS PENDING</span>
+      </div>
+
+      <div className="privacy-rail" aria-label="Privacy guarantees">
+        <span><Icon name="file" size={17} /><b>Original</b> encrypted before upload</span>
+        <span><Icon name="lock" size={17} /><b>Manifest</b> AES-256-GCM encrypted</span>
+        <span><Icon name="key" size={17} /><b>Key</b> never sent</span>
+      </div>
+
+      <form className="seal-form" onSubmit={seal} noValidate>
+        <div className="seal-form__grid">
+          <div className="file-picker">
+            <input
+              id={fileInputId}
+              type="file"
+              onChange={selectFile}
+              aria-describedby={`${fileInputId}-hint`}
+            />
+            <label htmlFor={fileInputId}>
+              <span><Icon name="upload" size={28} /></span>
+              {file ? (
+                <>
+                  <strong>{file.name}</strong>
+                  <small>{formatBytes(file.size)} - click to replace</small>
+                </>
+              ) : (
+                <>
+                  <strong>Select a construction record</strong>
+                  <small>Photo, PDF or other file - maximum 25 MB</small>
+                </>
+              )}
+            </label>
+            <p id={`${fileInputId}-hint`}>Only hashes and AES-256-GCM ciphertext leave this browser.</p>
+          </div>
+
+          <div className="seal-form__context">
+            <label htmlFor={projectInputId}>Project reference <span>encrypted</span></label>
+            <input
+              id={projectInputId}
+              type="text"
+              maxLength="120"
+              value={projectReference}
+              onChange={(event) => setProjectReference(event.target.value)}
+              placeholder="e.g. RBP-C-2026"
+            />
+            <label htmlFor={descriptionInputId}>Private note <span>encrypted</span></label>
+            <textarea
+              id={descriptionInputId}
+              maxLength="500"
+              rows="3"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="Optional context kept inside the encrypted manifest"
+            />
+          </div>
+        </div>
+
+        <label className="seal-acknowledgement">
+          <input
+            type="checkbox"
+            checked={acknowledged}
+            onChange={(event) => setAcknowledged(event.target.checked)}
+          />
+          <span>
+            <strong>I understand this is an imported-file receipt.</strong>
+            It is not a live in-app capture, device attestation, qualified eIDAS timestamp or blockchain anchor.
+          </span>
+        </label>
+
+        <div className="seal-form__submit">
+          <button
+            className="button button--amber"
+            type="submit"
+            disabled={["hashing", "encrypting", "uploading", "recording"].includes(status)}
+          >
+            {progressLabel || "Hash, encrypt and record"}
+            {!progressLabel && <Icon name="arrow" size={17} />}
+          </button>
+          <p>Anonymous v1.2 limit: 20 receipts per IP and hour.</p>
+        </div>
+      </form>
+
+      <div className="seal-response" aria-live="polite">
+        {["hashing", "encrypting", "uploading", "recording"].includes(status) && (
+          <div className="seal-progress">
+            <span /><span /><span />
+            <p>{progressLabel}</p>
+          </div>
+        )}
+
+        {status === "error" && (
+          <div className="seal-error" role="alert">
+            <Icon name="alert" size={21} />
+            <div><strong>Seal not created</strong><p>{message}</p></div>
+          </div>
+        )}
+
+        {status === "success" && result && (
+          <div className="seal-success">
+            <div className="seal-success__title">
+              <span><Icon name="check" size={22} /></span>
+              <div>
+                <small>DEVELOPMENT INTEGRITY RECEIPT CREATED</small>
+                <h3>{result.record.recordId}</h3>
+              </div>
+              <em>{result.storage?.persistent ? "S3 + MySQL persisted" : "Memory only - not persistent"}</em>
+            </div>
+            <div className="seal-success__facts">
+              <div><span>FILE SHA-256</span><code>{result.record.sha256}</code></div>
+              <div><span>SERVER RECEIPT TIME</span><strong>{new Date(result.record.receivedAt).toLocaleString()}</strong></div>
+              <div><span>PRIVATE STORAGE</span><strong>Client-encrypted original - external rails pending</strong></div>
+            </div>
+            <div className="seal-success__warning">
+              <Icon name="key" size={19} />
+              <p><strong>Download the private recovery kit now.</strong> It contains the only copy of the AES key and must remain confidential.</p>
+            </div>
+            <div className="seal-success__actions">
+              <button className="button button--navy" type="button" onClick={downloadRecoveryKit}>
+                Private recovery kit <Icon name="download" size={16} />
+              </button>
+              <button
+                className="button button--outline"
+                type="button"
+                onClick={downloadEncryptedBackup}
+                disabled={backupStatus === "loading"}
+              >
+                {backupStatus === "loading" ? "Retrieving..." : "Encrypted S3 backup"}
+                <Icon name="download" size={16} />
+              </button>
+              <a className="button button--outline" href={result.links.receiptPdf}>
+                PDF receipt <Icon name="download" size={16} />
+              </a>
+              <a className="button button--outline" href={result.links.publicBundle}>
+                Public bundle <Icon name="download" size={16} />
+              </a>
+              <button className="text-action" type="button" onClick={() => onVerify(result.record.recordId)}>
+                Verify this record <Icon name="arrow" size={15} />
+              </button>
+            </div>
+            {backupStatus !== "idle" && backupStatus !== "loading" && (
+              <p className={`seal-success__retrieval${backupStatus === "success" ? " seal-success__retrieval--success" : ""}`}>
+                {backupStatus === "success"
+                  ? "Encrypted backup retrieved and integrity-checked."
+                  : backupStatus}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Verifier() {
   const inputId = useId();
   const [recordId, setRecordId] = useState("");
@@ -335,7 +772,7 @@ function Verifier() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ recordId }),
       });
-      const payload = await response.json();
+      const payload = await readApiJson(response);
       if (!response.ok) throw new Error(payload.message || "Verification failed.");
       setResult(payload);
       setStatus("success");
@@ -459,37 +896,292 @@ function Verifier() {
   );
 }
 
+function VerifierV12({ requestedRecord }) {
+  const inputId = useId();
+  const compareInputId = useId();
+  const pathRecordId = useRef(recordIdFromPath());
+  const lastAutomaticRequest = useRef("");
+  const [recordId, setRecordId] = useState(pathRecordId.current);
+  const [comparisonFile, setComparisonFile] = useState(null);
+  const [status, setStatus] = useState("idle");
+  const [result, setResult] = useState(null);
+  const [message, setMessage] = useState("");
+  const [fileCheck, setFileCheck] = useState({ state: "NOT_CHECKED", digest: null });
+  const [copied, setCopied] = useState(false);
+
+  const runVerification = async (candidate, fileToCheck = comparisonFile) => {
+    const normalized = String(candidate ?? "").trim().toUpperCase().replace(/\s+/g, "");
+    if (!normalized) {
+      setStatus("error");
+      setMessage("Enter a SiteSealed record ID.");
+      return;
+    }
+
+    setStatus("loading");
+    setResult(null);
+    setMessage("");
+    setCopied(false);
+    setFileCheck({ state: fileToCheck ? "HASHING" : "NOT_CHECKED", digest: null });
+
+    try {
+      const response = await fetch(`/api/verify/${encodeURIComponent(normalized)}`);
+      const payload = await readApiJson(response);
+      if (!response.ok) throw new Error(payload.message || "Verification failed.");
+
+      let nextFileCheck = { state: "NOT_CHECKED", digest: null };
+      if (fileToCheck) {
+        const digest = await sha256File(fileToCheck);
+        nextFileCheck = {
+          state: digest === payload.record.sha256 ? "MATCH" : "MISMATCH",
+          digest,
+        };
+      }
+
+      setRecordId(normalized);
+      setResult(payload);
+      setFileCheck(nextFileCheck);
+      setStatus("success");
+      window.history.replaceState({}, "", `/verify/${encodeURIComponent(normalized)}`);
+    } catch (error) {
+      setStatus("error");
+      setMessage(error instanceof Error ? error.message : "Verification failed.");
+      setFileCheck({ state: "NOT_CHECKED", digest: null });
+    }
+  };
+
+  useEffect(() => {
+    const automaticId = requestedRecord?.id || pathRecordId.current;
+    const requestKey = requestedRecord
+      ? `${requestedRecord.id}:${requestedRecord.nonce}`
+      : automaticId;
+    if (!automaticId || lastAutomaticRequest.current === requestKey) return;
+    lastAutomaticRequest.current = requestKey;
+    setRecordId(automaticId);
+    runVerification(automaticId, null);
+  }, [requestedRecord?.id, requestedRecord?.nonce]);
+
+  const verify = (event) => {
+    event.preventDefault();
+    runVerification(recordId, comparisonFile);
+  };
+
+  const useSpecimen = () => {
+    setRecordId(SPECIMEN_ID);
+    setStatus("idle");
+    setMessage("");
+    setResult(null);
+    setFileCheck({ state: "NOT_CHECKED", digest: null });
+    document.getElementById(inputId)?.focus();
+  };
+
+  const copyHash = async () => {
+    if (!result?.record?.sha256) return;
+    await navigator.clipboard.writeText(result.record.sha256);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
+  };
+
+  const resultTitle = result?.specimen
+    ? "SPECIMEN RECORD FOUND"
+    : fileCheck.state === "MATCH"
+      ? "LOCAL FILE MATCH VERIFIED"
+      : fileCheck.state === "MISMATCH"
+        ? "LOCAL FILE DOES NOT MATCH"
+        : "DEVELOPMENT RECEIPT FOUND";
+
+  return (
+    <div className="verifier-shell verifier-shell--v12">
+      <div className="verifier-shell__header">
+        <span className="verifier-shell__icon"><Icon name="shield" size={24} /></span>
+        <div>
+          <span>PUBLIC VERIFICATION PORTAL</span>
+          <strong>Receipt and local-file checker</strong>
+        </div>
+        <span className="live-pill">V1.2 LIVE</span>
+      </div>
+
+      <form className="verify-form" onSubmit={verify} noValidate>
+        <label htmlFor={inputId}>SiteSealed record ID</label>
+        <div className="verify-form__row">
+          <input
+            id={inputId}
+            type="text"
+            autoComplete="off"
+            spellCheck="false"
+            value={recordId}
+            onChange={(event) => setRecordId(event.target.value)}
+            placeholder="SR-YYYYMMDD-..."
+            aria-describedby={`${inputId}-hint`}
+          />
+          <button className="button button--amber" type="submit" disabled={status === "loading"}>
+            {status === "loading" ? "Checking..." : "Verify receipt"}
+            {status !== "loading" && <Icon name="arrow" size={17} />}
+          </button>
+        </div>
+        <div className="verify-form__hint" id={`${inputId}-hint`}>
+          <span>No account required.</span>
+          <button type="button" onClick={useSpecimen}>Use specimen ID</button>
+        </div>
+
+        <div className="local-file-check">
+          <div>
+            <span><Icon name="file" size={18} /></span>
+            <p><strong>Optional: select the original file.</strong><br />Its hash is recalculated locally and the file is never uploaded.</p>
+          </div>
+          <input
+            id={compareInputId}
+            type="file"
+            onChange={(event) => setComparisonFile(event.target.files?.[0] ?? null)}
+          />
+          <label htmlFor={compareInputId}>
+            {comparisonFile ? `${comparisonFile.name} (${formatBytes(comparisonFile.size)})` : "Choose local file"}
+          </label>
+        </div>
+      </form>
+
+      <div className="verifier-response" aria-live="polite">
+        {status === "idle" && (
+          <div className="verifier-idle">
+            <span className="verifier-idle__line" />
+            <p>Look up a receipt, then optionally prove byte-for-byte integrity with a local file.</p>
+          </div>
+        )}
+
+        {status === "loading" && (
+          <div className="verifier-loading">
+            <span /><span /><span />
+            <p>{fileCheck.state === "HASHING" ? "Recalculating the local SHA-256 digest..." : "Reading the persisted receipt..."}</p>
+          </div>
+        )}
+
+        {status === "error" && (
+          <div className="verifier-error" role="alert">
+            <strong>Record not verified</strong>
+            <p>{message}</p>
+          </div>
+        )}
+
+        {status === "success" && result && (
+          <div className={`verified-result${fileCheck.state === "MISMATCH" ? " verified-result--mismatch" : ""}`}>
+            <div className="verified-result__title">
+              <span><Icon name={fileCheck.state === "MISMATCH" ? "alert" : "check"} size={22} /></span>
+              <div>
+                <small>{resultTitle}</small>
+                <h3>{result.record.recordId}</h3>
+              </div>
+              <em>{result.specimen ? "SIMULATED" : "External proofs pending"}</em>
+            </div>
+
+            {!result.specimen && (
+              <div className={`local-match local-match--${fileCheck.state.toLowerCase()}`}>
+                <Icon
+                  name={fileCheck.state === "MISMATCH" ? "alert" : fileCheck.state === "MATCH" ? "check" : "file"}
+                  size={20}
+                />
+                <div>
+                  <strong>
+                    {fileCheck.state === "MATCH"
+                      ? "Byte-for-byte match"
+                      : fileCheck.state === "MISMATCH"
+                        ? "Hash mismatch"
+                        : "File integrity not checked"}
+                  </strong>
+                  <p>
+                    {fileCheck.state === "MATCH"
+                      ? "The selected file recalculates to the recorded SHA-256 digest."
+                      : fileCheck.state === "MISMATCH"
+                        ? "The selected file is not the same byte sequence as the sealed digest."
+                        : "Select the independently held original above and run verification again."}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="verified-result__rails">
+              <article className={`verified-rail verified-rail--green${result.specimen ? "" : " verified-rail--pending"}`}>
+                <span>RAIL A / QUALIFIED TIME</span>
+                <strong>{result.record.qualifiedRail.provider}</strong>
+                <p>{result.record.qualifiedRail.status}</p>
+              </article>
+              <article className={`verified-rail verified-rail--amber${result.specimen ? "" : " verified-rail--pending"}`}>
+                <span>RAIL B / PUBLIC ANCHOR</span>
+                <strong>{result.record.chainRail.chain}</strong>
+                <p>{result.record.chainRail.block ? `Block ${result.record.chainRail.block} - ` : ""}{result.record.chainRail.status}</p>
+              </article>
+            </div>
+
+            <div className="verified-result__hash">
+              <span>RECORDED FILE SHA-256</span>
+              <code>{result.record.sha256}</code>
+              <button type="button" onClick={copyHash} aria-label="Copy recorded SHA-256 hash">
+                <Icon name={copied ? "check" : "copy"} size={16} /> {copied ? "Copied" : "Copy"}
+              </button>
+            </div>
+
+            {!result.specimen && (
+              <div className="verified-result__downloads">
+                <a href={`/api/records/${encodeURIComponent(result.record.recordId)}/report.pdf`}>
+                  PDF receipt <Icon name="download" size={15} />
+                </a>
+                <a href={`/api/records/${encodeURIComponent(result.record.recordId)}/bundle`}>
+                  Public proof bundle <Icon name="download" size={15} />
+                </a>
+              </div>
+            )}
+
+            <p className="verified-result__disclaimer">
+              <strong>Honest scope:</strong> {result.scope.doesNotProve}
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function App() {
-  const scrollToVerifier = () => {
+  const [verificationTarget, setVerificationTarget] = useState(null);
+
+  const scrollToSeal = () => {
+    document.getElementById("seal")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const scrollToVerifier = (recordIdToVerify) => {
+    if (recordIdToVerify) {
+      setVerificationTarget({ id: recordIdToVerify, nonce: Date.now() });
+    }
     document.getElementById("verify")?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   return (
     <>
       <a className="skip-link" href="#main-content">Skip to content</a>
-      <Header onVerify={scrollToVerifier} />
+      <Header onSeal={scrollToSeal} onVerify={scrollToVerifier} />
 
       <main id="main-content">
         <section className="hero" id="top">
           <div className="hero__mesh" aria-hidden="true" />
           <div className="container hero__inner">
             <div className="hero__copy">
-              <div className="phase-tag"><span>GENESIS</span> PHASE 0 / VALIDATION</div>
+              <div className="phase-tag"><span>V1.2 LIVE</span> DEVELOPMENT INTEGRITY RECEIPT</div>
               <h1>Construction records that can <em>verify themselves.</em></h1>
               <p className="hero__lede">
-                SiteSealed is a neutral proof layer designed to bind every site capture to qualified time and a public-chain anchor - before a dispute begins.
+                Create a real SHA-256 integrity receipt and a private encrypted backup without ever uploading the readable original. Qualified time and public-chain anchoring remain visibly pending until the external rails exist.
               </p>
               <div className="hero__actions">
-                <button className="button button--amber" type="button" onClick={scrollToVerifier}>
-                  Verify the specimen <Icon name="arrow" size={18} />
+                <button className="button button--amber" type="button" onClick={scrollToSeal}>
+                  Seal a file <Icon name="arrow" size={18} />
+                </button>
+                <button className="button button--ghost" type="button" onClick={() => scrollToVerifier()}>
+                  Verify a record <Icon name="shield" size={17} />
                 </button>
                 <a className="button button--ghost" href="/documents/SiteSealed_Whitepaper_v1.0_Genesis.pdf">
                   Read the whitepaper <Icon name="external" size={17} />
                 </a>
               </div>
               <div className="hero__trustline">
-                <span><Icon name="lock" size={16} /> Client-encrypted originals</span>
-                <span><Icon name="shield" size={16} /> Adversary-verifiable proofs</span>
+                <span><Icon name="lock" size={16} /> Client-side encrypted original</span>
+                <span><Icon name="shield" size={16} /> S3 object + MySQL receipt</span>
               </div>
             </div>
             <HeroSeal />
@@ -644,13 +1336,31 @@ function App() {
           </div>
         </section>
 
+        <section className="seal-workflow section" id="seal">
+          <div className="container">
+            <div className="seal-workflow__intro">
+              <SectionHeading
+                eyebrow="05 / First real workflow"
+                title="Hash locally. Encrypt locally. Record only what is necessary."
+                copy="This v1.2 web workflow creates a persistent development receipt for an imported file. It is useful for testing real integrity and persistence, while remaining deliberately below the whitepaper's final dual-rail evidentiary standard."
+              />
+              <div className="seal-workflow__boundary">
+                <span><Icon name="alert" size={18} /> CURRENT BOUNDARY</span>
+                <p><strong>Real now:</strong> SHA-256, client-side AES-256-GCM, MySQL persistence, public lookup, local file comparison and a dynamic PDF receipt.</p>
+                <p><strong>Not yet:</strong> in-app camera attestation, identity, GNSS, qualified RFC 3161 time, Merkle batching or public-chain anchoring.</p>
+              </div>
+            </div>
+            <SealingWorkbench onVerify={scrollToVerifier} />
+          </div>
+        </section>
+
         <section className="verify section" id="verify">
           <div className="container verify__grid">
             <div className="verify__copy">
               <SectionHeading
-                eyebrow="05 / Open verification"
+                eyebrow="06 / Open verification"
                 title="A proof held by one side is a claim. A proof checkable by the other is evidence."
-                copy="The Genesis demo below makes a real API request and returns the simulated proof bundle. Production cryptographic checks remain part of Phase 1."
+                copy="Look up any v1.2 receipt and optionally select the original file. Its SHA-256 is recalculated entirely in your browser and compared with the persistent record."
                 inverse
               />
               <div className="verify__promise">
@@ -658,14 +1368,14 @@ function App() {
                 <p><strong>Free verification, forever.</strong><br />No account, paywall or vendor permission in the production design.</p>
               </div>
             </div>
-            <Verifier />
+            <VerifierV12 requestedRecord={verificationTarget} />
           </div>
         </section>
 
         <section className="principles section" id="principles">
           <div className="container">
             <SectionHeading
-              eyebrow="06 / Founding principles"
+              eyebrow="07 / Founding principles"
               title="The specification may evolve. These seven rules do not."
               copy="Part I of the Genesis whitepaper defines the non-negotiable boundary of the project."
             />
@@ -691,7 +1401,7 @@ function App() {
         <section className="roadmap section" id="roadmap">
           <div className="container">
             <SectionHeading
-              eyebrow="07 / Trajectory"
+              eyebrow="08 / Trajectory"
               title="First earn the right to be built. Then become the layer."
               copy="The roadmap begins with practitioner validation before production engineering."
               align="center"
@@ -718,8 +1428,11 @@ function App() {
               <h2>Stop reconstructing.<br /><em>Start sealing.</em></h2>
             </div>
             <div className="closing__actions">
-              <button className="button button--amber" type="button" onClick={scrollToVerifier}>
-                Verify the specimen <Icon name="arrow" size={18} />
+              <button className="button button--amber" type="button" onClick={scrollToSeal}>
+                Create a development seal <Icon name="arrow" size={18} />
+              </button>
+              <button className="button button--ghost" type="button" onClick={() => scrollToVerifier()}>
+                Verify a record <Icon name="shield" size={17} />
               </button>
               <a className="button button--ghost" href="/documents/SiteSealed_Whitepaper_v1.0_Genesis.pdf">
                 Founding whitepaper <Icon name="download" size={17} />
@@ -749,8 +1462,9 @@ function App() {
             </div>
             <div>
               <strong>Status</strong>
-              <span>Genesis / Phase 0</span>
-              <span>Validation prototype</span>
+              <span>Genesis v1.2</span>
+              <span>Development receipts live</span>
+              <span>External proof rails pending</span>
             </div>
           </div>
         </div>

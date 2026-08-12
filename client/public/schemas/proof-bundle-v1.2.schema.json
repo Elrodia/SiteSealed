@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://app.sitesealed.com/schemas/proof-bundle-v1.2.schema.json",
+  "title": "SiteSealed v1.2 development proof bundle",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "bundleVersion",
+    "record",
+    "receipt",
+    "receiptSha256",
+    "encryptedOriginal",
+    "proofs",
+    "scope"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "sitesealed.proof-bundle.v1.2"
+    },
+    "bundleVersion": {
+      "const": "1.2"
+    },
+    "record": {
+      "type": "object",
+      "required": [
+        "recordId",
+        "recordClass",
+        "proofLevel",
+        "recordSha256",
+        "manifestSha256",
+        "encryptedOriginal",
+        "receivedAt"
+      ]
+    },
+    "receipt": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "recordId",
+        "recordClass",
+        "proofLevel",
+        "recordSha256",
+        "manifestSha256",
+        "receivedAt"
+      ]
+    },
+    "receiptSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "encryptedManifest": {
+      "type": ["object", "null"]
+    },
+    "encryptedOriginal": {
+      "type": "object",
+      "required": [
+        "state",
+        "encryption",
+        "ciphertextSha256",
+        "ciphertextBytes",
+        "plaintextBytes",
+        "privateRetrieval"
+      ],
+      "properties": {
+        "state": { "const": "STORED_ENCRYPTED" },
+        "ciphertextSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "privateRetrieval": { "const": true }
+      }
+    },
+    "proofs": {
+      "type": "object"
+    },
+    "scope": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}
