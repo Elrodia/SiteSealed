@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { after, before, test } from "node:test";
+import { createMemoryCoordinator } from "./coordination.js";
 import { createApp } from "./server.js";
 import { createMemoryRecordStore } from "./specimen.js";
 
@@ -94,13 +95,13 @@ after(async () => {
   });
 });
 
-test("health endpoint reports the honest v1.4-alpha.2 capability boundary", async () => {
+test("health endpoint reports the honest v1.4-alpha.3 capability boundary", async () => {
   const response = await fetch(`${baseUrl}/api/health`);
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.ok, true);
   assert.equal(payload.service, "sitesealed");
-  assert.equal(payload.version, "1.4.0-alpha.2");
+  assert.equal(payload.version, "1.4.0-alpha.3");
   assert.equal(payload.sealing.clientEncryptedObjectStorage, true);
   assert.equal(
     payload.sealing.operationalAudit,
@@ -143,6 +144,7 @@ test("health endpoint reports the honest v1.4-alpha.2 capability boundary", asyn
     distributed: false,
     rateLimiting: true,
     verificationCache: true,
+    runtimeRailStatus: true,
   });
   assert.deepEqual(payload.qualifiedTimestamp, {
     mode: "disabled",
@@ -158,6 +160,48 @@ test("health endpoint reports the honest v1.4-alpha.2 capability boundary", asyn
     chainId: 1,
     writesEnabled: false,
   });
+});
+
+test("health endpoint reads operational Evidency status from the separate worker", async () => {
+  const coordinator = createMemoryCoordinator();
+  await coordinator.setRailRuntimeStatus("evidency", {
+    mode: "evidency",
+    status: "operational",
+    provider: "Evidency",
+    environment: "SANDBOX",
+    configured: true,
+    externalCallVerified: true,
+    legalUse: false,
+    qualificationStatus: "TEST_ONLY_NOT_QUALIFIED",
+    responseValidation: "TOKEN_RECEIVED_DIGEST_BOUND_AND_STORED",
+    dryRun: false,
+    lastCheckedAt: "2026-08-12T20:00:00.000Z",
+    lastSuccessAt: "2026-08-12T20:00:00.000Z",
+  });
+  const statusApp = createApp({
+    recordStore: createMemoryRecordStore(),
+    coordinator,
+    sealRateLimit: 100,
+  });
+  const statusServer = await new Promise((resolve) => {
+    const instance = statusApp.listen(0, "127.0.0.1", () => resolve(instance));
+  });
+  const address = statusServer.address();
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/health`);
+    const payload = await response.json();
+    assert.equal(payload.qualifiedTimestamp.status, "operational");
+    assert.equal(payload.qualifiedTimestamp.externalCallVerified, true);
+    assert.equal(
+      payload.sealing.qualifiedTimestamp,
+      "EVIDENCY_SANDBOX_OPERATIONAL_TEST_ONLY",
+    );
+  } finally {
+    await new Promise((resolve, reject) =>
+      statusServer.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
 });
 
 test("a real digest receipt binds a client-encrypted original without receiving plaintext", async () => {

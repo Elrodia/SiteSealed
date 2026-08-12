@@ -1354,6 +1354,16 @@ button {
   box-shadow: 0 0 0 4px var(--green-100);
 }
 
+.infrastructure-node > i.is-ready {
+  background: var(--amber-500);
+  box-shadow: 0 0 0 4px rgba(243, 154, 18, 0.14);
+}
+
+.infrastructure-node > i.is-error {
+  background: #ff7d67;
+  box-shadow: 0 0 0 4px rgba(255, 125, 103, 0.13);
+}
+
 .infrastructure-node > i.is-local {
   background: var(--amber-500);
   box-shadow: 0 0 0 4px var(--amber-100);

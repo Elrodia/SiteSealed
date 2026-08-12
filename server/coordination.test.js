@@ -57,6 +57,25 @@ test("verification cache is transient and returns an isolated copy", async () =>
   assert.equal(await coordinator.getCachedRecord(record.recordId), null);
 });
 
+test("runtime rail status is shared as an isolated expiring snapshot", async () => {
+  let timestamp = 15_000;
+  const coordinator = createMemoryCoordinator({ now: () => timestamp });
+  const status = {
+    mode: "evidency",
+    status: "operational",
+    externalCallVerified: true,
+  };
+  await coordinator.setRailRuntimeStatus("evidency", status, { ttlMs: 500 });
+  status.status = "tampered";
+  assert.deepEqual(await coordinator.getRailRuntimeStatus("evidency"), {
+    mode: "evidency",
+    status: "operational",
+    externalCallVerified: true,
+  });
+  timestamp = 15_501;
+  assert.equal(await coordinator.getRailRuntimeStatus("evidency"), null);
+});
+
 test("submission locks are exclusive, expiring and safely released", async () => {
   let timestamp = 20_000;
   const coordinator = createMemoryCoordinator({ now: () => timestamp });

@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createClient } from "redis";
 
-const KEY_PREFIX = "sitesealed:v1.4-alpha.2";
+const KEY_PREFIX = "sitesealed:v1.4";
+const DEFAULT_RAIL_STATUS_TTL_MS = 25 * 60 * 60 * 1000;
 const RATE_LIMIT_SCRIPT = `
 local current = redis.call('INCR', KEYS[1])
 if current == 1 then
@@ -58,6 +59,22 @@ function lockKey(submissionId) {
 function jobLockKey(name) {
   const safeName = String(name ?? "job").replace(/[^a-z0-9:_-]/gi, "_");
   return `${KEY_PREFIX}:job-lock:${safeName}`;
+}
+
+function railStatusKey(name) {
+  const safeName = String(name ?? "rail").replace(/[^a-z0-9:_-]/gi, "_");
+  return `${KEY_PREFIX}:runtime-rail:${safeName}`;
+}
+
+function serializeRailStatus(status) {
+  if (!status || typeof status !== "object" || Array.isArray(status)) {
+    throw new Error("Runtime rail status must be an object.");
+  }
+  const serialized = JSON.stringify(status);
+  if (Buffer.byteLength(serialized, "utf8") > 8 * 1024) {
+    throw new Error("Runtime rail status is unexpectedly large.");
+  }
+  return serialized;
 }
 
 export function resolveRedisConfig(environment = process.env) {
@@ -142,6 +159,30 @@ export function createRedisCoordinator(client, options = {}) {
       await client.del(cacheKey(recordId));
     },
 
+    async getRailRuntimeStatus(name) {
+      const key = railStatusKey(name);
+      const serialized = await client.get(key);
+      if (!serialized) return null;
+      try {
+        return JSON.parse(serialized);
+      } catch {
+        await client.del(key);
+        return null;
+      }
+    },
+
+    async setRailRuntimeStatus(
+      name,
+      status,
+      { ttlMs = DEFAULT_RAIL_STATUS_TTL_MS } = {},
+    ) {
+      const serialized = serializeRailStatus(status);
+      await client.set(railStatusKey(name), serialized, {
+        PX: positiveInteger(ttlMs, DEFAULT_RAIL_STATUS_TTL_MS),
+      });
+      return JSON.parse(serialized);
+    },
+
     async acquireSubmissionLock(submissionId, { ttlMs = 30_000 } = {}) {
       const token = randomUUID();
       const key = lockKey(submissionId);
@@ -191,6 +232,7 @@ export function createRedisCoordinator(client, options = {}) {
         distributed: true,
         rateLimiting: true,
         verificationCache: true,
+        runtimeRailStatus: true,
       };
     },
 
@@ -205,6 +247,7 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
   const rateLimits = new Map();
   const cachedRecords = new Map();
   const locks = new Map();
+  const railStatuses = new Map();
 
   function removeExpired(timestamp) {
     for (const [key, entry] of rateLimits) {
@@ -215,6 +258,9 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
     }
     for (const [key, entry] of locks) {
       if (entry.expiresAt <= timestamp) locks.delete(key);
+    }
+    for (const [key, entry] of railStatuses) {
+      if (entry.expiresAt <= timestamp) railStatuses.delete(key);
     }
   }
 
@@ -260,6 +306,27 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
       cachedRecords.delete(cacheKey(recordId));
     },
 
+    async getRailRuntimeStatus(name) {
+      const timestamp = now();
+      removeExpired(timestamp);
+      const entry = railStatuses.get(railStatusKey(name));
+      return entry ? JSON.parse(entry.serialized) : null;
+    },
+
+    async setRailRuntimeStatus(
+      name,
+      status,
+      { ttlMs = DEFAULT_RAIL_STATUS_TTL_MS } = {},
+    ) {
+      const serialized = serializeRailStatus(status);
+      railStatuses.set(railStatusKey(name), {
+        serialized,
+        expiresAt:
+          now() + positiveInteger(ttlMs, DEFAULT_RAIL_STATUS_TTL_MS),
+      });
+      return JSON.parse(serialized);
+    },
+
     async acquireSubmissionLock(submissionId, { ttlMs = 30_000 } = {}) {
       const timestamp = now();
       removeExpired(timestamp);
@@ -300,6 +367,7 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
         distributed: false,
         rateLimiting: true,
         verificationCache: true,
+        runtimeRailStatus: true,
       };
     },
 

@@ -4,7 +4,11 @@ import { createMemoryAuditStore } from "./audit.js";
 import { createMemoryCoordinator } from "./coordination.js";
 import { createDisabledEthereumRail } from "./ethereum.js";
 import { verifyMerkleProof } from "./merkle.js";
-import { processAnchorQueue, processTimestampQueue } from "./rails-worker.js";
+import {
+  deriveEvidencyRuntimeStatus,
+  processAnchorQueue,
+  processTimestampQueue,
+} from "./rails-worker.js";
 import { externalProofStatus, validateSealRequest } from "./records.js";
 import { createMemoryRecordStore } from "./specimen.js";
 
@@ -34,6 +38,58 @@ function input() {
     },
   });
 }
+
+test("Evidency runtime becomes ON only after an externally returned token", () => {
+  const now = () => new Date("2026-08-12T20:00:00.000Z");
+  const ready = deriveEvidencyRuntimeStatus({
+    configured: true,
+    timestamps: { status: "COMPLETED", issued: 0, failed: [], selected: [] },
+    now,
+  });
+  assert.equal(ready.status, "configured");
+  assert.equal(ready.externalCallVerified, false);
+
+  const operational = deriveEvidencyRuntimeStatus({
+    configured: true,
+    timestamps: { status: "COMPLETED", issued: 1, failed: [], selected: [{}] },
+    now,
+  });
+  assert.equal(operational.status, "operational");
+  assert.equal(operational.externalCallVerified, true);
+  assert.equal(operational.legalUse, false);
+  assert.equal(operational.lastSuccessAt, "2026-08-12T20:00:00.000Z");
+});
+
+test("dry-run and provider failures can never masquerade as ON", () => {
+  const now = () => new Date("2026-08-12T20:05:00.000Z");
+  const dryRun = deriveEvidencyRuntimeStatus({
+    configured: true,
+    dryRun: true,
+    timestamps: { status: "DRY_RUN", issued: 0, failed: [], selected: [{}] },
+    now,
+  });
+  assert.equal(dryRun.status, "dry_run_ready");
+  assert.equal(dryRun.externalCallVerified, false);
+
+  const failed = deriveEvidencyRuntimeStatus({
+    configured: true,
+    timestamps: {
+      status: "COMPLETED_WITH_ERRORS",
+      issued: 0,
+      failed: [{ error: "rejected" }],
+      selected: [{}],
+    },
+    previous: {
+      status: "operational",
+      externalCallVerified: true,
+      lastSuccessAt: "2026-08-12T20:00:00.000Z",
+    },
+    now,
+  });
+  assert.equal(failed.status, "error");
+  assert.equal(failed.externalCallVerified, false);
+  assert.equal(failed.lastSuccessAt, "2026-08-12T20:00:00.000Z");
+});
 
 test("the timestamp worker persists a test-only token and remains idempotent", async () => {
   const recordStore = createMemoryRecordStore();

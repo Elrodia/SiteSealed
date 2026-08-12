@@ -1,4 +1,4 @@
-# SiteSealed Genesis v1.4-alpha.2
+# SiteSealed Genesis v1.4-alpha.3
 
 Cette alpha construit les deux rails externes choisis pour le QTSP :
 
@@ -6,9 +6,11 @@ Cette alpha construit les deux rails externes choisis pour le QTSP :
 - **Ethereum mainnet (chain ID 1)** comme rail public définitif pour les racines
   Merkle horaires.
 
-L'alpha.2 ajoute un premier essai Evidency contrôlé et une interface sombre
-permanente sur desktop comme sur mobile. Le reçu PDF conserve son fond clair :
-il reste un document imprimable, distinct de l'interface écran.
+L'alpha.3 relie le statut public Evidency au worker séparé sans copier ses
+secrets dans le service web. L'indicateur ne devient `ON` qu'après réception,
+contrôle du digest et stockage d'un vrai jeton sandbox. L'interface sombre
+permanente reste active sur desktop et mobile ; le reçu PDF conserve son fond
+clair afin de rester imprimable.
 
 Le mot `sealed` reste volontairement désactivé. Un jeton Evidency sandbox n'a
 aucun effet juridique et ne devient jamais un horodatage qualifié eIDAS. Même
@@ -37,6 +39,9 @@ avec un ancrage mainnet finalisé, l'état maximal de cette version est
 - bundle JSON v1.4 alpha, jeton `.tsr`, reçu PDF, lien Etherscan et vérificateur
   public ;
 - worker Railway idempotent et verrouillé par Redis.
+- état de fonctionnement Evidency partagé par Redis, avec expiration automatique
+  si le worker ne publie plus de contrôle récent ;
+- rafraîchissement automatique de l'indicateur web toutes les 30 secondes.
 
 Le serveur ne reçoit jamais l'original lisible, le manifeste lisible ou la clé
 AES. Evidency reçoit uniquement l'evidence digest. Ethereum reçoit uniquement
@@ -56,6 +61,16 @@ un identifiant de reçu.
 La dernière ligne existe dans le modèle de données pour la future production,
 mais cette alpha ne peut pas l'atteindre.
 
+Le statut d'infrastructure Evidency est distinct du statut probatoire d'un reçu :
+
+| Indicateur | Signification |
+| --- | --- |
+| `OFF` | worker désactivé ou état récent absent |
+| `DRY RUN` | sélection contrôlée, sans appel à Evidency |
+| `READY` | clés chargées, mais aucun jeton réussi n'est encore enregistré |
+| `ON` | jeton sandbox reçu, lié au digest attendu et enregistré |
+| `ERROR` | dernière exécution Evidency en échec |
+
 ## Responsabilités
 
 | Composant | Rôle | Autoritaire | Original lisible |
@@ -63,15 +78,16 @@ mais cette alpha ne peut pas l'atteindre.
 | MySQL | Reçus, preuves externes et lots Merkle | Oui pour l'index applicatif | Non |
 | Bucket S3 | Ciphertexts AES-256-GCM | Oui pour les octets chiffrés | Non |
 | PostgreSQL | Événements internes hash-chaînés | Audit interne uniquement | Non |
-| Redis | Limites, verrous et cache | Non | Non |
+| Redis | Limites, verrous, cache et statut récent des rails | Non | Non |
 | Evidency sandbox | Jeton RFC 3161 de test | Artefact externe de test | Non, digest seulement |
 | Ethereum mainnet | Racine Merkle publique | Rail public | Non, racine seulement |
 
 Le protocole privé de dépôt reste `1.2` afin de préserver les objets et kits de
 récupération existants. Le reçu et le bundle publics passent en
-`1.4-alpha.1` pour préserver la compatibilité des preuves. L'alpha.2 ne modifie
-ni le protocole cryptographique ni le schéma public ; elle sécurise l'exécution
-du worker et l'interface. La migration MySQL `004_dual_rail_alpha` reste additive.
+`1.4-alpha.1` pour préserver la compatibilité des preuves. L'alpha.3 ne modifie
+ni le protocole cryptographique ni le schéma public ; elle rend le statut du
+worker observable sans exposer ses secrets. La migration MySQL
+`004_dual_rail_alpha` reste additive.
 
 ## Structure utile
 
@@ -152,9 +168,9 @@ S3_REGION=${{"Bucket S3".REGION}}
 S3_SECRET_KEY=${{"Bucket S3".SECRET_ACCESS_KEY}}
 ```
 
-Les secrets des rails n'ont pas besoin d'être placés dans le service web.
-L'API affiche donc leur runner comme `OFF`; les états des reçus, eux, proviennent
-des artefacts réellement enregistrés par le worker.
+Les secrets des rails ne doivent pas être placés dans le service web. Le worker
+publie dans Redis un état sanitaire limité et sans secret ; l'API le lit pour
+afficher `OFF`, `DRY RUN`, `READY`, `ON` ou `ERROR`.
 
 ### 2. Service cron `SiteSealed Rails`
 
@@ -181,8 +197,9 @@ EVIDENCY_BATCH_SIZE=50
 EVIDENCY_TARGET_RECORD_ID=<identifiant exact du reçu test>
 EVIDENCY_DRY_RUN=true
 EVIDENCY_MAX_REQUESTS_PER_RUN=1
+EVIDENCY_RUNTIME_STATUS_TTL_SECONDS=90000
 
-ETHEREUM_ANCHOR_MODE=mainnet
+ETHEREUM_ANCHOR_MODE=disabled
 ETHEREUM_RPC_URL=<endpoint HTTPS/WSS mainnet>
 ETHEREUM_ANCHOR_PRIVATE_KEY=<secret Railway>
 ETHEREUM_CONFIRMATIONS=12
@@ -201,18 +218,23 @@ Déploiement prudent :
 1. déployer et vérifier les migrations avec les deux modes laissés à
    `disabled` ;
 2. créer un reçu de test, renseigner son identifiant dans
-   `EVIDENCY_TARGET_RECORD_ID`, conserver `EVIDENCY_MODE=disabled` et lancer le
+   `EVIDENCY_TARGET_RECORD_ID`, définir `EVIDENCY_MODE=sandbox` et lancer le
    worker avec `EVIDENCY_DRY_RUN=true` ; le résultat doit être `DRY_RUN`, avec
-   exactement ce reçu dans `selected` et `attempted: 0` ;
-3. après activation Evidency, ajouter les clés, définir
-   `EVIDENCY_MODE=sandbox` et `EVIDENCY_DRY_RUN=false`, puis lancer une seule
-   fois le worker. `EVIDENCY_MAX_REQUESTS_PER_RUN=1` empêche toute émission en
-   masse, même si `EVIDENCY_BATCH_SIZE` vaut 50 ;
-4. vérifier `attempted: 1`, `issued: 1`, le reçu public et le jeton `.tsr`, puis
-   remettre `EVIDENCY_MODE=disabled` ;
-5. approvisionner le portefeuille dédié, vérifier son adresse et le RPC
+   exactement ce reçu dans `selected`, `attempted: 0` et l'indicateur
+   `DRY RUN` ;
+3. définir `EVIDENCY_DRY_RUN=false`, puis lancer une seule fois le worker.
+   `EVIDENCY_MAX_REQUESTS_PER_RUN=1` empêche toute émission en masse, même si
+   `EVIDENCY_BATCH_SIZE` vaut 50 ;
+4. vérifier `attempted: 1`, `issued: 1`,
+   `runtime.evidency.status: operational`, le reçu public, le jeton `.tsr` et
+   l'indicateur `ON` ;
+5. conserver l'identifiant ciblé et le plafond à `1`. Une fois ce contrôle
+   réussi, le cron horaire peut être activé avec Ethereum toujours désactivé :
+   le reçu déjà horodaté n'est pas éligible à une seconde émission et le worker
+   rafraîchit son état de fonctionnement ;
+6. approvisionner le portefeuille dédié, vérifier son adresse et le RPC
    mainnet ;
-6. activer `ETHEREUM_ANCHOR_MODE=mainnet`, lancer un premier petit lot sous
+7. activer `ETHEREUM_ANCHOR_MODE=mainnet`, lancer un premier petit lot sous
    surveillance, puis seulement activer le cron horaire.
 
 Ne retire `EVIDENCY_TARGET_RECORD_ID` et n'augmente

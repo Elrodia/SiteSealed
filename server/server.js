@@ -223,6 +223,12 @@ export function createApp({
 } = {}) {
   const app = express();
 
+  const timestampHealth = async () => {
+    const local = await timestampService.healthCheck();
+    const shared = await coordinator.getRailRuntimeStatus?.("evidency");
+    return shared ?? local;
+  };
+
   const findRecord = async (recordId) => {
     try {
       const cached = await coordinator.getCachedRecord(recordId);
@@ -298,23 +304,28 @@ export function createApp({
       objectStore.healthCheck(),
       auditStore.healthCheck(),
       coordinator.healthCheck(),
-      timestampService.healthCheck(),
+      timestampHealth(),
       ethereumRail.healthCheck(),
     ]);
     response.status(200).json({
       ok: true,
       service: "sitesealed",
-      version: "1.4.0-alpha.2",
+      version: "1.4.0-alpha.3",
       sealing: {
         workflow: "IMPORTED_FILE_CLIENT_ENCRYPTED_STORAGE_RECEIPT",
         clientEncryptedObjectStorage: true,
         operationalAudit: "POSTGRESQL_APPEND_ONLY_HASH_CHAIN",
         distributedCoordination: true,
         qualifiedTimestamp:
-          qualifiedTimestamp.mode === "evidency" &&
-          qualifiedTimestamp.environment === "SANDBOX"
-            ? "EVIDENCY_SANDBOX_TEST_ONLY"
-            : false,
+          qualifiedTimestamp.status === "operational"
+            ? "EVIDENCY_SANDBOX_OPERATIONAL_TEST_ONLY"
+            : [
+                  "configured",
+                  "dry_run_ready",
+                  "dry_run_no_eligible_record",
+                ].includes(qualifiedTimestamp.status)
+              ? "EVIDENCY_SANDBOX_READY_TEST_ONLY"
+              : false,
         publicChainAnchor:
           publicChainAnchor.mode === "ethereum"
             ? "ETHEREUM_MAINNET_ENABLED"
@@ -756,7 +767,7 @@ export async function startServer() {
   });
   const server = app.listen(port, host, () => {
     console.log(
-      `SiteSealed v1.4-alpha.2 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
+      `SiteSealed v1.4-alpha.3 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
     );
   });
 

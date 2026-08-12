@@ -1231,20 +1231,37 @@ function InfrastructureStatus() {
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    const controller = new AbortController();
-    fetch("/api/health", { signal: controller.signal, cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Health endpoint unavailable");
-        return response.json();
-      })
-      .then((payload) => {
-        setHealth(payload);
-        setFailed(false);
-      })
-      .catch((error) => {
-        if (error.name !== "AbortError") setFailed(true);
-      });
-    return () => controller.abort();
+    let active = true;
+    let controller = null;
+    const refresh = () => {
+      controller?.abort();
+      controller = new AbortController();
+      fetch("/api/health", { signal: controller.signal, cache: "no-store" })
+        .then(async (response) => {
+          if (!response.ok) throw new Error("Health endpoint unavailable");
+          return response.json();
+        })
+        .then((payload) => {
+          if (!active) return;
+          setHealth(payload);
+          setFailed(false);
+        })
+        .catch((error) => {
+          if (active && error.name !== "AbortError") setFailed(true);
+        });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 30_000);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      active = false;
+      controller?.abort();
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, []);
 
   const services = [
@@ -1293,18 +1310,46 @@ function InfrastructureStatus() {
       </div>
       <div className="infrastructure-status__grid">
         {services.map((service) => {
-          const connected = ["connected", "configured"].includes(service.data?.status);
+          const status = service.data?.status;
+          const connected = ["connected", "operational"].includes(status);
+          const ready = [
+            "configured",
+            "dry_run_ready",
+            "dry_run_no_eligible_record",
+          ].includes(status);
+          const errored = status === "error";
           const local = service.data?.mode === "memory";
-          const label = connected
-            ? service.data?.status === "configured" ? "TEST READY" : "ONLINE"
+          const label = status === "operational"
+            ? "ON"
+            : status === "connected"
+              ? "ONLINE"
+              : status === "configured"
+                ? "READY"
+                : status === "dry_run_ready" || status === "dry_run_no_eligible_record"
+                  ? "DRY RUN"
+                  : errored
+                    ? "ERROR"
             : local
               ? "LOCAL"
-              : service.data?.status === "not_configured"
+              : status === "not_configured"
                 ? "OFF"
                 : "...";
+          const indicatorClass = connected
+            ? "is-online"
+            : ready
+              ? "is-ready"
+              : errored
+                ? "is-error"
+                : local
+                  ? "is-local"
+                  : "";
           return (
-            <div className="infrastructure-node" key={service.name}>
-              <i className={connected ? "is-online" : local ? "is-local" : ""} />
+            <div
+              className="infrastructure-node"
+              key={service.name}
+              title={service.data?.message ?? undefined}
+            >
+              <i className={indicatorClass} />
               <div>
                 <strong>{service.name}</strong>
                 <span>{service.role}</span>
@@ -1646,7 +1691,7 @@ function App() {
             </div>
             <div>
               <strong>Status</strong>
-              <span>Genesis v1.4 alpha.2</span>
+              <span>Genesis v1.4 alpha.3</span>
               <span>Evidency sandbox test rail</span>
               <span>Ethereum mainnet final rail</span>
             </div>

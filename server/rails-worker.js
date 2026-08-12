@@ -38,6 +38,75 @@ function optionalRecordId(value) {
   return recordId;
 }
 
+export function deriveEvidencyRuntimeStatus({
+  configured = false,
+  dryRun = false,
+  timestamps = {},
+  previous = null,
+  now = () => new Date(),
+} = {}) {
+  const checkedAt = now().toISOString();
+  const selectedCount = Array.isArray(timestamps.selected)
+    ? timestamps.selected.length
+    : 0;
+  const failures = Array.isArray(timestamps.failed) ? timestamps.failed : [];
+  const issued = Number(timestamps.issued ?? 0);
+  const previouslyVerified =
+    previous?.status === "operational" &&
+    previous?.externalCallVerified === true &&
+    Boolean(previous?.lastSuccessAt);
+  const targetAlreadyIssued =
+    timestamps.targetState === "SANDBOX_TOKEN_ISSUED";
+
+  let status;
+  let message;
+  let lastSuccessAt = previous?.lastSuccessAt ?? null;
+
+  if (!configured && !dryRun) {
+    status = "not_configured";
+    message = "The Evidency sandbox worker is disabled.";
+  } else if (dryRun) {
+    status = selectedCount > 0 ? "dry_run_ready" : "dry_run_no_eligible_record";
+    message =
+      selectedCount > 0
+        ? "The exact record is selected; no Evidency request was sent."
+        : "Dry-run completed without an eligible target record.";
+  } else if (failures.length > 0 || timestamps.status === "FAILED") {
+    status = "error";
+    message = "The latest Evidency sandbox execution failed.";
+  } else if (issued > 0) {
+    status = "operational";
+    message = "A sandbox RFC 3161 token was received, digest-bound and stored.";
+    lastSuccessAt = checkedAt;
+  } else if (previouslyVerified || targetAlreadyIssued) {
+    status = "operational";
+    message = "The worker is healthy and a sandbox token has been verified previously.";
+    lastSuccessAt ??= checkedAt;
+  } else {
+    status = "configured";
+    message = "Sandbox credentials are loaded; no successful token is recorded yet.";
+  }
+
+  return {
+    mode: configured ? "evidency" : "disabled",
+    status,
+    provider: "Evidency",
+    environment: "SANDBOX",
+    configured: Boolean(configured),
+    externalCallVerified: status === "operational",
+    legalUse: false,
+    qualificationStatus: "TEST_ONLY_NOT_QUALIFIED",
+    responseValidation:
+      status === "operational"
+        ? "TOKEN_RECEIVED_DIGEST_BOUND_AND_STORED"
+        : "NOT_YET_EXTERNALLY_VERIFIED",
+    dryRun: Boolean(dryRun),
+    lastCheckedAt: checkedAt,
+    lastSuccessAt,
+    message,
+  };
+}
+
 export async function processTimestampQueue({
   recordStore,
   timestampService,
@@ -61,8 +130,10 @@ export async function processTimestampQueue({
   let issued = 0;
   try {
     let candidates;
+    let targetState = null;
     if (targetRecordId) {
       const target = await recordStore.findById(targetRecordId);
+      targetState = target?.qualifiedRail?.state ?? "NOT_FOUND";
       const eligible =
         target &&
         !target.specimen &&
@@ -89,6 +160,7 @@ export async function processTimestampQueue({
         issued: 0,
         failed: [],
         selected,
+        targetState,
       };
     }
 
@@ -126,6 +198,7 @@ export async function processTimestampQueue({
       issued,
       failed,
       selected,
+      targetState,
     };
   } finally {
     await release();
@@ -225,6 +298,26 @@ export async function processAnchorQueue({
   }
 }
 
+async function publishEvidencyRuntimeStatus({
+  coordinator,
+  timestampService,
+  timestamps,
+  dryRun,
+  ttlMs,
+}) {
+  const previous = await coordinator.getRailRuntimeStatus("evidency");
+  const runtime = deriveEvidencyRuntimeStatus({
+    configured: timestampService?.configured,
+    dryRun,
+    timestamps,
+    previous,
+  });
+  runtime.freshUntil = new Date(
+    new Date(runtime.lastCheckedAt).valueOf() + ttlMs,
+  ).toISOString();
+  return coordinator.setRailRuntimeStatus("evidency", runtime, { ttlMs });
+}
+
 export async function runRailsWorker(environment = process.env) {
   let recordStore;
   let auditStore;
@@ -244,18 +337,54 @@ export async function runRailsWorker(environment = process.env) {
     timestampService = createEvidencyTimestampServiceFromEnv(environment);
     ethereumRail = createEthereumAnchorClientFromEnv(environment);
 
-    const timestamps = await processTimestampQueue({
-      recordStore,
-      timestampService,
-      auditStore,
-      coordinator,
-      limit: Math.min(
-        positiveInteger(environment.EVIDENCY_BATCH_SIZE, 50),
-        positiveInteger(environment.EVIDENCY_MAX_REQUESTS_PER_RUN, 1),
-      ),
-      targetRecordId: optionalRecordId(environment.EVIDENCY_TARGET_RECORD_ID),
-      dryRun: booleanFlag(environment.EVIDENCY_DRY_RUN, false),
-    });
+    const targetRecordId = optionalRecordId(
+      environment.EVIDENCY_TARGET_RECORD_ID,
+    );
+    const dryRun = booleanFlag(environment.EVIDENCY_DRY_RUN, false);
+    const statusTtlMs =
+      Math.min(
+        positiveInteger(environment.EVIDENCY_RUNTIME_STATUS_TTL_SECONDS, 90_000),
+        7 * 24 * 60 * 60,
+      ) * 1000;
+    let timestamps;
+    let evidencyRuntime;
+    try {
+      timestamps = await processTimestampQueue({
+        recordStore,
+        timestampService,
+        auditStore,
+        coordinator,
+        limit: Math.min(
+          positiveInteger(environment.EVIDENCY_BATCH_SIZE, 50),
+          positiveInteger(environment.EVIDENCY_MAX_REQUESTS_PER_RUN, 1),
+        ),
+        targetRecordId,
+        dryRun,
+      });
+      evidencyRuntime = await publishEvidencyRuntimeStatus({
+        coordinator,
+        timestampService,
+        timestamps,
+        dryRun,
+        ttlMs: statusTtlMs,
+      });
+    } catch (error) {
+      const failedTimestamps = {
+        status: "FAILED",
+        attempted: 0,
+        issued: 0,
+        failed: [{ error: error.message }],
+        selected: [],
+      };
+      await publishEvidencyRuntimeStatus({
+        coordinator,
+        timestampService,
+        timestamps: failedTimestamps,
+        dryRun,
+        ttlMs: statusTtlMs,
+      }).catch(() => {});
+      throw error;
+    }
     const anchors = await processAnchorQueue({
       recordStore,
       ethereumRail,
@@ -266,7 +395,12 @@ export async function runRailsWorker(environment = process.env) {
     const workerFailed =
       timestamps.failed.length > 0 ||
       ["FAILED_ON_CHAIN", "INVALID_ON_CHAIN"].includes(anchors.status);
-    return { ok: !workerFailed, timestamps, anchors };
+    return {
+      ok: !workerFailed,
+      timestamps,
+      anchors,
+      runtime: { evidency: evidencyRuntime },
+    };
   } finally {
     await Promise.all([
       recordStore?.close().catch(() => {}),
