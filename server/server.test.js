@@ -9,14 +9,62 @@ import { createMemoryObjectStore } from "./storage.js";
 
 let server;
 let baseUrl;
+let testCoordinator;
+let testAuth;
 let sequence = 0;
 const TEST_UPLOAD = Symbol("testUpload");
 const TEST_GRANT = Symbol("testGrant");
-const TEST_ACCESS_SECRET = "alpha8-test-access-secret-32-bytes-minimum";
 const TEST_UPLOAD_ADMISSION = resolveUploadAdmissionConfig({
   DATABASE_MODE: "required",
-  UPLOAD_ADMISSION_SECRET: TEST_ACCESS_SECRET,
 });
+const TEST_USER = {
+  id: "a".repeat(64),
+  provider: "GOOGLE",
+  email: "alpha9@example.test",
+  name: "Alpha Nine",
+};
+const TEST_OTHER_USER = {
+  id: "b".repeat(64),
+  provider: "GOOGLE",
+  email: "other@example.test",
+  name: "Other Account",
+};
+const TEST_IDENTITY_SERVICE = {
+  mode: "google_oidc",
+  configured: true,
+  secureCookies: false,
+  sessionTtlMs: 7 * 24 * 60 * 60 * 1000,
+  publicConfig() {
+    return {
+      provider: "GOOGLE",
+      configured: true,
+      clientId: "123456789-alpha9.apps.googleusercontent.com",
+      loginUri: "http://localhost/api/auth/google/callback",
+      configurationError: null,
+    };
+  },
+  async verifyCredential() {
+    return TEST_USER;
+  },
+  async healthCheck() {
+    return {
+      mode: "google_oidc",
+      status: "configured",
+      configured: true,
+      sessionStore: "REDIS",
+      requestedIdentityClaims: ["openid", "email", "profile"],
+      googleApiAccess: false,
+      configurationError: null,
+    };
+  },
+};
+
+function sessionHeaders(session, { csrf = true } = {}) {
+  return {
+    cookie: `sitesealed_session=${session.token}`,
+    ...(csrf ? { "x-sitesealed-csrf": session.csrfToken } : {}),
+  };
+}
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -68,7 +116,7 @@ function uploadBindingFor(body) {
   };
 }
 
-function uploadHeadersFor(body, grant) {
+function uploadHeadersFor(body, grant, auth = testAuth) {
   const upload = body[TEST_UPLOAD];
   return {
     "content-type": "application/octet-stream",
@@ -78,15 +126,16 @@ function uploadHeadersFor(body, grant) {
     "x-sitesealed-original-bytes": String(upload.plaintextBytes),
     "x-sitesealed-recovery-token-sha256": upload.recoveryTokenSha256,
     "x-sitesealed-upload-grant": grant,
+    ...(auth?.cookie ? { cookie: auth.cookie } : {}),
   };
 }
 
-async function issueUploadGrant(url, body, access = TEST_ACCESS_SECRET) {
+async function issueUploadGrant(url, body, auth = testAuth) {
   const response = await fetch(`${url}/api/storage/upload-grants`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-sitesealed-deposit-access": access,
+      ...(auth ?? {}),
     },
     body: JSON.stringify(uploadBindingFor(body)),
   });
@@ -109,6 +158,25 @@ async function close(instance) {
   );
 }
 
+async function listenAuthenticated(options = {}) {
+  const coordinator = options.coordinator ?? createMemoryCoordinator();
+  const session = await coordinator.createAuthSession(TEST_USER, {
+    ttlMs: TEST_IDENTITY_SERVICE.sessionTtlMs,
+  });
+  const listened = await listen(
+    createApp({
+      ...options,
+      coordinator,
+      identityService: TEST_IDENTITY_SERVICE,
+    }),
+  );
+  return {
+    ...listened,
+    coordinator,
+    auth: sessionHeaders(session),
+  };
+}
+
 async function createReceipt(body = validRequest()) {
   const upload = body[TEST_UPLOAD];
   if (!body.encryptedObject) {
@@ -125,7 +193,7 @@ async function createReceipt(body = validRequest()) {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-sitesealed-deposit-access": TEST_ACCESS_SECRET,
+        ...testAuth,
       },
       body: JSON.stringify(binding),
     });
@@ -144,6 +212,7 @@ async function createReceipt(body = validRequest()) {
           "x-sitesealed-original-bytes": String(upload.plaintextBytes),
           "x-sitesealed-recovery-token-sha256": upload.recoveryTokenSha256,
           "x-sitesealed-upload-grant": grantPayload.grant,
+          cookie: testAuth.cookie,
         },
         body: upload.ciphertext,
       },
@@ -157,6 +226,7 @@ async function createReceipt(body = validRequest()) {
     headers: {
       "content-type": "application/json",
       "x-sitesealed-upload-grant": body[TEST_GRANT],
+      ...testAuth,
     },
     body: JSON.stringify(body),
   });
@@ -164,8 +234,15 @@ async function createReceipt(body = validRequest()) {
 }
 
 before(async () => {
+  testCoordinator = createMemoryCoordinator();
+  const session = await testCoordinator.createAuthSession(TEST_USER, {
+    ttlMs: TEST_IDENTITY_SERVICE.sessionTtlMs,
+  });
+  testAuth = sessionHeaders(session);
   const app = createApp({
     recordStore: createMemoryRecordStore(),
+    coordinator: testCoordinator,
+    identityService: TEST_IDENTITY_SERVICE,
     sealRateLimit: 100,
     uploadAdmission: TEST_UPLOAD_ADMISSION,
   });
@@ -182,13 +259,13 @@ after(async () => {
   });
 });
 
-test("health endpoint reports the honest v1.4-alpha.8 capability boundary", async () => {
+test("health endpoint reports the honest v1.4-alpha.9 capability boundary", async () => {
   const response = await fetch(`${baseUrl}/api/health`);
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.ok, true);
   assert.equal(payload.service, "sitesealed");
-  assert.equal(payload.version, "1.4.0-alpha.8");
+  assert.equal(payload.version, "1.4.0-alpha.9");
   assert.equal(payload.sealing.clientEncryptedObjectStorage, true);
   assert.equal(
     payload.sealing.operationalAudit,
@@ -199,11 +276,13 @@ test("health endpoint reports the honest v1.4-alpha.8 capability boundary", asyn
   assert.equal(payload.sealing.publicChainAnchor, false);
   assert.equal(payload.sealing.finalSealedStatusEnabled, false);
   assert.deepEqual(payload.sealing.uploadAdmission, {
-    mode: "CONTROLLED_ALPHA_ACCESS_SECRET",
+    mode: "GOOGLE_ACCOUNT_SESSION",
     configured: true,
     oneTimeGrants: true,
+    accountBound: true,
     preBodyClaim: true,
     dailyLimitMiB: 2048,
+    perUserDailyLimitMiB: 256,
   });
   assert.deepEqual(payload.database, {
     mode: "memory",
@@ -240,9 +319,19 @@ test("health endpoint reports the honest v1.4-alpha.8 capability boundary", asyn
     distributed: false,
     rateLimiting: true,
     uploadGrants: true,
+    accountSessions: true,
     boundedStorageAdmission: true,
     verificationCache: true,
     runtimeRailStatus: true,
+  });
+  assert.deepEqual(payload.authentication, {
+    mode: "google_oidc",
+    status: "configured",
+    configured: true,
+    sessionStore: "MEMORY",
+    requestedIdentityClaims: ["openid", "email", "profile"],
+    googleApiAccess: false,
+    configurationError: null,
   });
   assert.deepEqual(payload.qualifiedTimestamp, {
     mode: "disabled",
@@ -258,6 +347,57 @@ test("health endpoint reports the honest v1.4-alpha.8 capability boundary", asyn
     chainId: 1,
     writesEnabled: false,
   });
+});
+
+test("Google sign-in creates an HttpOnly SiteSealed session after the double-submit CSRF check", async () => {
+  const configResponse = await fetch(`${baseUrl}/api/auth/config`);
+  const config = await configResponse.json();
+  assert.equal(configResponse.status, 200);
+  assert.equal(config.configured, true);
+  assert.equal(config.provider, "GOOGLE");
+
+  const rejected = await fetch(`${baseUrl}/api/auth/google/callback`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      cookie: "g_csrf_token=cookie-token",
+    },
+    body: new URLSearchParams({
+      credential: "header.payload.signature",
+      g_csrf_token: "different-token",
+    }),
+    redirect: "manual",
+  });
+  assert.equal(rejected.status, 400);
+  assert.equal((await rejected.json()).code, "GOOGLE_CSRF_REJECTED");
+
+  const accepted = await fetch(`${baseUrl}/api/auth/google/callback`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      cookie: "g_csrf_token=matching-token",
+    },
+    body: new URLSearchParams({
+      credential: "header.payload.signature",
+      g_csrf_token: "matching-token",
+    }),
+    redirect: "manual",
+  });
+  assert.equal(accepted.status, 303);
+  assert.equal(accepted.headers.get("location"), "/#seal");
+  assert.match(
+    accepted.headers.get("set-cookie"),
+    /sitesealed_session=.*HttpOnly.*SameSite=Lax/i,
+  );
+});
+
+test("authenticated mutations reject a missing application CSRF token", async () => {
+  const body = validRequest();
+  const response = await issueUploadGrant(baseUrl, body, {
+    cookie: testAuth.cookie,
+  });
+  assert.equal(response.response.status, 403);
+  assert.equal(response.payload.code, "CSRF_REJECTED");
 });
 
 test("health endpoint reads operational Evidency status from the separate worker", async () => {
@@ -566,7 +706,7 @@ test("requests that try to include original file data are rejected", async () =>
   const body = validRequest({ originalBase64: "do-not-accept" });
   const response = await fetch(`${baseUrl}/api/records`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...testAuth },
     body: JSON.stringify(body),
   });
   assert.equal(response.status, 400);
@@ -636,25 +776,20 @@ test("malformed JSON receives a controlled client error", async () => {
 });
 
 test("the controlled-alpha grant limiter returns standard retry guidance", async () => {
-  const limitedApp = createApp({
+  const limited = await listenAuthenticated({
     recordStore: createMemoryRecordStore(),
     sealRateLimit: 1,
     uploadAdmission: TEST_UPLOAD_ADMISSION,
   });
-  const limitedServer = await new Promise((resolve) => {
-    const instance = limitedApp.listen(0, "127.0.0.1", () => resolve(instance));
-  });
-  const address = limitedServer.address();
-  const limitedBaseUrl = `http://127.0.0.1:${address.port}`;
 
   try {
     const issueGrant = async (body) => {
       const fixture = body[TEST_UPLOAD];
-      return fetch(`${limitedBaseUrl}/api/storage/upload-grants`, {
+      return fetch(`${limited.url}/api/storage/upload-grants`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-sitesealed-deposit-access": TEST_ACCESS_SECRET,
+          ...limited.auth,
         },
         body: JSON.stringify({
           submissionId: body.submissionId,
@@ -673,17 +808,15 @@ test("the controlled-alpha grant limiter returns standard retry guidance", async
     assert.equal(second.status, 429);
     assert.ok(Number(second.headers.get("retry-after")) > 0);
   } finally {
-    await new Promise((resolve, reject) =>
-      limitedServer.close((error) => (error ? reject(error) : resolve())),
-    );
+    await close(limited.server);
   }
 });
 
-test("storage grants require the server-side controlled-alpha secret", async () => {
+test("storage grants require an authenticated account and remain account-bound", async () => {
   const body = validRequest();
-  const rejected = await issueUploadGrant(baseUrl, body, "x".repeat(32));
-  assert.equal(rejected.response.status, 403);
-  assert.equal(rejected.payload.code, "UPLOAD_ADMISSION_REJECTED");
+  const rejected = await issueUploadGrant(baseUrl, body, null);
+  assert.equal(rejected.response.status, 401);
+  assert.equal(rejected.payload.code, "AUTHENTICATION_REQUIRED");
 
   const accepted = await issueUploadGrant(baseUrl, body);
   assert.equal(accepted.response.status, 201);
@@ -692,6 +825,21 @@ test("storage grants require the server-side controlled-alpha secret", async () 
     accepted.payload.grant,
     /^[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/,
   );
+
+  const otherSession = await testCoordinator.createAuthSession(TEST_OTHER_USER, {
+    ttlMs: TEST_IDENTITY_SERVICE.sessionTtlMs,
+  });
+  const otherAuth = sessionHeaders(otherSession);
+  const stolen = await fetch(
+    `${baseUrl}/api/storage/uploads/${encodeURIComponent(body.submissionId)}`,
+    {
+      method: "PUT",
+      headers: uploadHeadersFor(body, accepted.payload.grant, otherAuth),
+      body: body[TEST_UPLOAD].ciphertext,
+    },
+  );
+  assert.equal(stolen.status, 403);
+  assert.equal((await stolen.json()).code, "UPLOAD_GRANT_REJECTED");
 });
 
 test("receipt creation requires the same completed upload grant", async () => {
@@ -711,7 +859,7 @@ test("receipt creation requires the same completed upload grant", async () => {
 
   const rejected = await fetch(`${baseUrl}/api/records`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...testAuth },
     body: JSON.stringify(body),
   });
   assert.equal(rejected.status, 403);
@@ -725,6 +873,7 @@ test("receipt creation requires the same completed upload grant", async () => {
     headers: {
       "content-type": "application/json",
       "x-sitesealed-upload-grant": issued.payload.grant,
+      ...testAuth,
     },
     body: JSON.stringify(body),
   });
@@ -739,14 +888,12 @@ test("a forged grant is rejected before encrypted bytes reach object storage", a
     storageCalls += 1;
     return originalPut(...args);
   };
-  const isolated = await listen(
-    createApp({
-      recordStore: createMemoryRecordStore(),
-      objectStore,
-      sealRateLimit: 100,
-      uploadAdmission: TEST_UPLOAD_ADMISSION,
-    }),
-  );
+  const isolated = await listenAuthenticated({
+    recordStore: createMemoryRecordStore(),
+    objectStore,
+    sealRateLimit: 100,
+    uploadAdmission: TEST_UPLOAD_ADMISSION,
+  });
   const body = validRequest();
   try {
     const response = await fetch(
@@ -756,6 +903,7 @@ test("a forged grant is rejected before encrypted bytes reach object storage", a
         headers: uploadHeadersFor(
           body,
           `123e4567-e89b-42d3-a456-426614174000.${"A".repeat(43)}`,
+          isolated.auth,
         ),
         body: body[TEST_UPLOAD].ciphertext,
       },
@@ -786,22 +934,20 @@ test("a one-time grant permits only one concurrent object-store write", async ()
     await gate;
     return originalPut(...args);
   };
-  const isolated = await listen(
-    createApp({
-      recordStore: createMemoryRecordStore(),
-      objectStore,
-      sealRateLimit: 100,
-      uploadAdmission: TEST_UPLOAD_ADMISSION,
-    }),
-  );
+  const isolated = await listenAuthenticated({
+    recordStore: createMemoryRecordStore(),
+    objectStore,
+    sealRateLimit: 100,
+    uploadAdmission: TEST_UPLOAD_ADMISSION,
+  });
   const body = validRequest();
   try {
-    const issued = await issueUploadGrant(isolated.url, body);
+    const issued = await issueUploadGrant(isolated.url, body, isolated.auth);
     assert.equal(issued.response.status, 201);
     const url = `${isolated.url}/api/storage/uploads/${encodeURIComponent(body.submissionId)}`;
     const options = {
       method: "PUT",
-      headers: uploadHeadersFor(body, issued.payload.grant),
+      headers: uploadHeadersFor(body, issued.payload.grant, isolated.auth),
       body: body[TEST_UPLOAD].ciphertext,
     };
     const firstPromise = fetch(url, options);
@@ -832,21 +978,19 @@ test("an object-store failure releases the exact grant for a safe retry", async 
     if (attempts === 1) throw new Error("simulated object-store outage");
     return originalPut(...args);
   };
-  const isolated = await listen(
-    createApp({
-      recordStore: createMemoryRecordStore(),
-      objectStore,
-      sealRateLimit: 100,
-      uploadAdmission: TEST_UPLOAD_ADMISSION,
-    }),
-  );
+  const isolated = await listenAuthenticated({
+    recordStore: createMemoryRecordStore(),
+    objectStore,
+    sealRateLimit: 100,
+    uploadAdmission: TEST_UPLOAD_ADMISSION,
+  });
   const body = validRequest();
   try {
-    const issued = await issueUploadGrant(isolated.url, body);
+    const issued = await issueUploadGrant(isolated.url, body, isolated.auth);
     const url = `${isolated.url}/api/storage/uploads/${encodeURIComponent(body.submissionId)}`;
     const options = {
       method: "PUT",
-      headers: uploadHeadersFor(body, issued.payload.grant),
+      headers: uploadHeadersFor(body, issued.payload.grant, isolated.auth),
       body: body[TEST_UPLOAD].ciphertext,
     };
     assert.equal((await fetch(url, options)).status, 500);

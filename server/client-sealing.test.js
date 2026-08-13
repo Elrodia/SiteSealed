@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { File } from "node:buffer";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { gcm } from "@noble/ciphers/aes.js";
 import {
@@ -235,4 +236,16 @@ test("the browser reports a valid local receipt while its external anchor is pen
     merkleInclusion: "NOT_ATTACHED",
     transactionBinding: "NOT_ATTACHED",
   });
+});
+
+test("the browser uses Google Identity Services and sends SiteSealed CSRF tokens", async () => {
+  const source = await readFile(
+    new URL("../client/src/App.jsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /google\.accounts\.id\.renderButton/);
+  assert.match(source, /ux_mode: "redirect"/);
+  assert.match(source, /"x-sitesealed-csrf": auth\.csrfToken/);
+  assert.doesNotMatch(source, /x-sitesealed-deposit-access/);
+  assert.doesNotMatch(source, /depositAccess/);
 });

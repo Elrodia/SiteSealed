@@ -1,6 +1,6 @@
 {
   "name": "@sitesealed/server",
-  "version": "1.4.0-alpha.8",
+  "version": "1.4.0-alpha.9",
   "private": true,
   "type": "module",
   "main": "server.js",
@@ -20,6 +20,7 @@
     "compression": "^1.8.1",
     "ethers": "^6.15.0",
     "express": "^5.1.0",
+    "google-auth-library": "11.0.2",
     "helmet": "^8.1.0",
     "mysql2": "^3.23.3",
     "pdfkit": "^0.19.1",

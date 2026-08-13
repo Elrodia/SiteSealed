@@ -14,6 +14,6 @@ file fails closed. The timestamp CA is treated as an intermediate. Only the
 pinned sandbox root is a trust anchor.
 
 Certificate revocation is intentionally reported as `NOT_CHECKED` in
-v1.4-alpha.8. Signature, message-imprint, signer-profile, certificate-path and
+v1.4-alpha.9. Signature, message-imprint, signer-profile, certificate-path and
 validity-at-`genTime` verification do not imply a revocation check or qualified
 eIDAS status.

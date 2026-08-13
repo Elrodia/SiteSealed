@@ -11,9 +11,14 @@ import {
   createPostgresAuditStoreFromEnv,
 } from "./audit.js";
 import {
-  requireUploadAdmission,
   resolveUploadAdmissionConfig,
 } from "./admission.js";
+import {
+  createGoogleIdentityServiceFromEnv,
+  readCookie,
+  safeCsrfEqual,
+  verifyGoogleDoubleSubmitCsrf,
+} from "./auth.js";
 import {
   createMemoryCoordinator,
   createRedisCoordinatorFromEnv,
@@ -124,13 +129,18 @@ export function createSealRateLimiter({
   scope = "seal",
   limit = 20,
   windowMs = 60 * 60 * 1000,
+  identity: identityResolver = null,
 } = {}) {
   const activeCoordinator = coordinator ?? createMemoryCoordinator();
 
   return async (request, response, next) => {
     try {
-      const identity =
-        request.ip || request.socket.remoteAddress || "unknown-client";
+      const identity = identityResolver
+        ? identityResolver(request)
+        : request.ip || request.socket.remoteAddress || "unknown-client";
+      if (!identity) {
+        throw new Error("A rate-limit identity is required.");
+      }
       const result = await activeCoordinator.consumeRateLimit({
         scope,
         identity,
@@ -226,12 +236,77 @@ export function createApp({
   coordinator = createMemoryCoordinator(),
   timestampService = createDisabledTimestampService(),
   ethereumRail = createDisabledEthereumRail(),
+  identityService = createGoogleIdentityServiceFromEnv({}),
   sealRateLimit = positiveInteger(process.env.SEAL_RATE_LIMIT_PER_HOUR, 20),
   uploadAdmission = resolveUploadAdmissionConfig({
     DATABASE_MODE: "optional",
   }),
 } = {}) {
   const app = express();
+  const sessionCookieName = identityService.secureCookies
+    ? "__Host-sitesealed_session"
+    : "sitesealed_session";
+  const sessionCookieOptions = {
+    httpOnly: true,
+    secure: Boolean(identityService.secureCookies),
+    sameSite: "lax",
+    path: "/",
+    maxAge: identityService.sessionTtlMs,
+  };
+
+  const loadAuthenticatedSession = async (request) => {
+    if (request.authSession !== undefined) return request.authSession;
+    const token = readCookie(request.headers.cookie, sessionCookieName);
+    request.authSessionToken = token;
+    request.authSession = token
+      ? await coordinator.getAuthSession(token)
+      : null;
+    return request.authSession;
+  };
+
+  const requireAuthenticatedUser = async (request, _response, next) => {
+    try {
+      const session = await loadAuthenticatedSession(request);
+      if (!session) {
+        throw new ApiError(
+          401,
+          "AUTHENTICATION_REQUIRED",
+          "Continue with Google before creating an encrypted receipt.",
+        );
+      }
+      request.authUser = session.user;
+      return next();
+    } catch (error) {
+      if (error instanceof ApiError) return next(error);
+      console.error(`Authenticated session lookup failed: ${error.message}`);
+      return next(
+        new ApiError(
+          503,
+          "AUTHENTICATION_UNAVAILABLE",
+          "Account sessions are temporarily unavailable.",
+        ),
+      );
+    }
+  };
+
+  const requireApplicationCsrf = (request, _response, next) => {
+    if (
+      !request.authSession ||
+      !safeCsrfEqual(
+        request.authSession.csrfToken,
+        request.get("x-sitesealed-csrf"),
+      )
+    ) {
+      return next(
+        new ApiError(
+          403,
+          "CSRF_REJECTED",
+          "The authenticated request failed its CSRF check.",
+        ),
+      );
+    }
+    return next();
+  };
 
   const timestampHealth = async () => {
     const local = await timestampService.healthCheck();
@@ -253,7 +328,7 @@ export function createApp({
         certificateChainVerification: "NOT_YET_VERIFIED",
         validatorVersion: RFC3161_VALIDATOR_VERSION,
         message:
-          "A fresh alpha.8 worker result is required before Evidency can be shown as operational.",
+          "A fresh alpha.9 worker result is required before Evidency can be shown as operational.",
       };
     }
     return shared;
@@ -303,7 +378,7 @@ export function createApp({
         onChainBindingVerified: false,
         finalityVerified: false,
         message:
-          "A fresh alpha.8 worker result with a verified transaction binding and finalized block is required.",
+          "A fresh alpha.9 worker result with a verified transaction binding and finalized block is required.",
       };
     }
     return shared;
@@ -345,14 +420,16 @@ export function createApp({
   app.use(
     helmet({
       crossOriginResourcePolicy: { policy: "same-origin" },
+      crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
-          scriptSrc: ["'self'"],
-          styleSrc: ["'self'"],
+          scriptSrc: ["'self'", "https://accounts.google.com/gsi/client"],
+          styleSrc: ["'self'", "https://accounts.google.com/gsi/style"],
           imgSrc: ["'self'", "data:"],
           fontSrc: ["'self'"],
-          connectSrc: ["'self'"],
+          connectSrc: ["'self'", "https://accounts.google.com/gsi/"],
+          frameSrc: ["https://accounts.google.com/gsi/"],
           objectSrc: ["'none'"],
           baseUri: ["'self'"],
           formAction: ["'self'"],
@@ -370,12 +447,88 @@ export function createApp({
     next();
   });
 
+  app.get("/api/auth/config", (_request, response) => {
+    response.status(200).json({
+      ok: true,
+      ...identityService.publicConfig(),
+    });
+  });
+
+  app.get("/api/auth/session", async (request, response, next) => {
+    try {
+      const session = await loadAuthenticatedSession(request);
+      return response.status(200).json({
+        ok: true,
+        authenticated: Boolean(session),
+        googleConfigured: Boolean(identityService.configured),
+        user: session?.user ?? null,
+        csrfToken: session?.csrfToken ?? null,
+        expiresAt: session?.expiresAt ?? null,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.post(
+    "/api/auth/google/callback",
+    createSealRateLimiter({
+      coordinator,
+      scope: "google-login",
+      limit: 30,
+    }),
+    express.urlencoded({ extended: false, limit: "24kb" }),
+    async (request, response, next) => {
+      try {
+        verifyGoogleDoubleSubmitCsrf(
+          request.headers.cookie,
+          request.body?.g_csrf_token,
+        );
+        const user = await identityService.verifyCredential(
+          request.body?.credential,
+        );
+        const session = await coordinator.createAuthSession(user, {
+          ttlMs: identityService.sessionTtlMs,
+        });
+        response.cookie(
+          sessionCookieName,
+          session.token,
+          sessionCookieOptions,
+        );
+        return response.redirect(303, "/#seal");
+      } catch (error) {
+        return next(error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/auth/logout",
+    requireAuthenticatedUser,
+    requireApplicationCsrf,
+    async (request, response, next) => {
+      try {
+        await coordinator.deleteAuthSession(request.authSessionToken);
+        response.clearCookie(sessionCookieName, {
+          httpOnly: true,
+          secure: Boolean(identityService.secureCookies),
+          sameSite: "lax",
+          path: "/",
+        });
+        return response.status(200).json({ ok: true, authenticated: false });
+      } catch (error) {
+        return next(error);
+      }
+    },
+  );
+
   app.get("/api/health", async (_request, response) => {
     const [
       database,
       objectStorage,
       auditDatabase,
       coordination,
+      authentication,
       qualifiedTimestamp,
       publicChainAnchor,
     ] =
@@ -384,13 +537,14 @@ export function createApp({
       objectStore.healthCheck(),
       auditStore.healthCheck(),
       coordinator.healthCheck(),
+      identityService.healthCheck(),
       timestampHealth(),
       ethereumHealth(),
     ]);
     response.status(200).json({
       ok: true,
       service: "sitesealed",
-      version: "1.4.0-alpha.8",
+      version: "1.4.0-alpha.9",
       sealing: {
         workflow: "IMPORTED_FILE_CLIENT_ENCRYPTED_STORAGE_RECEIPT",
         clientEncryptedObjectStorage: true,
@@ -420,17 +574,24 @@ export function createApp({
                 : false,
         finalSealedStatusEnabled: false,
         uploadAdmission: {
-          mode: "CONTROLLED_ALPHA_ACCESS_SECRET",
-          configured: Boolean(uploadAdmission?.configured),
+          mode: "GOOGLE_ACCOUNT_SESSION",
+          configured: Boolean(authentication.configured),
           oneTimeGrants: true,
+          accountBound: true,
           preBodyClaim: true,
           dailyLimitMiB: uploadAdmission?.dailyLimitMiB ?? null,
+          perUserDailyLimitMiB:
+            uploadAdmission?.perUserDailyLimitMiB ?? null,
         },
       },
       database,
       objectStorage,
       auditDatabase,
       coordination,
+      authentication: {
+        ...authentication,
+        sessionStore: coordination.mode === "redis" ? "REDIS" : "MEMORY",
+      },
       qualifiedTimestamp,
       publicChainAnchor,
     });
@@ -443,14 +604,19 @@ export function createApp({
       scope: "upload-grant",
       limit: sealRateLimit,
     }),
+    requireAuthenticatedUser,
+    requireApplicationCsrf,
+    createSealRateLimiter({
+      coordinator,
+      scope: "upload-grant-account",
+      limit: sealRateLimit,
+      identity: (request) => request.authUser?.id,
+    }),
     async (request, response) => {
-      requireUploadAdmission(
-        uploadAdmission,
-        request.get("x-sitesealed-deposit-access"),
-      );
       const binding = validateUploadGrantRequest(request.body);
       const issued = await coordinator.issueUploadGrant(binding, {
         ttlMs: uploadAdmission.grantTtlMs,
+        principalId: request.authUser.id,
       });
       return response.status(201).json({
         ok: true,
@@ -483,7 +649,9 @@ export function createApp({
         request.get("x-sitesealed-upload-grant"),
         binding,
         {
-          budgetLimitBytes: uploadAdmission.dailyLimitBytes,
+          principalId: request.authUser.id,
+          globalBudgetLimitBytes: uploadAdmission.dailyLimitBytes,
+          userBudgetLimitBytes: uploadAdmission.perUserDailyLimitBytes,
           budgetWindowMs: uploadAdmission.budgetWindowMs,
         },
       );
@@ -501,7 +669,10 @@ export function createApp({
           "This one-time upload grant is already being used.",
         );
       }
-      if (claim.state === "exhausted") {
+      if (
+        claim.state === "global_exhausted" ||
+        claim.state === "user_exhausted"
+      ) {
         const resetSeconds = Math.max(
           1,
           Math.ceil(claim.resetInMs / 1000),
@@ -509,9 +680,14 @@ export function createApp({
         response.set("Retry-After", String(resetSeconds));
         return response.status(429).json({
           ok: false,
-          code: "STORAGE_ADMISSION_EXHAUSTED",
+          code:
+            claim.state === "user_exhausted"
+              ? "USER_STORAGE_ADMISSION_EXHAUSTED"
+              : "STORAGE_ADMISSION_EXHAUSTED",
           message:
-            "The operator's global encrypted-storage admission budget is exhausted for this 24-hour window.",
+            claim.state === "user_exhausted"
+              ? "This Google account has reached its encrypted-storage allowance for the current 24-hour window."
+              : "The operator's global encrypted-storage admission budget is exhausted for this 24-hour window.",
         });
       }
       if (claim.state === "completed") {
@@ -548,6 +724,7 @@ export function createApp({
       scope: "encrypted-upload",
       limit: sealRateLimit,
     }),
+    requireAuthenticatedUser,
     claimEncryptedUpload,
     encryptedUploadParser,
     async (error, request, _response, next) => {
@@ -612,6 +789,8 @@ export function createApp({
       scope: "receipt-create",
       limit: sealRateLimit,
     }),
+    requireAuthenticatedUser,
+    requireApplicationCsrf,
     async (request, response) => {
       const input = validateSealRequest(request.body);
       const completedUpload = await coordinator.claimUploadGrant(
@@ -627,7 +806,9 @@ export function createApp({
             input.encryptedObject.recoveryTokenSha256,
         }),
         {
-          budgetLimitBytes: uploadAdmission.dailyLimitBytes,
+          principalId: request.authUser.id,
+          globalBudgetLimitBytes: uploadAdmission.dailyLimitBytes,
+          userBudgetLimitBytes: uploadAdmission.perUserDailyLimitBytes,
           budgetWindowMs: uploadAdmission.budgetWindowMs,
         },
       );
@@ -996,9 +1177,11 @@ export async function startServer() {
   let coordinator;
   let timestampService;
   let ethereumRail;
+  let identityService;
   let uploadAdmission;
   try {
     uploadAdmission = resolveUploadAdmissionConfig(process.env);
+    identityService = createGoogleIdentityServiceFromEnv(process.env);
     recordStore =
       (await createMysqlRecordStoreFromEnv(process.env)) ??
       createMemoryRecordStore();
@@ -1031,11 +1214,12 @@ export async function startServer() {
     coordinator,
     timestampService,
     ethereumRail,
+    identityService,
     uploadAdmission,
   });
   const server = app.listen(port, host, () => {
     console.log(
-      `SiteSealed v1.4-alpha.8 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
+      `SiteSealed v1.4-alpha.9 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${identityService.mode} identity, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
     );
   });
 

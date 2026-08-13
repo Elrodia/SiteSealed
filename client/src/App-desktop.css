@@ -1500,6 +1500,56 @@ button {
   color: var(--navy-900);
 }
 
+.account-access {
+  display: grid;
+  align-items: center;
+  padding: 19px 32px;
+  border-bottom: 1px solid var(--line);
+  background: #eef5f2;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px;
+}
+
+.account-access__copy > span {
+  display: block;
+  color: var(--green-600);
+  font-family: var(--font-mono);
+  font-size: 0.53rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.account-access__copy > strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--navy-900);
+  font-family: var(--font-condensed);
+  font-size: 1rem;
+}
+
+.account-access__copy p,
+.account-access__copy small {
+  display: block;
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.account-access__copy small {
+  color: #a54035;
+}
+
+.account-access__action {
+  min-width: 160px;
+  text-align: right;
+}
+
+.google-signin-button {
+  min-width: 320px;
+  min-height: 44px;
+}
+
 .seal-form {
   padding: 31px 32px 27px;
 }

@@ -1,39 +1,36 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  requireUploadAdmission,
-  resolveUploadAdmissionConfig,
-} from "./admission.js";
+import { resolveUploadAdmissionConfig } from "./admission.js";
 
-const ACCESS_SECRET = "alpha8-test-access-secret-32-bytes-minimum";
+test("storage admission no longer depends on a shared upload secret", () => {
+  const config = resolveUploadAdmissionConfig({ DATABASE_MODE: "required" });
+  assert.equal(config.dailyLimitMiB, 2048);
+  assert.equal(config.perUserDailyLimitMiB, 256);
+  assert.equal(config.grantTtlMs, 900_000);
+  assert.equal("secretDigest" in config, false);
+  assert.equal("configured" in config, false);
+});
 
-test("production refuses anonymous storage-grant issuance", () => {
-  assert.throws(
-    () => resolveUploadAdmissionConfig({ DATABASE_MODE: "required" }),
-    /UPLOAD_ADMISSION_SECRET is required/,
-  );
+test("global and per-user byte ceilings fail closed on invalid values", () => {
   assert.throws(
     () =>
       resolveUploadAdmissionConfig({
-        DATABASE_MODE: "required",
-        UPLOAD_ADMISSION_SECRET: "too-short",
+        STORAGE_ADMISSION_MB_PER_DAY: "24",
       }),
-    /between 32 and 256/,
+    /STORAGE_ADMISSION_MB_PER_DAY must be an integer/,
   );
-});
-
-test("the controlled-alpha access secret is compared by digest", () => {
   const config = resolveUploadAdmissionConfig({
-    DATABASE_MODE: "required",
-    UPLOAD_ADMISSION_SECRET: ACCESS_SECRET,
     STORAGE_ADMISSION_MB_PER_DAY: "512",
+    STORAGE_ADMISSION_MB_PER_USER_PER_DAY: "64",
   });
-  assert.equal(config.configured, true);
   assert.equal(config.dailyLimitMiB, 512);
-  assert.doesNotThrow(() => requireUploadAdmission(config, ACCESS_SECRET));
+  assert.equal(config.perUserDailyLimitMiB, 64);
   assert.throws(
-    () => requireUploadAdmission(config, `${ACCESS_SECRET}-wrong`),
-    (error) => error.status === 403 && error.code === "UPLOAD_ADMISSION_REJECTED",
+    () =>
+      resolveUploadAdmissionConfig({
+        STORAGE_ADMISSION_MB_PER_DAY: "64",
+        STORAGE_ADMISSION_MB_PER_USER_PER_DAY: "128",
+      }),
+    /cannot exceed/,
   );
 });
-

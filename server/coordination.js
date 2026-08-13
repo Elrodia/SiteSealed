@@ -32,7 +32,7 @@ if not raw then
   return {'REJECTED'}
 end
 local entry = cjson.decode(raw)
-if entry.secretDigest ~= ARGV[1] or entry.bindingDigest ~= ARGV[2] then
+if entry.secretDigest ~= ARGV[1] or entry.bindingDigest ~= ARGV[2] or entry.principalDigest ~= ARGV[3] then
   return {'REJECTED'}
 end
 if entry.state == 'completed' then
@@ -41,30 +41,40 @@ end
 if entry.state == 'claimed' then
   return {'IN_PROGRESS'}
 end
-local bytes = tonumber(ARGV[4])
-local limit = tonumber(ARGV[5])
-local total = tonumber(redis.call('GET', KEYS[2]) or '0')
+local bytes = tonumber(ARGV[5])
+local globalLimit = tonumber(ARGV[6])
+local userLimit = tonumber(ARGV[7])
+local globalTotal = tonumber(redis.call('GET', KEYS[2]) or '0')
+local userTotal = tonumber(redis.call('GET', KEYS[3]) or '0')
 if not entry.budgetDebited then
-  if total + bytes > limit then
+  if globalTotal + bytes > globalLimit then
     local budgetTtl = redis.call('PTTL', KEYS[2])
-    if budgetTtl < 1 then budgetTtl = tonumber(ARGV[6]) end
-    return {'EXHAUSTED', tostring(budgetTtl), tostring(total)}
+    if budgetTtl < 1 then budgetTtl = tonumber(ARGV[8]) end
+    return {'GLOBAL_EXHAUSTED', tostring(budgetTtl), tostring(globalTotal)}
   end
-  total = redis.call('INCRBY', KEYS[2], bytes)
-  local budgetTtl = redis.call('PTTL', KEYS[2])
-  if budgetTtl < 0 then
-    redis.call('PEXPIRE', KEYS[2], ARGV[6])
+  if userTotal + bytes > userLimit then
+    local budgetTtl = redis.call('PTTL', KEYS[3])
+    if budgetTtl < 1 then budgetTtl = tonumber(ARGV[8]) end
+    return {'USER_EXHAUSTED', tostring(budgetTtl), tostring(userTotal)}
+  end
+  globalTotal = redis.call('INCRBY', KEYS[2], bytes)
+  userTotal = redis.call('INCRBY', KEYS[3], bytes)
+  if redis.call('PTTL', KEYS[2]) < 0 then
+    redis.call('PEXPIRE', KEYS[2], ARGV[8])
+  end
+  if redis.call('PTTL', KEYS[3]) < 0 then
+    redis.call('PEXPIRE', KEYS[3], ARGV[8])
   end
   entry.budgetDebited = true
 end
 entry.state = 'claimed'
-entry.claimToken = ARGV[3]
+entry.claimToken = ARGV[4]
 local grantTtl = redis.call('PTTL', KEYS[1])
 if grantTtl < 1 then
   return {'REJECTED'}
 end
 redis.call('SET', KEYS[1], cjson.encode(entry), 'PX', grantTtl)
-return {'CLAIMED', tostring(math.max(0, limit - total))}
+return {'CLAIMED', tostring(math.max(0, globalLimit - globalTotal)), tostring(math.max(0, userLimit - userTotal))}
 `;
 const COMPLETE_UPLOAD_GRANT_SCRIPT = `
 local raw = redis.call('GET', KEYS[1])
@@ -144,6 +154,25 @@ function storageAdmissionKey() {
   return `${KEY_PREFIX}:storage-admission:global`;
 }
 
+function userStorageAdmissionKey(principalDigest) {
+  return `${KEY_PREFIX}:storage-admission:user:${principalDigest}`;
+}
+
+function authSessionKey(token) {
+  const digest = createHash("sha256")
+    .update(`${KEY_PREFIX}:auth-session\0`)
+    .update(token)
+    .digest("hex");
+  return `${KEY_PREFIX}:auth-session:${digest}`;
+}
+
+function principalDigest(principalId) {
+  return createHash("sha256")
+    .update(`${KEY_PREFIX}:principal\0`)
+    .update(String(principalId ?? ""))
+    .digest("hex");
+}
+
 function uploadBindingDigest(binding) {
   return createHash("sha256")
     .update(`${KEY_PREFIX}:upload-binding\0`)
@@ -164,6 +193,32 @@ function parseUploadGrant(value) {
     /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.([A-Za-z0-9_-]{43})$/,
   );
   return match ? { grantId: match[1], secret: match[2] } : null;
+}
+
+function parseSessionToken(value) {
+  const token = String(value ?? "").trim();
+  return /^[A-Za-z0-9_-]{43}$/.test(token) ? token : null;
+}
+
+function normalizedPrincipalId(value) {
+  const id = String(value ?? "").trim().toLowerCase();
+  return /^[a-f0-9]{64}$/.test(id) ? id : null;
+}
+
+function normalizedSessionUser(user) {
+  const id = normalizedPrincipalId(user?.id);
+  const email = String(user?.email ?? "").trim().toLowerCase();
+  const name = String(user?.name ?? "").trim().slice(0, 160);
+  if (
+    !id ||
+    user?.provider !== "GOOGLE" ||
+    !email ||
+    email.length > 320 ||
+    !email.includes("@")
+  ) {
+    throw new Error("A valid Google account identity is required.");
+  }
+  return { id, provider: "GOOGLE", email, name: name || email };
 }
 
 function safeHexEqual(left, right) {
@@ -249,8 +304,15 @@ export function createRedisCoordinator(client, options = {}) {
       };
     },
 
-    async issueUploadGrant(binding, { ttlMs = 15 * 60 * 1000 } = {}) {
+    async issueUploadGrant(
+      binding,
+      { ttlMs = 15 * 60 * 1000, principalId: ownerId } = {},
+    ) {
       const normalizedTtlMs = positiveInteger(ttlMs, 15 * 60 * 1000);
+      const ownerPrincipalId = normalizedPrincipalId(ownerId);
+      if (!ownerPrincipalId) {
+        throw new Error("Upload grants require an authenticated principal.");
+      }
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const grantId = randomUUID();
         const secret = randomBytes(32).toString("base64url");
@@ -258,6 +320,7 @@ export function createRedisCoordinator(client, options = {}) {
           state: "ready",
           secretDigest: uploadGrantSecretDigest(grantId, secret),
           bindingDigest: uploadBindingDigest(binding),
+          principalDigest: principalDigest(ownerPrincipalId),
           binding: structuredClone(binding),
           budgetDebited: false,
         };
@@ -280,34 +343,51 @@ export function createRedisCoordinator(client, options = {}) {
       grant,
       binding,
       {
-        budgetLimitBytes,
+        principalId: ownerId,
+        globalBudgetLimitBytes,
+        userBudgetLimitBytes,
         budgetWindowMs = 24 * 60 * 60 * 1000,
       } = {},
     ) {
       const parsed = parseUploadGrant(grant);
-      if (!parsed) return { state: "rejected" };
+      const ownerPrincipalId = normalizedPrincipalId(ownerId);
+      if (!parsed || !ownerPrincipalId) return { state: "rejected" };
       const claimToken = randomUUID();
-      const normalizedBudgetLimitBytes = positiveInteger(
-        budgetLimitBytes,
+      const normalizedGlobalBudgetLimitBytes = positiveInteger(
+        globalBudgetLimitBytes,
         2 * 1024 * 1024 * 1024,
       );
+      const normalizedUserBudgetLimitBytes = positiveInteger(
+        userBudgetLimitBytes,
+        256 * 1024 * 1024,
+      );
+      const ownerDigest = principalDigest(ownerPrincipalId);
       const result = await client.eval(CLAIM_UPLOAD_GRANT_SCRIPT, {
-        keys: [uploadGrantKey(parsed.grantId), storageAdmissionKey()],
+        keys: [
+          uploadGrantKey(parsed.grantId),
+          storageAdmissionKey(),
+          userStorageAdmissionKey(ownerDigest),
+        ],
         arguments: [
           uploadGrantSecretDigest(parsed.grantId, parsed.secret),
           uploadBindingDigest(binding),
+          ownerDigest,
           claimToken,
           String(binding.ciphertextBytes),
-          String(normalizedBudgetLimitBytes),
+          String(normalizedGlobalBudgetLimitBytes),
+          String(normalizedUserBudgetLimitBytes),
           String(positiveInteger(budgetWindowMs, 24 * 60 * 60 * 1000)),
         ],
       });
       const state = String(result?.[0] ?? "REJECTED");
       if (state === "REJECTED") return { state: "rejected" };
       if (state === "IN_PROGRESS") return { state: "in_progress" };
-      if (state === "EXHAUSTED") {
+      if (state === "GLOBAL_EXHAUSTED" || state === "USER_EXHAUSTED") {
         return {
-          state: "exhausted",
+          state:
+            state === "USER_EXHAUSTED"
+              ? "user_exhausted"
+              : "global_exhausted",
           resetInMs: Math.max(1, Number(result?.[1] ?? budgetWindowMs)),
           usedBytes: Math.max(0, Number(result?.[2] ?? 0)),
         };
@@ -326,7 +406,14 @@ export function createRedisCoordinator(client, options = {}) {
       return {
         state: "claimed",
         binding: structuredClone(binding),
-        admissionRemainingBytes: Math.max(0, Number(result?.[1] ?? 0)),
+        globalAdmissionRemainingBytes: Math.max(
+          0,
+          Number(result?.[1] ?? 0),
+        ),
+        userAdmissionRemainingBytes: Math.max(
+          0,
+          Number(result?.[2] ?? 0),
+        ),
         async complete(descriptor) {
           if (settled) return false;
           const completed = await client.eval(COMPLETE_UPLOAD_GRANT_SCRIPT, {
@@ -346,6 +433,52 @@ export function createRedisCoordinator(client, options = {}) {
           return Number(released) === 1;
         },
       };
+    },
+
+    async createAuthSession(user, { ttlMs = 7 * 24 * 60 * 60 * 1000 } = {}) {
+      const normalizedUser = normalizedSessionUser(user);
+      const normalizedTtlMs = positiveInteger(
+        ttlMs,
+        7 * 24 * 60 * 60 * 1000,
+      );
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const token = randomBytes(32).toString("base64url");
+        const csrfToken = randomBytes(32).toString("base64url");
+        const expiresAt = new Date(now() + normalizedTtlMs).toISOString();
+        const stored = await client.set(
+          authSessionKey(token),
+          JSON.stringify({ user: normalizedUser, csrfToken, expiresAt }),
+          { NX: true, PX: normalizedTtlMs },
+        );
+        if (stored === "OK") {
+          return { token, csrfToken, expiresAt, user: normalizedUser };
+        }
+      }
+      throw new Error("Could not allocate a unique authenticated session.");
+    },
+
+    async getAuthSession(value) {
+      const token = parseSessionToken(value);
+      if (!token) return null;
+      const serialized = await client.get(authSessionKey(token));
+      if (!serialized) return null;
+      try {
+        const session = JSON.parse(serialized);
+        return {
+          user: normalizedSessionUser(session.user),
+          csrfToken: String(session.csrfToken ?? ""),
+          expiresAt: String(session.expiresAt ?? ""),
+        };
+      } catch {
+        await client.del(authSessionKey(token));
+        return null;
+      }
+    },
+
+    async deleteAuthSession(value) {
+      const token = parseSessionToken(value);
+      if (!token) return false;
+      return (await client.del(authSessionKey(token))) === 1;
     },
 
     async getCachedRecord(recordId) {
@@ -441,6 +574,7 @@ export function createRedisCoordinator(client, options = {}) {
         authoritative: false,
         distributed: true,
         rateLimiting: true,
+        accountSessions: true,
         uploadGrants: true,
         boundedStorageAdmission: true,
         verificationCache: true,
@@ -461,6 +595,8 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
   const locks = new Map();
   const railStatuses = new Map();
   const uploadGrants = new Map();
+  const authSessions = new Map();
+  const userStorageAdmissions = new Map();
   let storageAdmission = null;
 
   function removeExpired(timestamp) {
@@ -478,6 +614,12 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
     }
     for (const [key, entry] of uploadGrants) {
       if (entry.expiresAt <= timestamp) uploadGrants.delete(key);
+    }
+    for (const [key, entry] of authSessions) {
+      if (entry.expiresAtTimestamp <= timestamp) authSessions.delete(key);
+    }
+    for (const [key, entry] of userStorageAdmissions) {
+      if (entry.resetAt <= timestamp) userStorageAdmissions.delete(key);
     }
     if (storageAdmission?.resetAt <= timestamp) storageAdmission = null;
   }
@@ -507,16 +649,24 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
       };
     },
 
-    async issueUploadGrant(binding, { ttlMs = 15 * 60 * 1000 } = {}) {
+    async issueUploadGrant(
+      binding,
+      { ttlMs = 15 * 60 * 1000, principalId: ownerId } = {},
+    ) {
       const timestamp = now();
       removeExpired(timestamp);
       const normalizedTtlMs = positiveInteger(ttlMs, 15 * 60 * 1000);
+      const ownerPrincipalId = normalizedPrincipalId(ownerId);
+      if (!ownerPrincipalId) {
+        throw new Error("Upload grants require an authenticated principal.");
+      }
       const grantId = randomUUID();
       const secret = randomBytes(32).toString("base64url");
       uploadGrants.set(uploadGrantKey(grantId), {
         state: "ready",
         secretDigest: uploadGrantSecretDigest(grantId, secret),
         bindingDigest: uploadBindingDigest(binding),
+        principalDigest: principalDigest(ownerPrincipalId),
         binding: structuredClone(binding),
         budgetDebited: false,
         expiresAt: timestamp + normalizedTtlMs,
@@ -531,16 +681,20 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
       grant,
       binding,
       {
-        budgetLimitBytes = 2 * 1024 * 1024 * 1024,
+        principalId: ownerId,
+        globalBudgetLimitBytes = 2 * 1024 * 1024 * 1024,
+        userBudgetLimitBytes = 256 * 1024 * 1024,
         budgetWindowMs = 24 * 60 * 60 * 1000,
       } = {},
     ) {
       const timestamp = now();
       removeExpired(timestamp);
       const parsed = parseUploadGrant(grant);
-      if (!parsed) return { state: "rejected" };
+      const ownerPrincipalId = normalizedPrincipalId(ownerId);
+      if (!parsed || !ownerPrincipalId) return { state: "rejected" };
       const key = uploadGrantKey(parsed.grantId);
       const entry = uploadGrants.get(key);
+      const ownerDigest = principalDigest(ownerPrincipalId);
       const suppliedSecretDigest = uploadGrantSecretDigest(
         parsed.grantId,
         parsed.secret,
@@ -548,7 +702,8 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
       if (
         !entry ||
         !safeHexEqual(entry.secretDigest, suppliedSecretDigest) ||
-        !safeHexEqual(entry.bindingDigest, uploadBindingDigest(binding))
+        !safeHexEqual(entry.bindingDigest, uploadBindingDigest(binding)) ||
+        !safeHexEqual(entry.principalDigest, ownerDigest)
       ) {
         return { state: "rejected" };
       }
@@ -562,9 +717,13 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
         return { state: "in_progress" };
       }
 
-      const normalizedBudgetLimitBytes = positiveInteger(
-        budgetLimitBytes,
+      const normalizedGlobalBudgetLimitBytes = positiveInteger(
+        globalBudgetLimitBytes,
         2 * 1024 * 1024 * 1024,
+      );
+      const normalizedUserBudgetLimitBytes = positiveInteger(
+        userBudgetLimitBytes,
+        256 * 1024 * 1024,
       );
       const normalizedBudgetWindowMs = positiveInteger(
         budgetWindowMs,
@@ -574,19 +733,36 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
         usedBytes: 0,
         resetAt: timestamp + normalizedBudgetWindowMs,
       };
+      const userAdmission = userStorageAdmissions.get(ownerDigest) ?? {
+        usedBytes: 0,
+        resetAt: timestamp + normalizedBudgetWindowMs,
+      };
+      userStorageAdmissions.set(ownerDigest, userAdmission);
       if (
         !entry.budgetDebited &&
         storageAdmission.usedBytes + binding.ciphertextBytes >
-          normalizedBudgetLimitBytes
+          normalizedGlobalBudgetLimitBytes
       ) {
         return {
-          state: "exhausted",
+          state: "global_exhausted",
           resetInMs: Math.max(1, storageAdmission.resetAt - timestamp),
           usedBytes: storageAdmission.usedBytes,
         };
       }
+      if (
+        !entry.budgetDebited &&
+        userAdmission.usedBytes + binding.ciphertextBytes >
+          normalizedUserBudgetLimitBytes
+      ) {
+        return {
+          state: "user_exhausted",
+          resetInMs: Math.max(1, userAdmission.resetAt - timestamp),
+          usedBytes: userAdmission.usedBytes,
+        };
+      }
       if (!entry.budgetDebited) {
         storageAdmission.usedBytes += binding.ciphertextBytes;
+        userAdmission.usedBytes += binding.ciphertextBytes;
         entry.budgetDebited = true;
       }
 
@@ -597,9 +773,13 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
       return {
         state: "claimed",
         binding: structuredClone(entry.binding),
-        admissionRemainingBytes: Math.max(
+        globalAdmissionRemainingBytes: Math.max(
           0,
-          normalizedBudgetLimitBytes - storageAdmission.usedBytes,
+          normalizedGlobalBudgetLimitBytes - storageAdmission.usedBytes,
+        ),
+        userAdmissionRemainingBytes: Math.max(
+          0,
+          normalizedUserBudgetLimitBytes - userAdmission.usedBytes,
         ),
         async complete(descriptor) {
           if (settled) return false;
@@ -631,6 +811,47 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
           return true;
         },
       };
+    },
+
+    async createAuthSession(user, { ttlMs = 7 * 24 * 60 * 60 * 1000 } = {}) {
+      const timestamp = now();
+      removeExpired(timestamp);
+      const normalizedUser = normalizedSessionUser(user);
+      const normalizedTtlMs = positiveInteger(
+        ttlMs,
+        7 * 24 * 60 * 60 * 1000,
+      );
+      const token = randomBytes(32).toString("base64url");
+      const csrfToken = randomBytes(32).toString("base64url");
+      const expiresAtTimestamp = timestamp + normalizedTtlMs;
+      const expiresAt = new Date(expiresAtTimestamp).toISOString();
+      authSessions.set(authSessionKey(token), {
+        user: normalizedUser,
+        csrfToken,
+        expiresAt,
+        expiresAtTimestamp,
+      });
+      return { token, csrfToken, expiresAt, user: normalizedUser };
+    },
+
+    async getAuthSession(value) {
+      const timestamp = now();
+      removeExpired(timestamp);
+      const token = parseSessionToken(value);
+      if (!token) return null;
+      const session = authSessions.get(authSessionKey(token));
+      if (!session) return null;
+      return {
+        user: structuredClone(session.user),
+        csrfToken: session.csrfToken,
+        expiresAt: session.expiresAt,
+      };
+    },
+
+    async deleteAuthSession(value) {
+      const token = parseSessionToken(value);
+      if (!token) return false;
+      return authSessions.delete(authSessionKey(token));
     },
 
     async getCachedRecord(recordId) {
@@ -710,6 +931,7 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
         authoritative: false,
         distributed: false,
         rateLimiting: true,
+        accountSessions: true,
         uploadGrants: true,
         boundedStorageAdmission: true,
         verificationCache: true,

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   buildManifest,
   createEncryptedUploadHeaders,
@@ -401,15 +401,138 @@ function recordIdFromPath() {
   }
 }
 
-function SealingWorkbench({ onVerify }) {
+function GoogleAccountAccess({ auth, onLogout }) {
+  const buttonRef = useRef(null);
+  const [buttonError, setButtonError] = useState("");
+
+  useEffect(() => {
+    if (
+      auth.status !== "ready" ||
+      !auth.configured ||
+      auth.authenticated ||
+      !auth.clientId ||
+      !auth.loginUri
+    ) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    let attempts = 0;
+    let googleScript = document.querySelector(
+      'script[data-sitesealed-google-identity="true"]',
+    );
+    if (!googleScript) {
+      googleScript = document.createElement("script");
+      googleScript.src = "https://accounts.google.com/gsi/client";
+      googleScript.async = true;
+      googleScript.dataset.sitesealedGoogleIdentity = "true";
+      googleScript.addEventListener("error", () => {
+        if (!cancelled) {
+          setButtonError(
+            "Google sign-in could not be loaded. Check content blockers and retry.",
+          );
+        }
+      });
+      document.head.append(googleScript);
+    }
+    const renderGoogleButton = () => {
+      if (cancelled || !buttonRef.current) return true;
+      if (!window.google?.accounts?.id) return false;
+      try {
+        window.google.accounts.id.initialize({
+          client_id: auth.clientId,
+          login_uri: auth.loginUri,
+          ux_mode: "redirect",
+          auto_select: false,
+          cancel_on_tap_outside: true,
+        });
+        buttonRef.current.replaceChildren();
+        window.google.accounts.id.renderButton(buttonRef.current, {
+          type: "standard",
+          theme: "outline",
+          size: "large",
+          shape: "rectangular",
+          text: "continue_with",
+          logo_alignment: "left",
+          width: 320,
+        });
+        setButtonError("");
+        return true;
+      } catch {
+        setButtonError("Google sign-in could not be initialized in this browser.");
+        return true;
+      }
+    };
+
+    if (renderGoogleButton()) return () => { cancelled = true; };
+    const timer = window.setInterval(() => {
+      attempts += 1;
+      if (renderGoogleButton() || attempts >= 40) {
+        window.clearInterval(timer);
+        if (attempts >= 40 && !cancelled) {
+          setButtonError(
+            "Google sign-in could not be loaded. Check content blockers and retry.",
+          );
+        }
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    auth.authenticated,
+    auth.clientId,
+    auth.configured,
+    auth.loginUri,
+    auth.status,
+  ]);
+
+  return (
+    <div className="account-access" aria-live="polite">
+      <div className="account-access__copy">
+        <span>DEPOSIT ACCOUNT</span>
+        {auth.status === "loading" && <strong>Checking your SiteSealed session…</strong>}
+        {auth.status === "error" && <strong>Account service unavailable</strong>}
+        {auth.status === "ready" && !auth.configured && (
+          <strong>Google sign-in is not configured on this deployment</strong>
+        )}
+        {auth.status === "ready" && auth.configured && !auth.authenticated && (
+          <strong>Continue with Google to create a receipt</strong>
+        )}
+        {auth.status === "ready" && auth.authenticated && (
+          <strong>{auth.user?.name || auth.user?.email}</strong>
+        )}
+        <p>
+          {auth.authenticated
+            ? `${auth.user?.email} · Upload grants and the daily allowance are bound to this account.`
+            : "Google proves the account identity. SiteSealed stores its own server session and never receives access to Google APIs."}
+        </p>
+        {(auth.error || buttonError) && (
+          <small role="alert">{auth.error || buttonError}</small>
+        )}
+      </div>
+      <div className="account-access__action">
+        {auth.status === "ready" && auth.configured && !auth.authenticated && (
+          <div ref={buttonRef} className="google-signin-button" />
+        )}
+        {auth.authenticated && (
+          <button className="text-action" type="button" onClick={onLogout}>
+            Sign out
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
   const fileInputId = useId();
   const projectInputId = useId();
   const descriptionInputId = useId();
-  const depositAccessInputId = useId();
   const [file, setFile] = useState(null);
   const [projectReference, setProjectReference] = useState("");
   const [description, setDescription] = useState("");
-  const [depositAccess, setDepositAccess] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
   const [status, setStatus] = useState("idle");
   const [message, setMessage] = useState("");
@@ -418,6 +541,10 @@ function SealingWorkbench({ onVerify }) {
   const [backupStatus, setBackupStatus] = useState("idle");
   const [submissionId, setSubmissionId] = useState(() => createRandomUuid());
   const preparedAttemptRef = useRef(null);
+
+  useEffect(() => {
+    preparedAttemptRef.current = null;
+  }, [auth.user?.id]);
 
   const selectFile = (event) => {
     const nextFile = event.target.files?.[0] ?? null;
@@ -438,6 +565,12 @@ function SealingWorkbench({ onVerify }) {
     setRecoveryKit(null);
     setBackupStatus("idle");
 
+    if (!auth.authenticated || !auth.csrfToken) {
+      setStatus("error");
+      setMessage("Continue with Google before creating an encrypted receipt.");
+      return;
+    }
+
     if (!file) {
       setStatus("error");
       setMessage("Select a file to create an integrity receipt.");
@@ -453,14 +586,6 @@ function SealingWorkbench({ onVerify }) {
       setMessage("Confirm that this is an imported file, not an attested live capture.");
       return;
     }
-    if (new TextEncoder().encode(depositAccess.trim()).length < 32) {
-      setStatus("error");
-      setMessage(
-        "Enter the controlled-alpha deposit access code supplied by the operator.",
-      );
-      return;
-    }
-
     try {
       let attempt = preparedAttemptRef.current;
       const attemptMatches =
@@ -514,7 +639,7 @@ function SealingWorkbench({ onVerify }) {
             method: "POST",
             headers: {
               "content-type": "application/json",
-              "x-sitesealed-deposit-access": depositAccess.trim(),
+              "x-sitesealed-csrf": auth.csrfToken,
             },
             body: JSON.stringify(
               createUploadGrantRequest({
@@ -527,6 +652,7 @@ function SealingWorkbench({ onVerify }) {
           });
           const grantPayload = await readApiJson(grantResponse);
           if (!grantResponse.ok) {
+            if (grantResponse.status === 401) await onAuthRefresh();
             throw new Error(
               grantPayload.message || "The encrypted deposit was not authorized.",
             );
@@ -550,6 +676,7 @@ function SealingWorkbench({ onVerify }) {
         );
         const uploadPayload = await readApiJson(uploadResponse);
         if (!uploadResponse.ok) {
+          if (uploadResponse.status === 401) await onAuthRefresh();
           if (
             [
               "UPLOAD_GRANT_REJECTED",
@@ -580,11 +707,15 @@ function SealingWorkbench({ onVerify }) {
         headers: {
           "content-type": "application/json",
           "x-sitesealed-upload-grant": attempt.uploadGrant,
+          "x-sitesealed-csrf": auth.csrfToken,
         },
         body: JSON.stringify(requestBody),
       });
       const payload = await readApiJson(response);
-      if (!response.ok) throw new Error(payload.message || "The receipt could not be created.");
+      if (!response.ok) {
+        if (response.status === 401) await onAuthRefresh();
+        throw new Error(payload.message || "The receipt could not be created.");
+      }
 
       const kit = createPrivateRecoveryKit({
         manifest,
@@ -662,6 +793,8 @@ function SealingWorkbench({ onVerify }) {
         <span><Icon name="key" size={17} /><b>Key</b> never sent</span>
       </div>
 
+      <GoogleAccountAccess auth={auth} onLogout={onLogout} />
+
       <form className="seal-form" onSubmit={seal} noValidate>
         <div className="seal-form__grid">
           <div className="file-picker">
@@ -707,17 +840,6 @@ function SealingWorkbench({ onVerify }) {
               onChange={(event) => setDescription(event.target.value)}
               placeholder="Optional context kept inside the encrypted manifest"
             />
-            <label htmlFor={depositAccessInputId}>Deposit access <span>not stored</span></label>
-            <input
-              id={depositAccessInputId}
-              type="password"
-              autoComplete="off"
-              minLength="32"
-              maxLength="256"
-              value={depositAccess}
-              onChange={(event) => setDepositAccess(event.target.value)}
-              placeholder="Controlled-alpha access code"
-            />
           </div>
         </div>
 
@@ -737,12 +859,15 @@ function SealingWorkbench({ onVerify }) {
           <button
             className="button button--amber"
             type="submit"
-            disabled={["hashing", "encrypting", "authorizing", "uploading", "recording"].includes(status)}
+            disabled={
+              !auth.authenticated ||
+              ["hashing", "encrypting", "authorizing", "uploading", "recording"].includes(status)
+            }
           >
-            {progressLabel || "Hash, encrypt and record"}
+            {progressLabel || (auth.authenticated ? "Hash, encrypt and record" : "Sign in to seal")}
             {!progressLabel && <Icon name="arrow" size={17} />}
           </button>
-          <p>Controlled alpha: access code, exact-object grant, 20 receipts per IP/hour and a global Redis storage ceiling.</p>
+          <p>Controlled alpha: Google account session, exact-object grant, per-account allowance, IP limit and a global Redis storage ceiling.</p>
         </div>
       </form>
 
@@ -1371,7 +1496,7 @@ function InfrastructureStatus() {
     <div className="infrastructure-status" aria-live="polite">
       <div className="infrastructure-status__heading">
         <div>
-          <span>V1.4 ALPHA.8 / SIX RUNTIME ROLES</span>
+          <span>V1.4 ALPHA.9 / SIX RUNTIME ROLES</span>
           <strong>Private storage, internal audit and two external proof rails.</strong>
         </div>
         <small className={failed ? "is-error" : health ? "is-online" : ""}>
@@ -1447,6 +1572,83 @@ function InfrastructureStatus() {
 
 function App() {
   const [verificationTarget, setVerificationTarget] = useState(null);
+  const [auth, setAuth] = useState({
+    status: "loading",
+    configured: false,
+    authenticated: false,
+    clientId: null,
+    loginUri: null,
+    user: null,
+    csrfToken: null,
+    error: "",
+  });
+
+  const refreshAuth = useCallback(async () => {
+    try {
+      const [configResponse, sessionResponse] = await Promise.all([
+        fetch("/api/auth/config"),
+        fetch("/api/auth/session"),
+      ]);
+      const [config, session] = await Promise.all([
+        readApiJson(configResponse),
+        readApiJson(sessionResponse),
+      ]);
+      if (!configResponse.ok || !sessionResponse.ok) {
+        throw new Error(
+          config.message || session.message || "The account service could not be reached.",
+        );
+      }
+      setAuth({
+        status: "ready",
+        configured: Boolean(config.configured),
+        authenticated: Boolean(session.authenticated),
+        clientId: config.clientId ?? null,
+        loginUri: config.loginUri ?? null,
+        user: session.user ?? null,
+        csrfToken: session.csrfToken ?? null,
+        error: config.configurationError || "",
+      });
+    } catch (error) {
+      setAuth((current) => ({
+        ...current,
+        status: "error",
+        authenticated: false,
+        user: null,
+        csrfToken: null,
+        error:
+          error instanceof Error
+            ? error.message
+            : "The account service could not be reached.",
+      }));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshAuth();
+  }, [refreshAuth]);
+
+  const logout = async () => {
+    if (!auth.csrfToken) return;
+    try {
+      const response = await fetch("/api/auth/logout", {
+        method: "POST",
+        headers: { "x-sitesealed-csrf": auth.csrfToken },
+      });
+      const payload = await readApiJson(response);
+      if (!response.ok) {
+        throw new Error(payload.message || "The account session could not be closed.");
+      }
+      await refreshAuth();
+    } catch (error) {
+      setAuth((current) => ({
+        ...current,
+        error:
+          error instanceof Error
+            ? error.message
+            : "The account session could not be closed.",
+      }));
+    }
+  };
 
   const scrollToSeal = () => {
     document.getElementById("seal")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1654,11 +1856,16 @@ function App() {
               <div className="seal-workflow__boundary">
                 <span><Icon name="alert" size={18} /> CURRENT BOUNDARY</span>
                 <p><strong>Implemented in alpha:</strong> SHA-256, client-side AES-256-GCM, private S3 ciphertext, MySQL receipts, PostgreSQL append-only audit, Redis coordination, Evidency sandbox RFC 3161 requests with independent CMS signature and pinned-chain validation, domain-separated Merkle proofs, Ethereum mainnet transactions, public lookup and dynamic PDF/bundle exports.</p>
-                <p><strong>Still not production-qualified:</strong> Evidency production contract and production trust policy, certificate revocation validation, in-app camera attestation, identity, device trust, GNSS and a formal security review.</p>
+                <p><strong>Still not production-qualified:</strong> Evidency production contract and production trust policy, certificate revocation validation, in-app camera attestation, identity assurance beyond a verified Google account, device trust, GNSS and a formal security review.</p>
               </div>
             </div>
             <InfrastructureStatus />
-            <SealingWorkbench onVerify={scrollToVerifier} />
+            <SealingWorkbench
+              auth={auth}
+              onAuthRefresh={refreshAuth}
+              onLogout={logout}
+              onVerify={scrollToVerifier}
+            />
           </div>
         </section>
 
@@ -1770,7 +1977,7 @@ function App() {
             </div>
             <div>
               <strong>Status</strong>
-              <span>Genesis v1.4 alpha.8 controlled-storage MVP</span>
+              <span>Genesis v1.4 alpha.9 account-controlled storage MVP</span>
               <span>Evidency sandbox test rail</span>
               <span>Ethereum mainnet final rail</span>
             </div>

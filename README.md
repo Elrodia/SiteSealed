@@ -1,155 +1,94 @@
-# SiteSealed Genesis v1.4-alpha.8 — dépôt chiffré contrôlé
+# SiteSealed Genesis v1.4-alpha.9 — dépôts liés à un compte Google
 
-Cette version clôt le MVP technique avec les deux rails externes retenus :
+SiteSealed crée des reçus d'intégrité SHA-256, conserve uniquement un original
+chiffré côté client et attache deux rails externes asynchrones :
 
-- **Evidency sandbox** pour demander et exporter un jeton RFC 3161 de test ;
-- **Ethereum mainnet (chain ID 1)** comme rail public définitif pour les racines
-  Merkle horaires.
+- un jeton RFC 3161 **Evidency Sandbox**, vérifié cryptographiquement mais sans
+  effet qualifié eIDAS ;
+- une racine Merkle écrite sur **Ethereum Mainnet (chain ID 1)** par le worker
+  horaire, avec une transaction au maximum par exécution.
 
-L'alpha.8 conserve la vérification RFC 3161 indépendante introduite en alpha.6,
-la barrière Ethereum Mainnet de l'alpha.7 et la reprise MySQL de l'alpha.7.1.
-Elle ne change ni le schéma public des preuves ni le schéma MySQL. Elle ajoute
-une frontière d'autorisation et de coût devant le Bucket, tout en gardant la
-sélection Ethereum automatique, sans `ETHEREUM_TARGET_RECORD_ID` :
+L'alpha.9 remplace entièrement le secret partagé de l'alpha.8 par
+**Continue with Google**. Il n'existe plus de variable
+`UPLOAD_ADMISSION_SECRET`, de champ « Deposit access » ni d'en-tête contenant
+un mot de passe opérateur.
 
-- sélection automatique des reçus éligibles, par ordre de création, dans un
-  lot Merkle borné ;
-- éligibilité limitée aux jetons Sandbox ayant réellement passé le validateur
-  `SITESEALED_RFC3161_VALIDATOR_V1` ;
-- dry-run sans création de lot, sans signature et sans diffusion ;
-- correspondance obligatoire entre la clé et
-  `ETHEREUM_EXPECTED_ANCHOR_ADDRESS` ;
-- contrôle du chain ID, du gas estimé, du solde, du plafond en gwei et du
-  plafond absolu en ETH ;
-- redécodage local de la transaction signée et comparaison de tous les champs
-  autorisés avant sa persistance ;
-- une seule transaction au maximum par exécution, sans remplacement ni hausse
-  automatique de frais ;
-- statut partagé `DRY RUN`, `READY`, `SUBMITTED`, `CONFIRMED`, `FINALIZED` ou
-  `ERROR`, sans présenter une simple configuration comme une finalisation.
+## Frontière de sécurité de l'alpha.9
 
-Le jeton Evidency est vérifié avant toute persistance :
-structure RFC 3161/CMS, attributs signés, signature cryptographique,
-`ESSCertIDv2`, profil du certificat TSU, validité à `genTime` et chemin X.509
-jusqu'à une racine Sandbox versionnée et épinglée dans la release. L'indicateur
-ne devient `ON` qu'après stockage d'un jeton ayant franchi cette barrière. La
-révocation reste explicitement `NOT_CHECKED` et le Sandbox reste sans valeur
-qualifiée eIDAS.
+Google Identity Services authentifie le compte avec un ID token OpenID Connect.
+Le serveur vérifie sa signature, son audience, son émetteur et l'adresse e-mail
+vérifiée, puis crée sa propre session opaque dans Redis :
 
-La lignée alpha corrige également l'incompatibilité observée avec l'API Evidency du
-12 août 2026 : l'OpenAPI actuel renvoie `timestamp` sous forme de chaîne
-ISO 8601, tandis que l'ancien guide montrait un entier Unix en millisecondes.
-L'adaptateur accepte les deux formats documentés, les normalise en UTC et
-rejette les dates mal formées ou hors de la fenêtre d'émission attendue.
+- cookie de session `HttpOnly`, `Secure` en HTTPS, `SameSite=Lax` et limité au
+  chemin `/` ;
+- jeton CSRF propre à SiteSealed pour toutes les mutations JSON ;
+- contrôle « double submit cookie » sur le retour Google ;
+- aucune conservation de l'ID token, d'un access token ou d'un refresh token ;
+- aucun accès aux API Google ; seuls `openid`, `email` et `profile` sont utilisés ;
+- le `sub` Google brut n'est pas exposé : un identifiant local SHA-256 séparé
+  par domaine lie la session, les grants et le quota.
 
-Elle corrige aussi les incompatibilités MySQL observées sur Railway. Le
-protocole binaire de `mysql2` pouvait transmettre `LIMIT ?` ou certaines
-valeurs du cycle de lot sous une forme refusée par MySQL avec
-`ER_WRONG_ARGUMENTS` / `Incorrect arguments to COM_STMT_EXECUTE`. Les limites
-de file sont strictement validées et émises comme littéraux entiers. Toutes les
-lectures et écritures du cycle Ethereum (`PREPARED`, `SIGNED`, `SUBMITTED`,
-`CONFIRMED`, `FINALIZED`) utilisent le protocole texte paramétré. Les données
-de reçu, de preuve et de transaction restent séparées de la requête SQL.
+Le compte autorise uniquement la **création** d'un dépôt. Il ne prouve pas
+l'auteur du fichier et n'est pas ajouté au reçu public. La consultation, le
+bundle, le PDF et le vérificateur public restent accessibles sans compte.
 
-Un lot déjà créé par l'alpha.7 est repris idempotemment. S'il est `PREPARED`,
-le worker le signe puis le diffuse ; s'il est déjà `SIGNED`, il revalide et
-rediffuse exactement la transaction persistée, sans la remplacer ni augmenter
-les frais.
+Si `GOOGLE_OAUTH_CLIENT_ID` manque ou est invalide, le serveur reste en ligne et
+la vérification publique continue de fonctionner. L'interface indique que la
+connexion Google n'est pas configurée et bloque seulement la création de reçus.
 
-Le mot `sealed` reste volontairement désactivé. Un jeton Evidency sandbox n'a
-aucun effet juridique et ne devient jamais un horodatage qualifié eIDAS. Même
-avec un ancrage mainnet finalisé, l'état maximal de cette version est
-`ALPHA_DUAL_RAIL_COMPLETE`.
+### Admission d'un objet chiffré
 
-## Sécurité du dépôt chiffré en alpha.8
+Une limite par IP n'est pas une autorisation. L'alpha.9 cumule les barrières
+suivantes :
 
-Une limite par IP n'est pas une autorisation : une rotation d'adresses pouvait
-auparavant envoyer jusqu'à 25 Mo de ciphertext par PUT et faire supporter le
-stockage à l'opérateur. L'alpha.8 remplace ce modèle par quatre barrières
-cumulatives :
+1. `POST /api/storage/upload-grants` exige une session Google valide et un
+   jeton CSRF SiteSealed ;
+2. Redis émet un grant aléatoire de 15 minutes lié au compte, au
+   `submissionId`, aux empreintes, à l'IV et aux tailles exactes ;
+3. le `PUT /api/storage/uploads/:submissionId` réclame atomiquement ce grant
+   **avant** qu'Express ne lise jusqu'à 25 Mio de corps ;
+4. un grant autorise un seul objet, ne peut pas être transféré à un autre
+   compte et ne déclenche qu'une seule écriture S3, même en concurrence ;
+5. les octets sont réservés atomiquement dans un plafond Redis par compte
+   (256 Mio/24 h par défaut) et un plafond global (2 048 Mio/24 h par défaut) ;
+6. les limites de 20/h par IP **et** par compte restent des défenses
+   supplémentaires.
 
-1. `POST /api/storage/upload-grants` exige le secret opérateur
-   `UPLOAD_ADMISSION_SECRET`. Le secret est saisi dans le formulaire, transmis
-   uniquement en HTTPS, jamais inclus dans le build et jamais écrit par
-   l'application dans un cookie, `localStorage` ou `sessionStorage` ;
-2. Redis émet un grant aléatoire de 15 minutes lié exactement au
-   `submissionId`, aux deux empreintes, à l'IV et aux tailles. Seul un digest
-   séparé par domaine du secret du grant est conservé ;
-3. le PUT valide le grant, sa liaison et `Content-Length`, puis le réclame
-   atomiquement **avant** le parseur de corps. Un faux grant ne peut donc pas
-   faire bufferiser 25 Mo par Express. Deux PUT concurrents ne peuvent pas
-   atteindre le Bucket avec le même grant ;
-4. le premier claim réserve les octets une seule fois dans un plafond Redis
-   global de 2 048 Mio par fenêtre de 24 heures, configurable par
-   `STORAGE_ADMISSION_MB_PER_DAY`. La limite IP de 20/h reste une défense
-   supplémentaire, mais n'est plus la frontière principale.
+Le ciphertext arrive sous `staging/v1.2/`. La création du reçu exige le même
+grant complété, promeut l'objet vérifié sous `sealed/v1.2/`, persiste le reçu,
+puis supprime le staging. Une panne S3 libère le claim pour une reprise exacte
+sans débiter une deuxième fois le quota.
 
-Le ciphertext arrive d'abord sous `staging/v1.2/`. La création du reçu exige le
-même grant déjà complété, copie l'objet vérifié sous `sealed/v1.2/`, persiste le
-reçu et supprime ensuite la copie de staging. Une panne de stockage libère le
-claim pour une reprise exacte sans débiter une seconde fois le plafond.
-
-Les Buckets Railway prennent en charge `Put`, `Head`, `List`, `Copy`, `Delete`
-et les tags, mais pas encore la configuration Bucket Lifecycle. Il ne faut donc
-pas appliquer une règle fictive ou une expiration sur `sealed/`, qui mettrait
-les reçus valides en danger. Le cron horaire existant exécute à la place un
-nettoyeur applicatif verrouillé par Redis : il supprime uniquement les objets
-`staging/` non finalisés âgés de plus de 24 heures, avec un nombre maximal
-d'objets traité par run. Un échec d'accès au Bucket fait échouer le worker au
-lieu de prétendre que le nettoyage a réussi.
-
-Cette alpha devient volontairement un environnement contrôlé. Pour un dépôt
-public sans secret partagé, il faudra ajouter une véritable identité, un quota
-de compte ou un droit payé ; une preuve de travail ou un jeton anonyme émis
-librement ne constitue pas une autorisation.
+Les Buckets Railway ne fournissant pas de règle Lifecycle utilisable par cette
+application, le worker horaire supprime uniquement les objets `staging/`
+orphelins et non finalisés âgés de plus de 24 heures. Il ne touche jamais à
+`sealed/`.
 
 ## Ce qui fonctionne réellement
 
 - SHA-256 du fichier dans le navigateur ;
 - AES-256-GCM du manifeste et de l'original avant tout envoi ;
-- grant de dépôt à usage unique, exact-bound et réclamé avant lecture du corps ;
-- plafond global Redis en octets, en plus de la limite par IP ;
-- staging privé, promotion par copie vers `sealed/` et nettoyage horaire des
-  staging orphelins ;
+- session de compte Google vérifiée, opaque et stockée côté serveur dans Redis ;
+- grant exact, à usage unique, lié au compte et réclamé avant lecture du corps ;
+- quotas Redis global et par compte, limites par IP et par compte ;
 - stockage du seul ciphertext dans un Bucket S3 privé ;
-- registre MySQL, audit PostgreSQL append-only et coordination Redis ;
-- evidence digest séparé par domaine, lié aux empreintes du fichier et du
-  manifeste ;
-- requête digest-only vers `https://api-sandbox.evidency.io` ;
-- contrôle croisé des métadonnées Evidency avec le `TSTInfo` signé : digest,
-  numéro de série, `genTime` et policy OID ;
-- vérification du `messageDigest` CMS et de la signature CMS avec le certificat
-  réellement désigné par `SignerInfo` ;
-- vérification de `signingCertificateV2` / `ESSCertIDv2`, de l'EKU critique
-  exclusivement `id-kp-timeStamping`, du `keyUsage` et de la non-CA du TSU ;
-- validation du chemin TSU → Timestamp CA → racine Sandbox épinglée, à l'heure
-  certifiée ;
-- conservation et export du jeton RFC 3161 avec sa propre empreinte SHA-256 ;
-- arbre Merkle SHA-256 avec séparation de domaine entre feuilles et nœuds ;
-- preuve d'inclusion individuelle, sans divulguer les autres reçus ;
-- transaction EIP-1559 auto-adressée dont le calldata contient le préfixe
-  `SSLD` version 1 puis la racine Merkle ;
-- simulation Mainnet strictement sans écriture, ciblage exact et filtre
-  d'éligibilité RFC 3161 indépendant ;
-- vérification de l'adresse attendue, du réseau 1, du gas estimé, du solde et
-  de deux plafonds de frais (`5 gwei` et `0.00015 ETH` par défaut) ;
-- signature locale, redécodage et comparaison de la transaction, puis
-  persistance avant diffusion ;
-- suivi `SUBMITTED`, `CONFIRMED`, puis `FINALIZED`, avec contrôle du sender, du
-  destinataire et du calldata ;
-- bundle JSON v1.4 alpha, jeton `.tsr`, reçu PDF, lien Etherscan et vérificateur
-  public ;
-- worker Railway idempotent et verrouillé par Redis.
-- état de fonctionnement Evidency partagé par Redis, avec expiration automatique
-  si le worker ne publie plus de contrôle récent ;
-- état Ethereum partagé séparément, avec preuve explicite de la liaison on-chain
-  et de la finalité avant l'affichage `FINALIZED` ;
-- rafraîchissement automatique de l'indicateur web toutes les 30 secondes.
+- registre MySQL, audit PostgreSQL append-only hash-chaîné et coordination Redis ;
+- requête digest-only vers Evidency Sandbox ;
+- validation RFC 3161/CMS indépendante : empreinte, signature, `ESSCertIDv2`,
+  profil TSU et chemin X.509 vers la racine Sandbox épinglée ;
+- arbre Merkle avec séparation de domaine et preuve d'inclusion individuelle ;
+- transaction EIP-1559 auto-adressée dont le calldata contient `SSLD`, la
+  version 1 et la racine Merkle ;
+- contrôles du chain ID, de l'adresse attendue, du gas, du solde et des plafonds
+  de frais avant signature ;
+- persistance de la transaction signée avant diffusion, reprise idempotente et
+  contrôle on-chain jusqu'à `FINALIZED` ;
+- bundle JSON, jeton `.tsr`, PDF, lien Etherscan et vérificateur public ;
+- nettoyage borné des staging orphelins par le worker Railway horaire.
 
 Le serveur ne reçoit jamais l'original lisible, le manifeste lisible ou la clé
 AES. Evidency reçoit uniquement l'evidence digest. Ethereum reçoit uniquement
-une racine de lot, jamais un nom de fichier, une empreinte directe de fichier ou
-un identifiant de reçu.
+une racine de lot. Google ne reçoit pas le fichier ni son empreinte.
 
 ## Machine d'état honnête
 
@@ -161,76 +100,42 @@ un identifiant de reçu.
 | `ALPHA_DUAL_RAIL_COMPLETE` | test sandbox | finalisé | `false` |
 | `DUAL_RAIL_COMPLETE` | qualifié + signature validée | finalisé | `true` |
 
-La dernière ligne existe dans le modèle de données pour la future production,
-mais cette alpha ne peut pas l'atteindre.
+L'alpha.9 ne peut pas atteindre la dernière ligne. Le mot `sealed` reste
+désactivé, car le Sandbox Evidency n'est pas un horodatage qualifié.
 
-Le statut d'infrastructure Evidency est distinct du statut probatoire d'un reçu :
-
-| Indicateur | Signification |
+| Indicateur Evidency | Signification |
 | --- | --- |
 | `OFF` | worker désactivé ou état récent absent |
-| `DRY RUN` | sélection contrôlée, sans appel à Evidency |
-| `READY` | clés chargées, mais aucun jeton réussi n'est encore enregistré |
-| `ON` | jeton sandbox reçu, signature CMS et chaîne épinglée validées, puis enregistré |
-| `ERROR` | dernière exécution Evidency en échec |
+| `DRY RUN` | sélection sans appel externe |
+| `READY` | configuration chargée, aucun jeton validé récent |
+| `ON` | jeton sandbox reçu, vérifié et enregistré |
+| `ERROR` | dernière exécution en échec |
 
-Le statut Ethereum suit une machine distincte :
-
-| Indicateur | Signification |
+| Indicateur Ethereum | Signification |
 | --- | --- |
 | `OFF` | worker Mainnet désactivé ou état récent absent |
-| `DRY RUN` | sélection et contrôles RPC/coût réussis, zéro signature et zéro diffusion |
+| `DRY RUN` | contrôles RPC/coût réussis, aucune signature |
 | `READY` | configuration chargée, aucune finalisation prouvée |
-| `SUBMITTED` | transaction exacte diffusée, finalité en attente |
-| `CONFIRMED` | confirmations atteintes, bloc finalisé encore non prouvé |
+| `SUBMITTED` | transaction exacte diffusée |
+| `CONFIRMED` | confirmations atteintes, finalité encore en attente |
 | `FINALIZED` | sender, destinataire, calldata, receipt et bloc finalisé vérifiés |
-| `ERROR` | exécution arrêtée sans élargir les frais ni signer une autre transaction |
+| `ERROR` | exécution arrêtée sans signer une autre transaction |
 
 ## Responsabilités
 
-| Composant | Rôle | Autoritaire | Original lisible |
-| --- | --- | --- | --- |
-| MySQL | Reçus, preuves externes et lots Merkle | Oui pour l'index applicatif | Non |
-| Bucket S3 | Ciphertexts AES-256-GCM | Oui pour les octets chiffrés | Non |
-| PostgreSQL | Événements internes hash-chaînés | Audit interne uniquement | Non |
-| Redis | Grants/claims et plafond éphémères, limites, verrous, cache et statut récent | Oui pour l'admission éphémère, non pour les reçus | Non |
-| Evidency sandbox | Jeton RFC 3161 de test | Artefact externe de test | Non, digest seulement |
-| Ethereum mainnet | Racine Merkle publique | Rail public | Non, racine seulement |
+| Composant | Rôle | Original lisible |
+| --- | --- | --- |
+| MySQL | Reçus, preuves externes et lots Merkle | Non |
+| Bucket S3 | Ciphertexts AES-256-GCM | Non |
+| PostgreSQL | Audit applicatif interne hash-chaîné | Non |
+| Redis | Sessions, grants, quotas, limites, verrous, cache et état des rails | Non |
+| Google Identity Services | Authentification du compte de dépôt | Non |
+| Evidency Sandbox | Jeton RFC 3161 de test | Non, digest seulement |
+| Ethereum Mainnet | Racine Merkle publique | Non, racine seulement |
 
-Le protocole privé de dépôt reste `1.2` afin de préserver les objets et kits de
-récupération existants. Le reçu et le bundle publics passent en
-`1.4-alpha.1` pour préserver la compatibilité des preuves. L'alpha.8 ne
-modifie ni le protocole de dépôt ni le schéma JSON public ; elle enrichit les
-champs de preuve compatibles. La migration MySQL additive
-`005_rfc3161_independent_verification` conserve l'état des anciens jetons sans
-les présenter rétroactivement comme vérifiés.
-
-## Structure utile
-
-- `server/evidency.js` : client sandbox strict et barrière avant stockage ;
-- `server/admission.js` : secret de dépôt contrôlé, paramètres de grants et
-  plafond global ;
-- `server/storage.js` : validation pré-corps, staging, promotion et reaper S3 ;
-- `server/rfc3161.js` : validation DER, CMS, TSTInfo, ESSCertIDv2, certificat et
-  chemin X.509 ;
-- `server/trust/` : racine et CA Timestamp Sandbox publiques, versionnées et
-  contrôlées par empreinte DER SHA-256 ;
-- `server/merkle.js` : arbre et preuves d'inclusion déterministes ;
-- `server/ethereum.js` : dry-run, plafonds, signature locale vérifiée,
-  transaction mainnet et inspection de finalité ;
-- `server/rails-worker.js` : orchestration idempotente des deux files et
-  nettoyage horaire des staging expirés ;
-- `server/database.js` : migration, persistance des artefacts et reprise
-  MySQL text-protocol des lots Ethereum ;
-- `client/public/schemas/` : schéma JSON du bundle exporté ;
-- le portail web recalcule dans le navigateur l'evidence digest, la preuve
-  d'inclusion Merkle et la liaison du calldata Ethereum ;
-- `scripts/verify-bundle.mjs` : vérification locale du reçu, du jeton et de la
-  preuve Merkle ;
-- `scripts/verify-timestamp.mjs` : vérificateur RFC 3161 autonome avec la même
-  racine épinglée ;
-- `railway.json` : service web ;
-- `railway.rails.json` : service cron des rails externes.
+Le protocole privé de dépôt reste `1.2` et le schéma public reste
+`1.4-alpha.1` afin de préserver la compatibilité des preuves et kits existants.
+L'alpha.9 ne modifie pas le schéma MySQL.
 
 ## Développement et tests
 
@@ -239,22 +144,18 @@ npm ci
 npm test
 ```
 
-Pour un démarrage local sans dépendances persistantes :
+Sans Google configuré, le développement local permet toujours la consultation
+et la vérification. Pour tester la création de reçu, créer un client OAuth Web
+Google autorisant l'origine locale et définir dans `.env` :
 
-```bash
-cp .env.example .env
-npm run dev:full
+```text
+PUBLIC_BASE_URL=http://localhost:5173
+GOOGLE_OAUTH_CLIENT_ID=<client Web>.apps.googleusercontent.com
+AUTH_SESSION_TTL_HOURS=168
 ```
 
-Avec `DATABASE_MODE=optional`, les adaptateurs mémoire sont réservés au
-développement et disparaissent au redémarrage. Les deux rails externes sont
-désactivés par défaut : aucun appel Evidency et aucune dépense ETH ne peuvent se
-produire sans activation explicite.
-
-Pour tester aussi la création de reçu en local, renseigner dans `.env` un secret
-d'au moins 32 octets, par exemple une valeur générée par
-`openssl rand -base64 48`, puis saisir exactement cette valeur dans le champ
-**Deposit access**. Sans ce secret, l'API de grant répond volontairement `503`.
+Le reverse proxy de développement doit acheminer `/api` vers le serveur. Aucun
+Google client secret n'est utilisé.
 
 Pour vérifier un bundle hors du site :
 
@@ -262,17 +163,7 @@ Pour vérifier un bundle hors du site :
 npm run verify:bundle -- ./proof-bundle.json ./original.pdf ./encrypted-original.ssenc
 ```
 
-Le script valide l'intégrité du reçu, la liaison du token exporté à l'evidence
-digest et le chemin Merkle. Pour vérifier aussi le calldata, le sender, le bloc
-et la finalité via un RPC mainnet indépendant :
-
-```bash
-ETHEREUM_VERIFY_RPC_URL=https://votre-rpc-mainnet.example \
-  npm run verify:bundle -- ./proof-bundle.json ./original.pdf
-```
-
-Pour vérifier indépendamment la signature et le chemin du jeton exporté, sans
-appel à Evidency ni accès à l'original :
+Pour vérifier le jeton RFC 3161 indépendamment :
 
 ```bash
 npm run verify:timestamp -- \
@@ -280,19 +171,32 @@ npm run verify:timestamp -- \
   --digest <evidenceDigest-du-bundle>
 ```
 
-Les options `--serial`, `--time` et `--policy` permettent aussi de recouper les
-métadonnées externes. Une rotation de certificat non intégrée à la release
-échoue volontairement au lieu d'étendre silencieusement la confiance.
+## Configuration Google Cloud
+
+Dans le projet Google Cloud qui doit porter la connexion :
+
+1. ouvrir **Google Auth Platform** et configurer Branding/Audience pour
+   l'application ;
+2. dans **Clients**, créer un **OAuth client ID** de type **Web application** ;
+3. ajouter l'origine JavaScript autorisée exacte :
+   `https://app.sitesealed.com` ;
+4. ajouter l'URI de redirection autorisée exacte :
+   `https://app.sitesealed.com/api/auth/google/callback` ;
+5. copier uniquement le **Client ID** dans Railway sous
+   `GOOGLE_OAUTH_CLIENT_ID`.
+
+Ne crée pas et ne copie pas de Google client secret pour ce flux : SiteSealed
+utilise le bouton Google Identity Services et vérifie l'ID token côté serveur,
+sans appeler une API Google.
 
 ## Déploiement Railway
 
-Le projet Railway contient les services existants `SiteSealed`, `MySQL`,
-`Bucket S3`, `Postgres` et `Redis`, plus un nouveau service **SiteSealed Rails**
-créé depuis le même dépôt GitHub.
+Le projet contient le service web `SiteSealed`, MySQL, Bucket S3, Postgres,
+Redis et le service cron séparé `SiteSealed Rails`.
 
-### 1. Service web `SiteSealed`
+### Service web `SiteSealed`
 
-Il garde `/railway.json` comme chemin de configuration. Ses variables sont :
+Conserver `/railway.json` comme chemin de configuration et définir :
 
 ```text
 DATABASE_MODE=required
@@ -301,10 +205,12 @@ DATABASE_URL=${{Postgres.DATABASE_URL}}
 REDIS_URL=${{Redis.REDIS_URL}}
 
 PUBLIC_BASE_URL=https://app.sitesealed.com
+GOOGLE_OAUTH_CLIENT_ID=<client Web>.apps.googleusercontent.com
+AUTH_SESSION_TTL_HOURS=168
 SEAL_RATE_LIMIT_PER_HOUR=20
-UPLOAD_ADMISSION_SECRET=<secret aléatoire de 32 octets minimum>
 UPLOAD_GRANT_TTL_SECONDS=900
 STORAGE_ADMISSION_MB_PER_DAY=2048
+STORAGE_ADMISSION_MB_PER_USER_PER_DAY=256
 
 S3_ACCESS_KEY=${{"Bucket S3".ACCESS_KEY_ID}}
 S3_BUCKET=${{"Bucket S3".BUCKET}}
@@ -313,27 +219,15 @@ S3_REGION=${{"Bucket S3".REGION}}
 S3_SECRET_KEY=${{"Bucket S3".SECRET_ACCESS_KEY}}
 ```
 
-Générer `UPLOAD_ADMISSION_SECRET` hors du dépôt avec
-`openssl rand -base64 48`, le placer comme secret Railway, puis le conserver
-dans le gestionnaire de mots de passe de l'opérateur. Ne pas le préfixer par
-`VITE_`, ne pas le mettre dans Git et ne pas l'écrire dans le code client.
-`DATABASE_MODE=required` fait échouer le démarrage si cette variable manque ou
-contient moins de 32 octets.
+Il ne faut définir ni `UPLOAD_ADMISSION_SECRET`, ni Google client secret dans
+Railway. Les secrets Evidency et Ethereum restent exclusivement dans le worker.
 
-Les secrets des rails ne doivent pas être placés dans le service web. Le worker
-publie dans Redis un état sanitaire limité et sans secret ; l'API le lit pour
-afficher l'état réel de chaque rail. Evidency peut atteindre `ON`; Ethereum ne
-peut atteindre `FINALIZED` qu'après contrôle on-chain et finalité.
+### Service cron `SiteSealed Rails`
 
-### 2. Service cron `SiteSealed Rails`
-
-Dans **Settings**, définir le chemin de configuration sur
-`/railway.rails.json`. Ne configure pas encore de cron pendant le premier test.
-Après le premier ancrage contrôlé, ajoute `0 * * * *` dans **Cron Schedule**
-(au début de chaque heure, UTC). Ce processus traite les reçus, vérifie les lots
-déjà soumis et se termine ; il ne doit pas être déployé comme serveur permanent.
-
-Variables de ce service :
+Définir `/railway.rails.json` comme chemin de configuration. Après validation
+manuelle, utiliser `0 * * * *` comme cron (une exécution au début de chaque
+heure, UTC). Le processus traite les files, vérifie les transactions déjà
+soumises, nettoie les staging expirés, puis se termine.
 
 ```text
 DATABASE_MODE=required
@@ -352,7 +246,7 @@ STAGING_REAPER_MAX_OBJECTS=1000
 EVIDENCY_MODE=sandbox
 EVIDENCY_API_BASE_URL=https://api-sandbox.evidency.io
 EVIDENCY_API_KEY=<secret Railway>
-EVIDENCY_PROJECT_KEY=<clé du projet sandbox>
+EVIDENCY_PROJECT_KEY=<clé du projet Sandbox>
 EVIDENCY_TIMEOUT_MS=12000
 EVIDENCY_BATCH_SIZE=50
 EVIDENCY_TARGET_RECORD_ID=
@@ -361,9 +255,9 @@ EVIDENCY_MAX_REQUESTS_PER_RUN=1
 EVIDENCY_RUNTIME_STATUS_TTL_SECONDS=90000
 
 ETHEREUM_ANCHOR_MODE=mainnet
-ETHEREUM_RPC_URL=<endpoint WSS Ethereum mainnet>
+ETHEREUM_RPC_URL=<endpoint WSS Ethereum Mainnet>
 ETHEREUM_ANCHOR_PRIVATE_KEY=<secret Railway>
-ETHEREUM_EXPECTED_ANCHOR_ADDRESS=<adresse publique 0x du portefeuille dédié>
+ETHEREUM_EXPECTED_ANCHOR_ADDRESS=<adresse publique du portefeuille dédié>
 ETHEREUM_DRY_RUN=true
 ETHEREUM_MAX_TRANSACTIONS_PER_RUN=1
 ETHEREUM_CONFIRMATIONS=12
@@ -374,73 +268,29 @@ ANCHOR_MAX_BATCH_SIZE=1024
 ETHEREUM_RUNTIME_STATUS_TTL_SECONDS=90000
 ```
 
-`ETHEREUM_TARGET_RECORD_ID` doit être absent du service Railway. Son absence
-active la sélection automatique ; aucun identifiant de reçu n'est nécessaire.
-Un second fournisseur RPC n'est pas requis pour exécuter le worker. Il peut
-être ajouté plus tard comme contrôle d'audit indépendant, sans faire partie de
-la configuration opérationnelle.
+`ETHEREUM_TARGET_RECORD_ID` doit rester absent : la sélection est automatique.
+Un seul endpoint RPC opérationnel est requis. Le portefeuille doit être dédié,
+peu approvisionné et sans autre usage. Le cron horaire groupe jusqu'à 1 024
+reçus dans une racine et n'autorise qu'une transaction par exécution ; il ne
+dépense donc pas des ETH toutes les 15 minutes.
 
-`ETHEREUM_ANCHOR_PRIVATE_KEY` doit appartenir à un portefeuille dédié, peu
-approvisionné et sans autre usage. Le cron dépense de vrais ETH. Ne colle jamais
-la clé privée dans Git, un ticket, un log ou une conversation ; ajoute-la
-directement comme secret Railway.
+Pour la première mise en service, conserver `ETHEREUM_DRY_RUN=true`, lancer le
+worker manuellement et vérifier `transactionsSigned: 0` et
+`transactionsBroadcast: 0`. Passer ensuite une seule fois à `false`, noter le
+`transactionHash`, puis relancer le même worker jusqu'à `FINALIZED`. Activer le
+cron horaire seulement après ce contrôle.
 
-Mise en service contrôlée :
-
-1. déployer l'alpha.8 avec `ETHEREUM_ANCHOR_MODE=disabled`, puis vérifier le
-   build, les migrations et le fonctionnement Evidency existant ;
-2. créer un portefeuille Ethereum dédié et sans autre actif. Conserver sa clé
-   uniquement comme secret du worker et copier son adresse publique dans
-   `ETHEREUM_EXPECTED_ANCHOR_ADDRESS` ;
-3. approvisionner ce portefeuille du strict montant choisi pour les tests et
-   vérifier l'adresse par une seconde source avant tout transfert ;
-4. créer un reçu alpha.8 avec le code de dépôt opérateur, attendre son jeton Evidency Sandbox, puis vérifier que
-   `validatorVersion`, `signatureVerification` et
-   `certificateChainVerification` ont les valeurs exigées ;
-5. laisser `ETHEREUM_TARGET_RECORD_ID` absent, activer
-   `ETHEREUM_ANCHOR_MODE=mainnet` et laisser `ETHEREUM_DRY_RUN=true` ;
-6. lancer le worker manuellement. Le résultat attendu est `DRY_RUN`, au moins
-   un élément éligible dans `selected`, `transactionsSigned: 0` et
-   `transactionsBroadcast: 0`. Contrôler l'adresse, la racine, le gas estimé,
-   le solde et `maximumAuthorizedFeeEth` ;
-7. définir seulement `ETHEREUM_DRY_RUN=false`, puis relancer une fois. Noter le
-   `transactionHash`; le résultat normal est `SUBMITTED` tant que le bloc n'est
-   pas finalisé ;
-8. relancer le même worker pour le suivi. Il réinspecte le même hash et ne crée
-   ni transaction de remplacement ni hausse automatique de frais. Attendre
-   `runtime.ethereum.status: finalized`, avec
-   `onChainBindingVerified: true` et `finalityVerified: true` ;
-9. vérifier le reçu, le bundle, le calldata et la finalité via
-   `npm run verify:bundle` et le lien Etherscan exporté ;
-10. après cette validation seulement, activer le cron horaire. Conserver
-    `ETHEREUM_MAX_TRANSACTIONS_PER_RUN=1`, `ANCHOR_MAX_BATCH_SIZE=1024` et les
-    deux plafonds de coût.
-
-Toute incohérence d'adresse, réseau, signature, preuve RFC 3161, gas, frais,
-solde ou liaison on-chain fait échouer le run. Une transaction déjà signée
-reste persistée et sera reprise à l'identique ; l'alpha.8 ne la remplace jamais
-silencieusement.
-
-### Reprise directe d'un lot alpha.7 interrompu
-
-Aucune nouvelle preuve Evidency, aucune nouvelle adresse et aucun identifiant
-de reçu ne sont nécessaires. Laisser le cron désactivé, déployer l'alpha.8,
-supprimer `ETHEREUM_TARGET_RECORD_ID`, conserver le même portefeuille et le
-même réseau, puis lancer le worker une fois avec `ETHEREUM_DRY_RUN=false`. Le
-lot `PREPARED` ou `SIGNED` existant est retrouvé avant toute nouvelle sélection.
-Le résultat attendu est `SUBMITTED`; une exécution ultérieure suit ensuite le
-même hash jusqu'à `FINALIZED`.
+Une transaction déjà `SIGNED` ou `SUBMITTED` est reprise à l'identique. Le
+worker ne crée pas de remplacement et n'augmente pas automatiquement les frais.
 
 ## Limites restantes
 
-- Evidency sandbox : test uniquement, sans valeur qualifiée ;
-- révocation CRL/OCSP : `NOT_CHECKED` ; la chaîne cryptographique valide ne
-  prouve donc pas l'absence de révocation ;
-- la racine épinglée est exclusivement la racine Sandbox et ne constitue pas
-  une politique de confiance Production/eIDAS ;
-- pas de capture in-app attestée, identité, appareil ou GNSS ;
-- pas de preuve de véracité, d'auteur ou de scène non mise en scène ;
-- pas encore d'audit de sécurité indépendant ni de procédure de gestion de clé
-  institutionnelle.
+- Evidency Sandbox n'a aucune valeur qualifiée eIDAS ;
+- révocation CRL/OCSP : `NOT_CHECKED` ;
+- pas de capture in-app attestée, de confiance appareil ou de GNSS ;
+- la connexion Google autorise le dépôt mais ne prouve ni l'auteur ni la scène ;
+- pas de preuve de véracité ou de scène non mise en scène ;
+- pas encore d'audit de sécurité indépendant ni de politique institutionnelle
+  de gestion des clés.
 
 L'alpha prouve ce qu'elle peut recalculer et expose explicitement tout le reste.
