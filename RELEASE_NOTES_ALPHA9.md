@@ -87,9 +87,23 @@ Redirect URI:      https://app.sitesealed.com/api/auth/google/callback
   persistées ou de la sélection automatique ;
 - cron Railway recommandé : `0 * * * *`.
 
+## Correctif de reprise Ethereum
+
+- l'inspection attend désormais un reçu de bloc avant de valider les champs
+  on-chain ; une transaction encore dans le mempool reste `SUBMITTED` et ne
+  peut plus produire un faux `INVALID_ON_CHAIN` à partir de champs RPC
+  transitoires ;
+- un lot déjà classé `INVALID_ON_CHAIN` reste actionnable uniquement pour une
+  nouvelle inspection ; il n'est ni resigné ni rediffusé et n'occasionne donc
+  aucune seconde dépense d'ETH ;
+- après déploiement, un lot valide déjà miné peut progresser directement vers
+  `CONFIRMED` ou `FINALIZED` lors du prochain passage du worker.
+
 ## Validation
 
 La release couvre la configuration Google, la vérification de claims, les deux
 CSRF, les sessions opaques, l'expiration, la déconnexion, la liaison au compte,
 les quotas global/par compte, le rejet avant lecture du corps, la concurrence,
-le rejeu, les reprises S3 et les rails existants.
+le rejeu, les reprises S3 et les rails existants. Le build de production et la
+suite complète totalisent **126 tests réussis, 0 échec** ; l'audit npm de
+production ne signale aucune vulnérabilité connue.

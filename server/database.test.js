@@ -387,6 +387,21 @@ test("Ethereum MySQL failures identify the exact recovery operation", async () =
   );
 });
 
+test("INVALID_ON_CHAIN anchor batches remain actionable for safe reinspection", async () => {
+  let lookupSql = "";
+  const pool = {
+    async query(sql) {
+      lookupSql = sql.replace(/\s+/g, " ").trim();
+      return [[], []];
+    },
+  };
+
+  const batch = await createMysqlRecordStore(pool).getActionableAnchorBatch();
+
+  assert.equal(batch, null);
+  assert.match(lookupSql, /'INVALID_ON_CHAIN'/);
+});
+
 test("database rows expose the independently verified RFC 3161 path", () => {
   const record = mapRecordRow({
     record_id: "SR-20260812-ABCDEF0123456789ABCDEF01",

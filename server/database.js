@@ -951,7 +951,7 @@ function mapAnchorBatch(batchRow, memberRows = []) {
 async function findAnchorBatch(pool, batchId = null) {
   const parameters = [];
   let where =
-    "WHERE batch_state IN ('PREPARED', 'SIGNED', 'SUBMITTED', 'CONFIRMED')";
+    "WHERE batch_state IN ('PREPARED', 'SIGNED', 'SUBMITTED', 'CONFIRMED', 'INVALID_ON_CHAIN')";
   if (batchId) {
     where = "WHERE batch_id = ?";
     parameters.push(batchId);

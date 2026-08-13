@@ -211,7 +211,13 @@ export function createMemoryRecordStore() {
 
     async getActionableAnchorBatch() {
       const batch = [...batches.values()].find((candidate) =>
-        ["PREPARED", "SIGNED", "SUBMITTED", "CONFIRMED"].includes(
+        [
+          "PREPARED",
+          "SIGNED",
+          "SUBMITTED",
+          "CONFIRMED",
+          "INVALID_ON_CHAIN",
+        ].includes(
           candidate.state,
         ),
       );

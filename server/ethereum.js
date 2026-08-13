@@ -434,13 +434,31 @@ export function createEthereumAnchorClient(config, { provider, wallet } = {}) {
       if (getAddress(batch.anchorAddress) !== expectedAnchorAddress) {
         throw new Error("The stored anchor address does not match the expected wallet.");
       }
-      const transaction = await activeProvider.getTransaction(transactionHash);
-      if (!transaction) {
+      // A pending mempool transaction is not yet an on-chain object. Some RPC
+      // providers expose partial or transient transaction fields before the
+      // receipt exists, so classifying its binding at that point can create a
+      // false terminal INVALID_ON_CHAIN result. Wait for a mined receipt first;
+      // the exact signed transaction was already verified locally before send.
+      const receipt = await activeProvider.getTransactionReceipt(transactionHash);
+      if (!receipt) {
         return {
           state: "SUBMITTED",
           confirmations: 0,
           onChainBindingVerified: false,
           finalityVerified: false,
+          verificationStatus: "TRANSACTION_PENDING_RECEIPT",
+        };
+      }
+      const transaction = await activeProvider.getTransaction(transactionHash);
+      if (!transaction) {
+        return {
+          state: "SUBMITTED",
+          confirmations: 0,
+          blockNumber: receipt.blockNumber,
+          blockHash: receipt.blockHash,
+          onChainBindingVerified: false,
+          finalityVerified: false,
+          verificationStatus: "MINED_TRANSACTION_PENDING_RPC_VISIBILITY",
         };
       }
       const expectedData = encodeAnchorCalldata(batch.merkleRoot);
@@ -457,16 +475,6 @@ export function createEthereumAnchorClient(config, { provider, wallet } = {}) {
           onChainBindingVerified: false,
           finalityVerified: false,
           verificationStatus: "TRANSACTION_BINDING_MISMATCH",
-        };
-      }
-      const receipt = await activeProvider.getTransactionReceipt(transactionHash);
-      if (!receipt) {
-        return {
-          state: "SUBMITTED",
-          confirmations: 0,
-          onChainBindingVerified: true,
-          finalityVerified: false,
-          verificationStatus: "TRANSACTION_INPUT_AND_SENDER_MATCH",
         };
       }
       if (Number(receipt.status) !== 1) {

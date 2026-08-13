@@ -357,6 +357,41 @@ test("mainnet inspection verifies calldata, sender, receipt and finalized block"
   assert.equal(inspected.verificationStatus, "TRANSACTION_INPUT_AND_SENDER_MATCH");
 });
 
+test("pending mempool fields cannot create a terminal binding mismatch", async () => {
+  const wallet = new Wallet(`0x${"c".padStart(64, "0")}`);
+  const transactionHash = `0x${"8".repeat(64)}`;
+  let transactionReads = 0;
+  const client = createEthereumAnchorClient(safeConfig(wallet), {
+    wallet,
+    provider: safeProvider({
+      async getTransactionReceipt() {
+        return null;
+      },
+      async getTransaction() {
+        transactionReads += 1;
+        return {
+          chainId: 0n,
+          data: "0x",
+          from: wallet.address,
+          to: null,
+        };
+      },
+    }),
+  });
+
+  const inspected = await client.inspectAnchor({
+    transactionHash,
+    merkleRoot: root,
+    anchorAddress: wallet.address,
+  });
+
+  assert.equal(inspected.state, "SUBMITTED");
+  assert.equal(inspected.onChainBindingVerified, false);
+  assert.equal(inspected.finalityVerified, false);
+  assert.equal(inspected.verificationStatus, "TRANSACTION_PENDING_RECEIPT");
+  assert.equal(transactionReads, 0);
+});
+
 test("close() survives a WebSocket torn down mid-handshake (teardown-during-handshake)", async () => {
   const wallet = new Wallet(`0x${"a".padStart(64, "0")}`);
   const socket = new EventEmitter();

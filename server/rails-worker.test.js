@@ -524,6 +524,81 @@ test("the worker completes an auditable sandbox-plus-mainnet alpha lifecycle", a
   assert.equal(second.status, "NO_ELIGIBLE_RECORDS");
 });
 
+test("a false INVALID_ON_CHAIN batch is reinspected without signing or broadcasting", async () => {
+  const recordStore = createMemoryRecordStore();
+  const auditStore = createMemoryAuditStore();
+  const coordinator = createMemoryCoordinator();
+  const created = await recordStore.create(input());
+  await recordStore.saveQualifiedTimestamp(
+    created.record.recordId,
+    verifiedTimestampProof(created.record.evidenceDigest),
+  );
+  const tree = buildMerkleTree([
+    {
+      recordId: created.record.recordId,
+      evidenceDigest: created.record.evidenceDigest,
+    },
+  ]);
+  const { batch } = await recordStore.createAnchorBatch({
+    batchId: "recover-invalid-batch",
+    ...tree,
+  });
+  const transactionHash = `0x${"4".repeat(64)}`;
+  const anchorAddress = `0x${"5".repeat(40)}`;
+  await recordStore.saveSignedAnchor(batch.batchId, {
+    transactionHash,
+    signedTransaction: "0xsigned",
+    transactionInput: `0x53534c4401${tree.root}`,
+    anchorAddress,
+    nonce: 1,
+    maxFeePerGas: "1",
+    maxPriorityFeePerGas: "1",
+    gasLimit: "30000",
+  });
+  await recordStore.markAnchorSubmitted(batch.batchId);
+  await recordStore.updateAnchorBatch(batch.batchId, {
+    state: "INVALID_ON_CHAIN",
+    verificationStatus: "TRANSACTION_BINDING_MISMATCH",
+  });
+
+  const result = await processAnchorQueue({
+    recordStore,
+    auditStore,
+    coordinator,
+    ethereumRail: {
+      configured: true,
+      async prepareSignedAnchor() {
+        throw new Error("recovery must not sign");
+      },
+      async broadcastSignedAnchor() {
+        throw new Error("recovery must not broadcast");
+      },
+      async inspectAnchor() {
+        return {
+          state: "FINALIZED",
+          confirmations: 64,
+          blockNumber: 100,
+          blockHash: `0x${"6".repeat(64)}`,
+          anchoredAt: "2026-08-13T21:37:59.000Z",
+          finalizedAt: "2026-08-13T21:50:00.000Z",
+          onChainBindingVerified: true,
+          finalityVerified: true,
+          verificationStatus: "TRANSACTION_INPUT_AND_SENDER_MATCH",
+        };
+      },
+    },
+  });
+
+  assert.equal(result.status, "FINALIZED");
+  assert.equal(result.transactionHash, transactionHash);
+  assert.equal(result.transactionsSigned, 0);
+  assert.equal(result.transactionsBroadcast, 0);
+  assert.equal(
+    (await recordStore.findById(created.record.recordId)).chainRail.state,
+    "FINALIZED",
+  );
+});
+
 
 test("operationalErrorMessage keeps host and redacts only the path", () => {
   const msg = "Request failed: https://mainnet.infura.io/v3/SECRETKEY";

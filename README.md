@@ -282,6 +282,10 @@ cron horaire seulement après ce contrôle.
 
 Une transaction déjà `SIGNED` ou `SUBMITTED` est reprise à l'identique. Le
 worker ne crée pas de remplacement et n'augmente pas automatiquement les frais.
+Une transaction encore dans le mempool reste `SUBMITTED` tant qu'aucun reçu de
+bloc n'existe : ses champs transitoires ne peuvent plus provoquer un faux
+`INVALID_ON_CHAIN`. Un lot précédemment classé ainsi reste réinspectable et peut
+passer à `FINALIZED` sans nouvelle signature, diffusion ou dépense d'ETH.
 
 ## Limites restantes
 
