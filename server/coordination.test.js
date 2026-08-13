@@ -114,6 +114,13 @@ test("the shared storage budget is global, byte-based and window-scoped", async 
   assert.equal(first.remainingBytes, 600);
   assert.equal((await coordinator.consumeStorageAdmission(input)).allowed, true);
 
+  const peeked = await coordinator.readStorageAdmission({
+    limitBytes: input.limitBytes,
+    windowMs: input.windowMs,
+  });
+  assert.equal(peeked.admittedBytes, 800);
+  assert.equal(peeked.remainingBytes, 200);
+
   const refused = await coordinator.consumeStorageAdmission(input);
   assert.equal(refused.allowed, false);
   assert.equal(refused.admittedBytes, 800);
@@ -125,9 +132,22 @@ test("the shared storage budget is global, byte-based and window-scoped", async 
   );
 
   timestamp = 31_001;
+  assert.equal(
+    (
+      await coordinator.readStorageAdmission({
+        limitBytes: input.limitBytes,
+        windowMs: input.windowMs,
+      })
+    ).remainingBytes,
+    1_000,
+  );
   assert.equal((await coordinator.consumeStorageAdmission(input)).allowed, true);
   await assert.rejects(
     coordinator.consumeStorageAdmission({ ...input, bytes: 0 }),
     /positive size and budget/,
+  );
+  await assert.rejects(
+    coordinator.readStorageAdmission({ limitBytes: 0, windowMs: 1_000 }),
+    /positive budget/,
   );
 });

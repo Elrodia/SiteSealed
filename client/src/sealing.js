@@ -306,7 +306,11 @@ function leadingZeroBits(digest) {
   return bits;
 }
 
-export async function solveUploadChallenge({ challengeId, difficultyBits }) {
+export async function solveUploadChallenge({
+  challengeId,
+  difficultyBits,
+  expiresAt,
+}) {
   const bits = Number(difficultyBits);
   if (!Number.isInteger(bits) || bits < 1) {
     throw new Error("The upload challenge difficulty is invalid.");
@@ -314,6 +318,7 @@ export async function solveUploadChallenge({ challengeId, difficultyBits }) {
   if (bits > MAX_UPLOAD_CHALLENGE_DIFFICULTY_BITS) {
     throw new Error("The upload challenge difficulty is unreasonably high.");
   }
+  const deadline = expiresAt ? Date.parse(expiresAt) : Number.NaN;
   const encoder = new TextEncoder();
   const maxAttempts = 64 * 2 ** bits;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -325,6 +330,9 @@ export async function solveUploadChallenge({ challengeId, difficultyBits }) {
     );
     if (leadingZeroBits(digest) >= bits) return nonce;
     if ((attempt & 0x3fff) === 0x3fff) {
+      if (Number.isFinite(deadline) && Date.now() >= deadline) {
+        throw new Error("The upload challenge expired before it was solved.");
+      }
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
   }

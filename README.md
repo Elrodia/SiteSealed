@@ -180,16 +180,18 @@ d'autorisation ; la ressource rare l'est.
    réutilisée pour un autre objet ;
 3. `POST /api/storage/upload-grants` avec `{ submissionId, ciphertextSha256,
    byteLength, challengeId, nonce }` renvoie `{ grantId, expiresAt,
-   admittedBytes, remainingBudgetBytes }`. Un défi inconnu, expiré, déjà
-   dépensé ou portant sur un autre objet renvoie `403
-   UPLOAD_CHALLENGE_REJECTED` ; un `nonce` insuffisant renvoie `403
-   UPLOAD_CHALLENGE_UNSOLVED`. Le défi est consommé atomiquement avant
-   l'émission : une preuve de travail n'achète qu'un seul grant ;
-4. les octets annoncés sont imputés sur un budget **global** (toutes IP
-   confondues) de `STORAGE_ADMISSION_MB_PER_DAY` (2048 Mo par défaut, fenêtre
-   de 24 h). Budget épuisé : `429 STORAGE_ADMISSION_EXHAUSTED` avec
-   `Retry-After`. Ce plafond borne le coût de stockage de l'opérateur même face
-   à une rotation d'adresses IP ;
+   remainingBudgetBytes }`. Un défi inconnu, expiré, déjà dépensé ou portant sur
+   un autre objet renvoie `403 UPLOAD_CHALLENGE_REJECTED` ; un `nonce`
+   insuffisant renvoie `403 UPLOAD_CHALLENGE_UNSOLVED`. Le défi est consommé
+   atomiquement avant l'émission : une preuve de travail n'achète qu'un seul
+   grant ;
+4. l'émission vérifie qu'il reste au moins `byteLength` dans un budget
+   **global** (toutes IP confondues) de `STORAGE_ADMISSION_MB_PER_DAY` (2048 Mo
+   par défaut, fenêtre de 24 h) mais ne débite rien : le budget n'est imputé
+   qu'au stockage effectif (étape 7), afin qu'un grant jamais utilisé ne prive
+   personne de dépôt. Budget insuffisant : `429 STORAGE_ADMISSION_EXHAUSTED`
+   avec `Retry-After`, à l'émission comme à l'envoi. Ce plafond borne le coût de
+   stockage de l'opérateur même face à une rotation d'adresses IP ;
 5. l'autorisation est conservée par le coordinateur (Redis en production,
    mémoire avec `DATABASE_MODE=optional`) pendant **15 minutes** ;
 6. `PUT /api/storage/uploads/:submissionId` exige l'en-tête
@@ -198,10 +200,11 @@ d'autorisation ; la ressource rare l'est.
    pour un autre objet, ou dont le `submissionId`, le `ciphertextSha256` ou le
    `byteLength` ne correspondent pas exactement renvoie `403
    UPLOAD_GRANT_REJECTED` ;
-7. l'autorisation est consommée atomiquement au premier stockage réussi. Un
-   renvoi du **même** objet chiffré reste idempotent et répond `200`
-   `ENCRYPTED_ORIGINAL_REUSED` ; une autorisation consommée ne peut jamais
-   écrire un objet différent.
+7. la taille réelle du ciphertext est débitée du budget global **avant** l'appel
+   au stockage objet, puis l'autorisation est consommée atomiquement au premier
+   stockage réussi. Un renvoi du **même** objet chiffré reste idempotent, ne
+   débite rien de plus et répond `200` `ENCRYPTED_ORIGINAL_REUSED` ; une
+   autorisation consommée ne peut jamais écrire un objet différent.
 
 La limite anonyme par IP (`SEAL_RATE_LIMIT_PER_HOUR`, 20 par défaut) reste
 appliquée aux trois points d'entrée. Le serveur ne reçoit toujours ni original
@@ -211,7 +214,10 @@ empreinte et une taille.
 Cette barrière est un coût, pas une identité : elle ne remplace pas un quota
 authentifié ou un droit payant, qui restent le seul moyen de rendre le dépôt
 strictement nominatif. Tant que l'alpha reste anonyme, le budget global est le
-plafond dur du coût opérateur et doit être calibré sur le Bucket réel.
+plafond dur du coût opérateur et doit être calibré sur le Bucket réel. Il est
+tenu par le coordinateur : avec `DATABASE_MODE=required` (Redis) il est
+réellement partagé par toutes les instances, alors qu'en mode `optional` sans
+Redis il redevient local au processus.
 
 **Expiration des objets orphelins.** Un ciphertext peut être stocké sans que le
 reçu correspondant soit jamais créé (abandon, erreur réseau, requête

@@ -51,6 +51,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const clientDist = path.resolve(__dirname, "../client/dist");
 const indexFile = path.join(clientDist, "index.html");
+const STORAGE_ADMISSION_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 function positiveInteger(value, fallback) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -399,8 +400,7 @@ export function createApp({
       sealing: {
         workflow: "IMPORTED_FILE_CLIENT_ENCRYPTED_STORAGE_RECEIPT",
         clientEncryptedObjectStorage: true,
-        uploadAdmission:
-          "PROOF_OF_WORK_CHALLENGE_AND_SHARED_STORAGE_BUDGET",
+        uploadAdmission: "PROOF_OF_WORK_CHALLENGE_AND_SHARED_STORAGE_BUDGET",
         operationalAudit: "POSTGRESQL_APPEND_ONLY_HASH_CHAIN",
         distributedCoordination: true,
         qualifiedTimestamp:
@@ -526,13 +526,12 @@ export function createApp({
       let claimed = false;
       let admission;
       try {
-        claimed = await challenge.consume();
-        if (claimed) {
-          admission = await coordinator.consumeStorageAdmission({
-            bytes: requested.byteLength,
-            limitBytes: storageAdmissionBytesPerDay,
-            windowMs: 24 * 60 * 60 * 1000,
-          });
+        admission = await coordinator.readStorageAdmission({
+          limitBytes: storageAdmissionBytesPerDay,
+          windowMs: STORAGE_ADMISSION_WINDOW_MS,
+        });
+        if (admission.remainingBytes >= requested.byteLength) {
+          claimed = await challenge.consume();
         }
       } catch (error) {
         console.error(`Upload admission accounting failed: ${error.message}`);
@@ -542,18 +541,8 @@ export function createApp({
           "The private upload authorisation service is temporarily unavailable.",
         );
       }
-      if (!claimed) {
-        throw new ApiError(
-          403,
-          "UPLOAD_CHALLENGE_REJECTED",
-          "This upload challenge is unknown, expired, already spent or does not cover exactly this ciphertext.",
-        );
-      }
-      if (!admission.allowed) {
-        const resetSeconds = Math.max(
-          1,
-          Math.ceil(admission.resetInMs / 1000),
-        );
+      if (admission.remainingBytes < requested.byteLength) {
+        const resetSeconds = Math.max(1, Math.ceil(admission.resetInMs / 1000));
         response.set("Retry-After", String(resetSeconds));
         return response.status(429).json({
           ok: false,
@@ -561,6 +550,13 @@ export function createApp({
           message:
             "The shared alpha storage budget for this period is exhausted. Try again after the reset time.",
         });
+      }
+      if (!claimed) {
+        throw new ApiError(
+          403,
+          "UPLOAD_CHALLENGE_REJECTED",
+          "This upload challenge is unknown, expired, already spent or does not cover exactly this ciphertext.",
+        );
       }
 
       let grant;
@@ -578,7 +574,6 @@ export function createApp({
         ok: true,
         grantId: grant.grantId,
         expiresAt: grant.expiresAt,
-        admittedBytes: requested.byteLength,
         remainingBudgetBytes: admission.remainingBytes,
       });
     },
@@ -644,6 +639,37 @@ export function createApp({
           "UPLOAD_GRANT_REJECTED",
           "This upload grant is unknown, expired or does not authorise exactly this ciphertext.",
         );
+      }
+
+      if (!grant.consumed) {
+        let admission;
+        try {
+          admission = await coordinator.consumeStorageAdmission({
+            bytes: upload.ciphertextBytes,
+            limitBytes: storageAdmissionBytesPerDay,
+            windowMs: STORAGE_ADMISSION_WINDOW_MS,
+          });
+        } catch (error) {
+          console.error(`Storage admission accounting failed: ${error.message}`);
+          throw new ApiError(
+            503,
+            "COORDINATION_UNAVAILABLE",
+            "The private upload authorisation service is temporarily unavailable.",
+          );
+        }
+        if (!admission.allowed) {
+          const resetSeconds = Math.max(
+            1,
+            Math.ceil(admission.resetInMs / 1000),
+          );
+          response.set("Retry-After", String(resetSeconds));
+          return response.status(429).json({
+            ok: false,
+            code: "STORAGE_ADMISSION_EXHAUSTED",
+            message:
+              "The shared alpha storage budget for this period is exhausted. Try again after the reset time.",
+          });
+        }
       }
 
       const result = await objectStore.putEncryptedOriginal(upload);

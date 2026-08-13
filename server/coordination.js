@@ -28,8 +28,9 @@ const STORAGE_ADMISSION_SCRIPT = `
 local requested = tonumber(ARGV[1])
 local limit = tonumber(ARGV[2])
 local window = tonumber(ARGV[3])
+local existed = redis.call('EXISTS', KEYS[1])
 local current = redis.call('INCRBY', KEYS[1], requested)
-if current == requested then
+if existed == 0 then
   redis.call('PEXPIRE', KEYS[1], window)
 end
 local ttl = redis.call('PTTL', KEYS[1])
@@ -273,6 +274,23 @@ export function createRedisCoordinator(client, options = {}) {
         limitBytes: limit,
         remainingBytes: Math.max(0, limit - admittedBytes),
         resetInMs: ttlMs,
+      };
+    },
+
+    async readStorageAdmission({ scope = "global", limitBytes, windowMs }) {
+      const limit = positiveInteger(limitBytes, 0);
+      if (limit <= 0) {
+        throw new Error("A storage admission needs a positive budget.");
+      }
+      const key = storageAdmissionKey(scope);
+      const stored = await client.get(key);
+      const admittedBytes = Math.max(0, positiveInteger(stored, 0));
+      const ttlMs = await client.pTTL(key);
+      return {
+        admittedBytes,
+        limitBytes: limit,
+        remainingBytes: Math.max(0, limit - admittedBytes),
+        resetInMs: Number(ttlMs) > 0 ? Number(ttlMs) : windowMs,
       };
     },
 
@@ -605,6 +623,25 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
         limitBytes: limit,
         remainingBytes: Math.max(0, limit - entry.bytes),
         resetInMs: Math.max(1, entry.resetAt - timestamp),
+      };
+    },
+
+    async readStorageAdmission({ scope = "global", limitBytes, windowMs }) {
+      const limit = positiveInteger(limitBytes, 0);
+      if (limit <= 0) {
+        throw new Error("A storage admission needs a positive budget.");
+      }
+      const timestamp = now();
+      removeExpired(timestamp);
+      const entry = storageAdmissions.get(storageAdmissionKey(scope));
+      const admittedBytes = entry?.bytes ?? 0;
+      return {
+        admittedBytes,
+        limitBytes: limit,
+        remainingBytes: Math.max(0, limit - admittedBytes),
+        resetInMs: entry
+          ? Math.max(1, entry.resetAt - timestamp)
+          : Number(windowMs),
       };
     },
 

@@ -520,6 +520,7 @@ function SealingWorkbench({ onVerify }) {
       const nonce = await solveUploadChallenge({
         challengeId: challengePayload.challengeId,
         difficultyBits: challengePayload.difficultyBits,
+        expiresAt: challengePayload.expiresAt,
       });
 
       const grantResponse = await fetch("/api/storage/upload-grants", {

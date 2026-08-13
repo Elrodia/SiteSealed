@@ -854,8 +854,8 @@ test("no upload grant is issued without a solved single-use challenge", async ()
     nonce,
   });
   assert.equal(granted.response.status, 201);
-  assert.equal(granted.payload.admittedBytes, binding.byteLength);
   assert.ok(granted.payload.remainingBudgetBytes > 0);
+  assert.equal(granted.payload.admittedBytes, undefined);
 
   const replayed = await postUploadGrant({
     ...binding,
@@ -871,7 +871,7 @@ test("no upload grant is issued without a solved single-use challenge", async ()
   assert.equal(stored.status, 201);
 });
 
-test("the shared storage budget caps admitted ciphertext across every client", async () => {
+test("the shared storage budget caps stored ciphertext across every client", async () => {
   const budgetApp = createApp({
     recordStore: createMemoryRecordStore(),
     sealRateLimit: 100,
@@ -884,14 +884,35 @@ test("the shared storage budget caps admitted ciphertext across every client", a
   const target = `http://127.0.0.1:${budgetServer.address().port}`;
 
   try {
-    const first = await requestUploadGrant(validRequest(), { target });
-    assert.equal(first.response.status, 201);
-    assert.equal(first.payload.remainingBudgetBytes, 16);
+    const firstBody = validRequest();
+    const secondBody = validRequest();
 
-    const second = await requestUploadGrant(validRequest(), { target });
-    assert.equal(second.response.status, 429);
-    assert.equal(second.payload.code, "STORAGE_ADMISSION_EXHAUSTED");
-    assert.ok(Number(second.response.headers.get("retry-after")) > 0);
+    const first = await requestUploadGrant(firstBody, { target });
+    assert.equal(first.response.status, 201);
+    assert.equal(first.payload.remainingBudgetBytes, 48);
+
+    const second = await requestUploadGrant(secondBody, { target });
+    assert.equal(second.response.status, 201);
+    assert.equal(second.payload.remainingBudgetBytes, 48);
+
+    const stored = await uploadEncryptedOriginal(firstBody, {
+      grantId: first.payload.grantId,
+      target,
+    });
+    assert.equal(stored.status, 201);
+
+    const refused = await uploadEncryptedOriginal(secondBody, {
+      grantId: second.payload.grantId,
+      target,
+    });
+    assert.equal(refused.status, 429);
+    assert.equal((await refused.json()).code, "STORAGE_ADMISSION_EXHAUSTED");
+    assert.ok(Number(refused.headers.get("retry-after")) > 0);
+
+    const third = await requestUploadGrant(validRequest(), { target });
+    assert.equal(third.response.status, 429);
+    assert.equal(third.payload.code, "STORAGE_ADMISSION_EXHAUSTED");
+    assert.ok(Number(third.response.headers.get("retry-after")) > 0);
   } finally {
     await new Promise((resolve, reject) =>
       budgetServer.close((error) => (error ? reject(error) : resolve())),
