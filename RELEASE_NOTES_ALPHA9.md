@@ -16,6 +16,9 @@ d'auteur du fichier.
 - avant authentification, le véritable bouton Google officiel occupe la place
   de l'action principale du formulaire ; il est assorti au thème sombre et
   strictement borné, puis remplacé par l'action de scellement après connexion ;
+- le SDK et son bouton sont verrouillés sur l'anglais américain ; un nonce CSP
+  unique autorise uniquement les styles injectés par l'instance GIS chargée,
+  sans ouvrir globalement `style-src` à `unsafe-inline` ;
 - vérification serveur de l'ID token avec `google-auth-library` : signature,
   audience, émetteur, `sub` et e-mail vérifiée ;
 - double-submit CSRF sur le retour Google ;

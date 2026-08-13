@@ -747,6 +747,25 @@ test("the production server serves the React application, official brand assets 
   const homeHtml = await homeResponse.text();
   assert.match(homeHtml, /id="root"/);
   assert.match(homeHtml, /favicon\.svg\?v=20260812/);
+  assert.match(homeHtml, /<html lang="en-US">/);
+  const cspNonce = homeHtml.match(
+    /name="sitesealed-csp-nonce" content="([A-Za-z0-9_-]+)"/,
+  )?.[1];
+  assert.ok(cspNonce);
+  assert.ok(cspNonce.length >= 24);
+  assert.doesNotMatch(homeHtml, /__SITESEALED_CSP_NONCE__/);
+  assert.equal(homeResponse.headers.get("content-language"), "en-US");
+  const contentSecurityPolicy =
+    homeResponse.headers.get("content-security-policy") ?? "";
+  assert.match(
+    contentSecurityPolicy,
+    new RegExp(`script-src[^;]*'nonce-${cspNonce}'`),
+  );
+  assert.match(
+    contentSecurityPolicy,
+    new RegExp(`style-src[^;]*'nonce-${cspNonce}'`),
+  );
+  assert.doesNotMatch(contentSecurityPolicy, /unsafe-inline/);
   assert.equal(faviconResponse.status, 200);
   assert.match(faviconResponse.headers.get("content-type"), /image\/svg\+xml/);
   assert.match(faviconResponse.headers.get("cache-control"), /no-cache/);

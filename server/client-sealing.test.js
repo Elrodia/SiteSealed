@@ -249,10 +249,14 @@ test("the browser uses Google Identity Services and sends SiteSealed CSRF tokens
   );
   assert.match(source, /google\.accounts\.id\.renderButton/);
   assert.match(source, /ux_mode: "redirect"/);
+  assert.match(source, /gsi\/client\?hl=en/);
+  assert.match(source, /googleScript\.nonce = cspNonce/);
+  assert.match(source, /color_scheme: "dark"/);
   assert.match(source, /type: "standard"/);
   assert.match(source, /theme: "outline_dark"/);
   assert.match(source, /size: "large"/);
-  assert.doesNotMatch(source, /width: 240/);
+  assert.match(source, /width: 260/);
+  assert.match(source, /locale: "en_US"/);
   assert.match(
     source,
     /auth\.status === "ready" && auth\.configured && !auth\.authenticated[\s\S]*?<GoogleSignInControl auth=\{auth\} \/>/,
@@ -264,7 +268,7 @@ test("the browser uses Google Identity Services and sends SiteSealed CSRF tokens
   );
   assert.match(
     desktopStyles,
-    /\.google-signin-button\s*\{[^}]*min-width: 210px;[^}]*max-width: 260px;[^}]*height: 44px;[^}]*overflow: hidden;/s,
+    /\.google-signin-button\s*\{[^}]*width: 260px;[^}]*max-width: 260px;[^}]*height: 44px;[^}]*overflow: hidden;/s,
   );
   assert.doesNotMatch(desktopStyles, /img,\s*\nsvg\s*\{/);
   assert.match(source, /"x-sitesealed-csrf": auth\.csrfToken/);

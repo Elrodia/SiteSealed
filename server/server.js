@@ -2,8 +2,8 @@ import "./load-env.js";
 import compression from "compression";
 import express from "express";
 import helmet from "helmet";
-import { createHash, timingSafeEqual } from "node:crypto";
-import { existsSync } from "node:fs";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -417,6 +417,10 @@ export function createApp({
 
   app.set("trust proxy", 1);
   app.disable("x-powered-by");
+  app.use((_request, response, next) => {
+    response.locals.cspNonce = randomBytes(18).toString("base64url");
+    next();
+  });
   app.use(
     helmet({
       crossOriginResourcePolicy: { policy: "same-origin" },
@@ -424,8 +428,16 @@ export function createApp({
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
-          scriptSrc: ["'self'", "https://accounts.google.com/gsi/client"],
-          styleSrc: ["'self'", "https://accounts.google.com/gsi/style"],
+          scriptSrc: [
+            "'self'",
+            (_request, response) => `'nonce-${response.locals.cspNonce}'`,
+            "https://accounts.google.com/gsi/client",
+          ],
+          styleSrc: [
+            "'self'",
+            (_request, response) => `'nonce-${response.locals.cspNonce}'`,
+            "https://accounts.google.com/gsi/style",
+          ],
           imgSrc: ["'self'", "data:"],
           fontSrc: ["'self'"],
           connectSrc: ["'self'", "https://accounts.google.com/gsi/"],
@@ -1096,6 +1108,18 @@ export function createApp({
   });
 
   if (existsSync(indexFile)) {
+    const indexTemplate = readFileSync(indexFile, "utf8");
+    const sendClientIndex = (_request, response) => {
+      const cspNonce = String(response.locals.cspNonce ?? "");
+      response.set("Cache-Control", "no-cache");
+      response.set("Content-Language", "en-US");
+      response.type("html");
+      return response.send(
+        indexTemplate.replaceAll("__SITESEALED_CSP_NONCE__", cspNonce),
+      );
+    };
+
+    app.get("/index.html", sendClientIndex);
     app.use(
       express.static(clientDist, {
         index: false,
@@ -1118,8 +1142,7 @@ export function createApp({
       if (request.method !== "GET" && request.method !== "HEAD") {
         return next();
       }
-      response.set("Cache-Control", "no-cache");
-      return response.sendFile(indexFile);
+      return sendClientIndex(request, response);
     });
   } else {
     app.get("/", (_request, response) => {

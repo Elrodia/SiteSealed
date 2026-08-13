@@ -744,7 +744,7 @@
   }
 
   .google-signin-button {
-    width: fit-content;
+    width: min(260px, 100%);
     max-width: 100%;
     overflow: hidden;
   }

@@ -404,6 +404,7 @@ function recordIdFromPath() {
 function GoogleSignInControl({ auth }) {
   const buttonRef = useRef(null);
   const [buttonError, setButtonError] = useState("");
+  const [buttonReady, setButtonReady] = useState(false);
 
   useEffect(() => {
     if (
@@ -418,13 +419,38 @@ function GoogleSignInControl({ auth }) {
 
     let cancelled = false;
     let attempts = 0;
+    const cspNonce = document
+      .querySelector('meta[name="sitesealed-csp-nonce"]')
+      ?.getAttribute("content")
+      ?.trim();
+    let googleStyle = document.querySelector(
+      'link[data-sitesealed-google-identity-style="true"]',
+    );
+    if (!googleStyle) {
+      googleStyle = document.createElement("link");
+      googleStyle.rel = "stylesheet";
+      googleStyle.href = "https://accounts.google.com/gsi/style";
+      googleStyle.dataset.sitesealedGoogleIdentityStyle = "true";
+      googleStyle.addEventListener("error", () => {
+        if (!cancelled) {
+          setButtonError(
+            "Google sign-in styling could not be loaded. Check content blockers and retry.",
+          );
+        }
+      });
+      document.head.append(googleStyle);
+    }
     let googleScript = document.querySelector(
       'script[data-sitesealed-google-identity="true"]',
     );
     if (!googleScript) {
       googleScript = document.createElement("script");
-      googleScript.src = "https://accounts.google.com/gsi/client";
+      if (cspNonce && cspNonce !== "__SITESEALED_CSP_NONCE__") {
+        googleScript.nonce = cspNonce;
+      }
+      googleScript.src = "https://accounts.google.com/gsi/client?hl=en";
       googleScript.async = true;
+      googleScript.defer = true;
       googleScript.dataset.sitesealedGoogleIdentity = "true";
       googleScript.addEventListener("error", () => {
         if (!cancelled) {
@@ -445,6 +471,7 @@ function GoogleSignInControl({ auth }) {
           ux_mode: "redirect",
           auto_select: false,
           cancel_on_tap_outside: true,
+          color_scheme: "dark",
         });
         buttonRef.current.replaceChildren();
         window.google.accounts.id.renderButton(buttonRef.current, {
@@ -454,9 +481,11 @@ function GoogleSignInControl({ auth }) {
           shape: "rectangular",
           text: "continue_with",
           logo_alignment: "left",
-          locale: "en",
+          width: 260,
+          locale: "en_US",
         });
         setButtonError("");
+        setButtonReady(true);
         return true;
       } catch {
         setButtonError("Google sign-in could not be initialized in this browser.");
@@ -490,11 +519,19 @@ function GoogleSignInControl({ auth }) {
 
   return (
     <div className="google-signin-control">
-      <div
-        ref={buttonRef}
-        className="google-signin-button"
-        aria-label="Continue with Google"
-      />
+      <div className="google-signin-slot">
+        <div
+          ref={buttonRef}
+          className="google-signin-button"
+          aria-label="Continue with Google"
+          aria-busy={!buttonReady}
+        />
+        {!buttonReady && (
+          <span className="google-signin-button__loading">
+            {buttonError ? "Google sign-in unavailable" : "Loading secure sign-in…"}
+          </span>
+        )}
+      </div>
       {buttonError && <small role="alert">{buttonError}</small>}
     </div>
   );
