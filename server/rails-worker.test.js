@@ -508,3 +508,11 @@ test("operationalErrorMessage handles URLs without a path", () => {
   assert.match(result, /wss:\/\/mainnet\.infura\.io/, "host must be preserved");
   assert.ok(result.includes("/[redacted]"), "path must be appended");
 });
+
+test("operationalErrorMessage redacts query-only URLs", () => {
+  const msg = "Request failed: https://mainnet.infura.io?apiKey=SECRETKEY";
+  const result = operationalErrorMessage(new Error(msg));
+  assert.match(result, /https:\/\/mainnet\.infura\.io/, "host must be preserved");
+  assert.ok(!result.includes("SECRETKEY"), "API key in query must not appear");
+  assert.ok(result.includes("/[redacted]"), "redacted marker must be present");
+});
