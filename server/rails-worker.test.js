@@ -9,10 +9,12 @@ import {
   deriveEthereumRuntimeStatus,
   operationalErrorMessage,
   processAnchorQueue,
+  processStorageOrphans,
   processTimestampQueue,
 } from "./rails-worker.js";
 import { externalProofStatus, validateSealRequest } from "./records.js";
 import { createMemoryRecordStore } from "./specimen.js";
+import { createMemoryObjectStore, validateEncryptedUpload } from "./storage.js";
 
 function input() {
   return validateSealRequest({
@@ -71,6 +73,35 @@ function verifiedTimestampProof(evidenceDigest, overrides = {}) {
     ...overrides,
   };
 }
+
+test("the hourly worker reaps only expired unfinalized staging objects", async () => {
+  let timestamp = Date.parse("2026-08-13T10:00:00.000Z");
+  const objectStore = createMemoryObjectStore({ now: () => timestamp });
+  const body = Buffer.alloc(32, 7);
+  const upload = validateEncryptedUpload({
+    submissionId: "123e4567-e89b-42d3-a456-426614174000",
+    headers: {
+      "content-length": String(body.length),
+      "x-sitesealed-record-sha256": "a".repeat(64),
+      "x-sitesealed-cipher-sha256":
+        "4bb06f8e4e3a7715d201d573d0aa423762e55dabd61a2c02278fa56cc6d294e0",
+      "x-sitesealed-cipher-iv": Buffer.alloc(12, 3).toString("base64"),
+      "x-sitesealed-original-bytes": "16",
+      "x-sitesealed-recovery-token-sha256": "c".repeat(64),
+    },
+    body,
+  });
+  await objectStore.putStagedEncryptedOriginal(upload);
+  timestamp += 25 * 60 * 60 * 1000;
+  const result = await processStorageOrphans({
+    objectStore,
+    coordinator: createMemoryCoordinator({ now: () => timestamp }),
+    ttlMs: 24 * 60 * 60 * 1000,
+    now: () => timestamp,
+  });
+  assert.equal(result.status, "COMPLETED");
+  assert.equal(result.deleted, 1);
+});
 
 test("Evidency runtime becomes ON only after an externally returned token", () => {
   const now = () => new Date("2026-08-12T20:00:00.000Z");

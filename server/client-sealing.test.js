@@ -7,6 +7,7 @@ import {
   createEncryptedUploadHeaders,
   createRecoveryToken,
   createSealRequest,
+  createUploadGrantRequest,
   encryptManifest,
   encryptOriginal,
   recalculateEvidenceDigest,
@@ -95,11 +96,30 @@ test("the client encrypts the canonical manifest and keeps the key outside the A
     recordSha256: request.recordSha256,
     encryptedOriginal: encryptedFile,
     recoveryTokenSha256: recoveryToken.sha256,
+    uploadGrant: "grant-token",
   });
   assert.equal(headers["content-type"], "application/octet-stream");
   assert.equal(
     headers["x-sitesealed-cipher-sha256"],
     encryptedFile.envelope.ciphertextSha256,
+  );
+  assert.equal(headers["x-sitesealed-upload-grant"], "grant-token");
+  assert.deepEqual(
+    createUploadGrantRequest({
+      submissionId: request.submissionId,
+      recordSha256: request.recordSha256,
+      encryptedOriginal: encryptedFile,
+      recoveryTokenSha256: recoveryToken.sha256,
+    }),
+    {
+      submissionId: request.submissionId,
+      recordSha256: request.recordSha256,
+      ciphertextSha256: encryptedFile.envelope.ciphertextSha256,
+      ciphertextBytes: encryptedFile.envelope.ciphertextBytes,
+      plaintextBytes: encryptedFile.envelope.plaintextBytes,
+      iv: encryptedFile.envelope.iv,
+      recoveryTokenSha256: recoveryToken.sha256,
+    },
   );
   assert.equal(JSON.stringify(request).includes(recoveryToken.token), false);
 });

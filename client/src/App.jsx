@@ -6,6 +6,7 @@ import {
   createRecoveryToken,
   createRandomUuid,
   createSealRequest,
+  createUploadGrantRequest,
   encryptManifest,
   encryptOriginal,
   formatBytes,
@@ -404,9 +405,11 @@ function SealingWorkbench({ onVerify }) {
   const fileInputId = useId();
   const projectInputId = useId();
   const descriptionInputId = useId();
+  const depositAccessInputId = useId();
   const [file, setFile] = useState(null);
   const [projectReference, setProjectReference] = useState("");
   const [description, setDescription] = useState("");
+  const [depositAccess, setDepositAccess] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
   const [status, setStatus] = useState("idle");
   const [message, setMessage] = useState("");
@@ -448,6 +451,13 @@ function SealingWorkbench({ onVerify }) {
     if (!acknowledged) {
       setStatus("error");
       setMessage("Confirm that this is an imported file, not an attested live capture.");
+      return;
+    }
+    if (new TextEncoder().encode(depositAccess.trim()).length < 32) {
+      setStatus("error");
+      setMessage(
+        "Enter the controlled-alpha deposit access code supplied by the operator.",
+      );
       return;
     }
 
@@ -496,38 +506,81 @@ function SealingWorkbench({ onVerify }) {
         recoveryToken,
       } = attempt;
 
-      setStatus("uploading");
-      const uploadResponse = await fetch(
-        `/api/storage/uploads/${encodeURIComponent(activeSubmissionId)}`,
-        {
-          method: "PUT",
-          headers: createEncryptedUploadHeaders({
-            recordSha256,
-            encryptedOriginal,
-            recoveryTokenSha256: recoveryToken.sha256,
-          }),
-          body: encryptedOriginal.ciphertext,
-        },
-      );
-      const uploadPayload = await readApiJson(uploadResponse);
-      if (!uploadResponse.ok) {
-        throw new Error(
-          uploadPayload.message || "The encrypted original could not be stored.",
+      let encryptedObject = attempt.encryptedObject;
+      if (!encryptedObject) {
+        if (!attempt.uploadGrant) {
+          setStatus("authorizing");
+          const grantResponse = await fetch("/api/storage/upload-grants", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-sitesealed-deposit-access": depositAccess.trim(),
+            },
+            body: JSON.stringify(
+              createUploadGrantRequest({
+                submissionId: activeSubmissionId,
+                recordSha256,
+                encryptedOriginal,
+                recoveryTokenSha256: recoveryToken.sha256,
+              }),
+            ),
+          });
+          const grantPayload = await readApiJson(grantResponse);
+          if (!grantResponse.ok) {
+            throw new Error(
+              grantPayload.message || "The encrypted deposit was not authorized.",
+            );
+          }
+          attempt.uploadGrant = grantPayload.grant;
+        }
+
+        setStatus("uploading");
+        const uploadResponse = await fetch(
+          `/api/storage/uploads/${encodeURIComponent(activeSubmissionId)}`,
+          {
+            method: "PUT",
+            headers: createEncryptedUploadHeaders({
+              recordSha256,
+              encryptedOriginal,
+              recoveryTokenSha256: recoveryToken.sha256,
+              uploadGrant: attempt.uploadGrant,
+            }),
+            body: encryptedOriginal.ciphertext,
+          },
         );
+        const uploadPayload = await readApiJson(uploadResponse);
+        if (!uploadResponse.ok) {
+          if (
+            [
+              "UPLOAD_GRANT_REJECTED",
+              "UPLOAD_GRANT_CLAIM_EXPIRED",
+            ].includes(uploadPayload.code)
+          ) {
+            attempt.uploadGrant = null;
+          }
+          throw new Error(
+            uploadPayload.message || "The encrypted original could not be stored.",
+          );
+        }
+        encryptedObject = uploadPayload.encryptedObject;
+        attempt.encryptedObject = encryptedObject;
       }
 
       const requestBody = createSealRequest({
         recordSha256,
         manifestSha256: encrypted.manifestSha256,
         envelope: encrypted.envelope,
-        encryptedObject: uploadPayload.encryptedObject,
+        encryptedObject,
         submissionId: activeSubmissionId,
       });
 
       setStatus("recording");
       const response = await fetch("/api/records", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-sitesealed-upload-grant": attempt.uploadGrant,
+        },
         body: JSON.stringify(requestBody),
       });
       const payload = await readApiJson(response);
@@ -537,7 +590,7 @@ function SealingWorkbench({ onVerify }) {
         manifest,
         envelope: encrypted.envelope,
         recoveryKey: encrypted.recoveryKey,
-        encryptedObject: uploadPayload.encryptedObject,
+        encryptedObject,
         recoveryToken: recoveryToken.token,
         serverResponse: payload,
       });
@@ -587,6 +640,7 @@ function SealingWorkbench({ onVerify }) {
   const progressLabel = {
     hashing: "Hashing the file locally...",
     encrypting: "Encrypting the manifest and original locally...",
+    authorizing: "Requesting a one-time, object-bound deposit grant...",
     uploading: "Sending only encrypted ciphertext to the private Bucket...",
     recording: "Binding the MySQL receipt and PostgreSQL audit event...",
   }[status];
@@ -653,6 +707,17 @@ function SealingWorkbench({ onVerify }) {
               onChange={(event) => setDescription(event.target.value)}
               placeholder="Optional context kept inside the encrypted manifest"
             />
+            <label htmlFor={depositAccessInputId}>Deposit access <span>not stored</span></label>
+            <input
+              id={depositAccessInputId}
+              type="password"
+              autoComplete="off"
+              minLength="32"
+              maxLength="256"
+              value={depositAccess}
+              onChange={(event) => setDepositAccess(event.target.value)}
+              placeholder="Controlled-alpha access code"
+            />
           </div>
         </div>
 
@@ -672,17 +737,17 @@ function SealingWorkbench({ onVerify }) {
           <button
             className="button button--amber"
             type="submit"
-            disabled={["hashing", "encrypting", "uploading", "recording"].includes(status)}
+            disabled={["hashing", "encrypting", "authorizing", "uploading", "recording"].includes(status)}
           >
             {progressLabel || "Hash, encrypt and record"}
             {!progressLabel && <Icon name="arrow" size={17} />}
           </button>
-          <p>Anonymous v1.4 alpha limit: 20 receipts per IP and hour, coordinated through Redis.</p>
+          <p>Controlled alpha: access code, exact-object grant, 20 receipts per IP/hour and a global Redis storage ceiling.</p>
         </div>
       </form>
 
       <div className="seal-response" aria-live="polite">
-        {["hashing", "encrypting", "uploading", "recording"].includes(status) && (
+        {["hashing", "encrypting", "authorizing", "uploading", "recording"].includes(status) && (
           <div className="seal-progress">
             <span /><span /><span />
             <p>{progressLabel}</p>
@@ -1306,7 +1371,7 @@ function InfrastructureStatus() {
     <div className="infrastructure-status" aria-live="polite">
       <div className="infrastructure-status__heading">
         <div>
-          <span>V1.4 ALPHA.7.1 / SIX RUNTIME ROLES</span>
+          <span>V1.4 ALPHA.8 / SIX RUNTIME ROLES</span>
           <strong>Private storage, internal audit and two external proof rails.</strong>
         </div>
         <small className={failed ? "is-error" : health ? "is-online" : ""}>
@@ -1705,7 +1770,7 @@ function App() {
             </div>
             <div>
               <strong>Status</strong>
-              <span>Genesis v1.4 alpha.7.1 MVP</span>
+              <span>Genesis v1.4 alpha.8 controlled-storage MVP</span>
               <span>Evidency sandbox test rail</span>
               <span>Ethereum mainnet final rail</span>
             </div>

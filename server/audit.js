@@ -129,7 +129,7 @@ export function createPostgresPool(config) {
     max: config.connectionLimit,
     connectionTimeoutMillis: 8_000,
     idleTimeoutMillis: 30_000,
-    application_name: "sitesealed-v1.4-alpha.7.1",
+    application_name: "sitesealed-v1.4-alpha.8",
   });
   pool.on("error", (error) => {
     console.error(`PostgreSQL pool error: ${error.message}`);

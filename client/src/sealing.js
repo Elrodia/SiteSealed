@@ -283,9 +283,11 @@ export function createEncryptedUploadHeaders({
   recordSha256,
   encryptedOriginal,
   recoveryTokenSha256,
+  uploadGrant,
 }) {
   return {
     "content-type": "application/octet-stream",
+    "x-sitesealed-upload-grant": uploadGrant,
     "x-sitesealed-record-sha256": recordSha256,
     "x-sitesealed-cipher-sha256": encryptedOriginal.envelope.ciphertextSha256,
     "x-sitesealed-cipher-iv": encryptedOriginal.envelope.iv,
@@ -293,6 +295,23 @@ export function createEncryptedUploadHeaders({
       encryptedOriginal.envelope.plaintextBytes,
     ),
     "x-sitesealed-recovery-token-sha256": recoveryTokenSha256,
+  };
+}
+
+export function createUploadGrantRequest({
+  submissionId,
+  recordSha256,
+  encryptedOriginal,
+  recoveryTokenSha256,
+}) {
+  return {
+    submissionId,
+    recordSha256,
+    ciphertextSha256: encryptedOriginal.envelope.ciphertextSha256,
+    ciphertextBytes: encryptedOriginal.envelope.ciphertextBytes,
+    plaintextBytes: encryptedOriginal.envelope.plaintextBytes,
+    iv: encryptedOriginal.envelope.iv,
+    recoveryTokenSha256,
   };
 }
 

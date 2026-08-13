@@ -11,6 +11,10 @@ import {
   createPostgresAuditStoreFromEnv,
 } from "./audit.js";
 import {
+  requireUploadAdmission,
+  resolveUploadAdmissionConfig,
+} from "./admission.js";
+import {
   createMemoryCoordinator,
   createRedisCoordinatorFromEnv,
 } from "./coordination.js";
@@ -39,6 +43,8 @@ import {
   createMemoryObjectStore,
   createS3ObjectStoreFromEnv,
   validateEncryptedUpload,
+  validateEncryptedUploadHeaders,
+  validateUploadGrantRequest,
 } from "./storage.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -141,7 +147,7 @@ export function createSealRateLimiter({
       return response.status(429).json({
         ok: false,
         code: "SEAL_RATE_LIMITED",
-        message: "The anonymous sealing limit has been reached. Try again after the reset time.",
+        message: "The controlled-alpha request limit has been reached. Try again after the reset time.",
       });
     } catch (error) {
       console.error(`Distributed rate limiter failed: ${error.message}`);
@@ -221,6 +227,9 @@ export function createApp({
   timestampService = createDisabledTimestampService(),
   ethereumRail = createDisabledEthereumRail(),
   sealRateLimit = positiveInteger(process.env.SEAL_RATE_LIMIT_PER_HOUR, 20),
+  uploadAdmission = resolveUploadAdmissionConfig({
+    DATABASE_MODE: "optional",
+  }),
 } = {}) {
   const app = express();
 
@@ -244,7 +253,7 @@ export function createApp({
         certificateChainVerification: "NOT_YET_VERIFIED",
         validatorVersion: RFC3161_VALIDATOR_VERSION,
         message:
-          "A fresh alpha.7.1 worker result is required before Evidency can be shown as operational.",
+          "A fresh alpha.8 worker result is required before Evidency can be shown as operational.",
       };
     }
     return shared;
@@ -294,7 +303,7 @@ export function createApp({
         onChainBindingVerified: false,
         finalityVerified: false,
         message:
-          "A fresh alpha.7.1 worker result with a verified transaction binding and finalized block is required.",
+          "A fresh alpha.8 worker result with a verified transaction binding and finalized block is required.",
       };
     }
     return shared;
@@ -381,7 +390,7 @@ export function createApp({
     response.status(200).json({
       ok: true,
       service: "sitesealed",
-      version: "1.4.0-alpha.7.1",
+      version: "1.4.0-alpha.8",
       sealing: {
         workflow: "IMPORTED_FILE_CLIENT_ENCRYPTED_STORAGE_RECEIPT",
         clientEncryptedObjectStorage: true,
@@ -410,6 +419,13 @@ export function createApp({
                 ? "ETHEREUM_MAINNET_READY"
                 : false,
         finalSealedStatusEnabled: false,
+        uploadAdmission: {
+          mode: "CONTROLLED_ALPHA_ACCESS_SECRET",
+          configured: Boolean(uploadAdmission?.configured),
+          oneTimeGrants: true,
+          preBodyClaim: true,
+          dailyLimitMiB: uploadAdmission?.dailyLimitMiB ?? null,
+        },
       },
       database,
       objectStorage,
@@ -420,18 +436,38 @@ export function createApp({
     });
   });
 
-  app.put(
-    "/api/storage/uploads/:submissionId",
+  app.post(
+    "/api/storage/upload-grants",
     createSealRateLimiter({
       coordinator,
-      scope: "encrypted-upload",
+      scope: "upload-grant",
       limit: sealRateLimit,
     }),
-    express.raw({
-      type: "application/octet-stream",
-      limit: MAX_ENCRYPTED_ORIGINAL_BYTES,
-    }),
     async (request, response) => {
+      requireUploadAdmission(
+        uploadAdmission,
+        request.get("x-sitesealed-deposit-access"),
+      );
+      const binding = validateUploadGrantRequest(request.body);
+      const issued = await coordinator.issueUploadGrant(binding, {
+        ttlMs: uploadAdmission.grantTtlMs,
+      });
+      return response.status(201).json({
+        ok: true,
+        status: "UPLOAD_GRANT_ISSUED",
+        grant: issued.grant,
+        expiresAt: issued.expiresAt,
+        binding: {
+          submissionId: binding.submissionId,
+          ciphertextSha256: binding.ciphertextSha256,
+          ciphertextBytes: binding.ciphertextBytes,
+        },
+      });
+    },
+  );
+
+  const claimEncryptedUpload = async (request, response, next) => {
+    try {
       if (!request.is("application/octet-stream")) {
         throw new ApiError(
           415,
@@ -439,25 +475,133 @@ export function createApp({
           "Encrypted originals must use application/octet-stream.",
         );
       }
-      const upload = validateEncryptedUpload({
+      const binding = validateEncryptedUploadHeaders({
         submissionId: request.params.submissionId,
         headers: request.headers,
-        body: request.body,
       });
-      const result = await objectStore.putEncryptedOriginal(upload);
-      return response.status(result.created ? 201 : 200).json({
-        ok: true,
-        created: result.created,
-        status: result.created
-          ? "ENCRYPTED_ORIGINAL_STORED"
-          : "ENCRYPTED_ORIGINAL_REUSED",
-        encryptedObject: result.descriptor,
-        storage: {
-          mode: objectStore.mode,
-          persistent: Boolean(objectStore.persistent),
-          plaintextReceived: false,
+      const claim = await coordinator.claimUploadGrant(
+        request.get("x-sitesealed-upload-grant"),
+        binding,
+        {
+          budgetLimitBytes: uploadAdmission.dailyLimitBytes,
+          budgetWindowMs: uploadAdmission.budgetWindowMs,
         },
-      });
+      );
+      if (claim.state === "rejected") {
+        throw new ApiError(
+          403,
+          "UPLOAD_GRANT_REJECTED",
+          "The upload grant is unknown, expired, or does not match this exact encrypted object.",
+        );
+      }
+      if (claim.state === "in_progress") {
+        throw new ApiError(
+          409,
+          "UPLOAD_GRANT_IN_PROGRESS",
+          "This one-time upload grant is already being used.",
+        );
+      }
+      if (claim.state === "exhausted") {
+        const resetSeconds = Math.max(
+          1,
+          Math.ceil(claim.resetInMs / 1000),
+        );
+        response.set("Retry-After", String(resetSeconds));
+        return response.status(429).json({
+          ok: false,
+          code: "STORAGE_ADMISSION_EXHAUSTED",
+          message:
+            "The operator's global encrypted-storage admission budget is exhausted for this 24-hour window.",
+        });
+      }
+      if (claim.state === "completed") {
+        return response.status(200).json({
+          ok: true,
+          created: false,
+          status: "ENCRYPTED_ORIGINAL_REUSED",
+          encryptedObject: claim.descriptor,
+          storage: {
+            mode: objectStore.mode,
+            persistent: Boolean(objectStore.persistent),
+            plaintextReceived: false,
+            staged: true,
+          },
+        });
+      }
+      request.uploadGrantClaim = claim;
+      request.uploadBinding = binding;
+      return next();
+    } catch (error) {
+      return next(error);
+    }
+  };
+
+  const encryptedUploadParser = express.raw({
+    type: "application/octet-stream",
+    limit: MAX_ENCRYPTED_ORIGINAL_BYTES,
+  });
+
+  app.put(
+    "/api/storage/uploads/:submissionId",
+    createSealRateLimiter({
+      coordinator,
+      scope: "encrypted-upload",
+      limit: sealRateLimit,
+    }),
+    claimEncryptedUpload,
+    encryptedUploadParser,
+    async (error, request, _response, next) => {
+      if (request.uploadGrantClaim) {
+        await request.uploadGrantClaim.release().catch((releaseError) =>
+          console.error(
+            `Upload claim release after parser failure failed: ${releaseError.message}`,
+          ),
+        );
+      }
+      return next(error);
+    },
+    async (request, response, next) => {
+      let completed = false;
+      try {
+        const upload = validateEncryptedUpload({
+          submissionId: request.params.submissionId,
+          headers: request.headers,
+          body: request.body,
+        });
+        const result = await objectStore.putStagedEncryptedOriginal(upload);
+        completed = await request.uploadGrantClaim.complete(result.descriptor);
+        if (!completed) {
+          throw new ApiError(
+            409,
+            "UPLOAD_GRANT_CLAIM_EXPIRED",
+            "The one-time upload grant expired before storage completion. Request a new grant and retry the upload.",
+          );
+        }
+        return response.status(result.created ? 201 : 200).json({
+          ok: true,
+          created: result.created,
+          status: result.created
+            ? "ENCRYPTED_ORIGINAL_STAGED"
+            : "ENCRYPTED_ORIGINAL_REUSED",
+          encryptedObject: result.descriptor,
+          storage: {
+            mode: objectStore.mode,
+            persistent: Boolean(objectStore.persistent),
+            plaintextReceived: false,
+            staged: Boolean(result.staged),
+          },
+        });
+      } catch (error) {
+        return next(error);
+      } finally {
+        if (!completed && request.uploadGrantClaim) {
+          await request.uploadGrantClaim.release().catch((releaseError) =>
+            console.error(
+              `Upload claim release failed: ${releaseError.message}`,
+            ),
+          );
+        }
+      }
     },
   );
 
@@ -470,6 +614,41 @@ export function createApp({
     }),
     async (request, response) => {
       const input = validateSealRequest(request.body);
+      const completedUpload = await coordinator.claimUploadGrant(
+        request.get("x-sitesealed-upload-grant"),
+        validateUploadGrantRequest({
+          submissionId: input.submissionId,
+          recordSha256: input.recordSha256,
+          ciphertextSha256: input.encryptedObject.ciphertextSha256,
+          ciphertextBytes: input.encryptedObject.ciphertextBytes,
+          plaintextBytes: input.encryptedObject.plaintextBytes,
+          iv: input.encryptedObject.iv,
+          recoveryTokenSha256:
+            input.encryptedObject.recoveryTokenSha256,
+        }),
+        {
+          budgetLimitBytes: uploadAdmission.dailyLimitBytes,
+          budgetWindowMs: uploadAdmission.budgetWindowMs,
+        },
+      );
+      if (completedUpload.state === "in_progress") {
+        throw new ApiError(
+          409,
+          "UPLOAD_NOT_COMPLETED",
+          "The encrypted-original upload is still in progress.",
+        );
+      }
+      if (
+        completedUpload.state !== "completed" ||
+        JSON.stringify(completedUpload.descriptor) !==
+          JSON.stringify(input.encryptedObject)
+      ) {
+        throw new ApiError(
+          403,
+          "COMPLETED_UPLOAD_GRANT_REQUIRED",
+          "Receipt creation requires the same completed, exact-object upload grant.",
+        );
+      }
       let releaseLock;
       try {
         releaseLock = await coordinator.acquireSubmissionLock(
@@ -492,7 +671,7 @@ export function createApp({
       }
 
       try {
-        await objectStore.assertStored(input.encryptedObject, input);
+        await objectStore.promoteEncryptedOriginal(input.encryptedObject, input);
         const result = await recordStore.create({
           ...input,
           storageProvider:
@@ -517,6 +696,13 @@ export function createApp({
           .catch((error) =>
             console.error(
               `Redis verification cache write failed: ${error.message}`,
+            ),
+          );
+        await objectStore
+          .discardStagedEncryptedOriginal(input.encryptedObject, input)
+          .catch((error) =>
+            console.error(
+              `Staged encrypted-original cleanup deferred: ${error.message}`,
             ),
           );
 
@@ -810,7 +996,9 @@ export async function startServer() {
   let coordinator;
   let timestampService;
   let ethereumRail;
+  let uploadAdmission;
   try {
+    uploadAdmission = resolveUploadAdmissionConfig(process.env);
     recordStore =
       (await createMysqlRecordStoreFromEnv(process.env)) ??
       createMemoryRecordStore();
@@ -843,10 +1031,11 @@ export async function startServer() {
     coordinator,
     timestampService,
     ethereumRail,
+    uploadAdmission,
   });
   const server = app.listen(port, host, () => {
     console.log(
-      `SiteSealed v1.4-alpha.7.1 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
+      `SiteSealed v1.4-alpha.8 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
     );
   });
 

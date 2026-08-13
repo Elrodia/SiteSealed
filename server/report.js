@@ -97,7 +97,7 @@ function qualifiedProofCopy(record) {
       state: verified ? "SANDBOX / VERIFIED" : "SANDBOX TOKEN",
       description: verified
         ? "CMS signature and path to the pinned sandbox root verified. Revocation not checked; no qualified eIDAS effect."
-        : "Independent alpha.7.1 verification unavailable. Sandbox only; no qualified eIDAS effect.",
+        : "Independent alpha.8 verification unavailable. Sandbox only; no qualified eIDAS effect.",
     };
   }
   return {
@@ -146,7 +146,7 @@ export function renderReceiptPdf(record, { baseUrl }) {
         Title: `SiteSealed dual-rail alpha receipt ${record.recordId}`,
         Author: "The SiteSealed Project",
         Subject: "Dual-rail alpha receipt - sandbox timestamp is not legally qualified",
-        Creator: "SiteSealed v1.4-alpha.7.1",
+        Creator: "SiteSealed v1.4-alpha.8",
       },
       compress: true,
     });
@@ -176,7 +176,7 @@ export function renderReceiptPdf(record, { baseUrl }) {
       .font("Helvetica")
       .fontSize(7.3)
       .fillColor("#B9C6CF")
-      .text(`SiteSealed v1.4-alpha.7.1 | ${record.recordId}`, 88, 49);
+      .text(`SiteSealed v1.4-alpha.8 | ${record.recordId}`, 88, 49);
     doc
       .roundedRect(454, 25, 118, 31, 4)
       .lineWidth(1)

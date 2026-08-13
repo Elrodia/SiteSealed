@@ -1,4 +1,9 @@
-import { createHash, randomUUID } from "node:crypto";
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import { createClient } from "redis";
 
 const KEY_PREFIX = "sitesealed:v1.4";
@@ -20,6 +25,71 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then
   return redis.call('DEL', KEYS[1])
 end
 return 0
+`;
+const CLAIM_UPLOAD_GRANT_SCRIPT = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then
+  return {'REJECTED'}
+end
+local entry = cjson.decode(raw)
+if entry.secretDigest ~= ARGV[1] or entry.bindingDigest ~= ARGV[2] then
+  return {'REJECTED'}
+end
+if entry.state == 'completed' then
+  return {'COMPLETED', cjson.encode(entry.descriptor)}
+end
+if entry.state == 'claimed' then
+  return {'IN_PROGRESS'}
+end
+local bytes = tonumber(ARGV[4])
+local limit = tonumber(ARGV[5])
+local total = tonumber(redis.call('GET', KEYS[2]) or '0')
+if not entry.budgetDebited then
+  if total + bytes > limit then
+    local budgetTtl = redis.call('PTTL', KEYS[2])
+    if budgetTtl < 1 then budgetTtl = tonumber(ARGV[6]) end
+    return {'EXHAUSTED', tostring(budgetTtl), tostring(total)}
+  end
+  total = redis.call('INCRBY', KEYS[2], bytes)
+  local budgetTtl = redis.call('PTTL', KEYS[2])
+  if budgetTtl < 0 then
+    redis.call('PEXPIRE', KEYS[2], ARGV[6])
+  end
+  entry.budgetDebited = true
+end
+entry.state = 'claimed'
+entry.claimToken = ARGV[3]
+local grantTtl = redis.call('PTTL', KEYS[1])
+if grantTtl < 1 then
+  return {'REJECTED'}
+end
+redis.call('SET', KEYS[1], cjson.encode(entry), 'PX', grantTtl)
+return {'CLAIMED', tostring(math.max(0, limit - total))}
+`;
+const COMPLETE_UPLOAD_GRANT_SCRIPT = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return 0 end
+local entry = cjson.decode(raw)
+if entry.state ~= 'claimed' or entry.claimToken ~= ARGV[1] then return 0 end
+entry.state = 'completed'
+entry.descriptor = cjson.decode(ARGV[2])
+entry.claimToken = nil
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl < 1 then return 0 end
+redis.call('SET', KEYS[1], cjson.encode(entry), 'PX', ttl)
+return 1
+`;
+const RELEASE_UPLOAD_GRANT_SCRIPT = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return 0 end
+local entry = cjson.decode(raw)
+if entry.state ~= 'claimed' or entry.claimToken ~= ARGV[1] then return 0 end
+entry.state = 'ready'
+entry.claimToken = nil
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl < 1 then return 0 end
+redis.call('SET', KEYS[1], cjson.encode(entry), 'PX', ttl)
+return 1
 `;
 
 function dependencyMode(environment) {
@@ -64,6 +134,46 @@ function jobLockKey(name) {
 function railStatusKey(name) {
   const safeName = String(name ?? "rail").replace(/[^a-z0-9:_-]/gi, "_");
   return `${KEY_PREFIX}:runtime-rail:${safeName}`;
+}
+
+function uploadGrantKey(grantId) {
+  return `${KEY_PREFIX}:upload-grant:${grantId}`;
+}
+
+function storageAdmissionKey() {
+  return `${KEY_PREFIX}:storage-admission:global`;
+}
+
+function uploadBindingDigest(binding) {
+  return createHash("sha256")
+    .update(`${KEY_PREFIX}:upload-binding\0`)
+    .update(JSON.stringify(binding))
+    .digest("hex");
+}
+
+function uploadGrantSecretDigest(grantId, secret) {
+  return createHash("sha256")
+    .update(`${KEY_PREFIX}:upload-grant-secret:${grantId}\0`)
+    .update(secret)
+    .digest("hex");
+}
+
+function parseUploadGrant(value) {
+  const token = String(value ?? "").trim();
+  const match = token.match(
+    /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.([A-Za-z0-9_-]{43})$/,
+  );
+  return match ? { grantId: match[1], secret: match[2] } : null;
+}
+
+function safeHexEqual(left, right) {
+  const leftBytes = Buffer.from(String(left ?? ""), "hex");
+  const rightBytes = Buffer.from(String(right ?? ""), "hex");
+  return (
+    leftBytes.length === 32 &&
+    rightBytes.length === 32 &&
+    timingSafeEqual(leftBytes, rightBytes)
+  );
 }
 
 function serializeRailStatus(status) {
@@ -115,6 +225,7 @@ export function createRedisCoordinator(client, options = {}) {
     options.verificationCacheTtlMs,
     60_000,
   );
+  const now = typeof options.now === "function" ? options.now : Date.now;
 
   return {
     mode: "redis",
@@ -135,6 +246,105 @@ export function createRedisCoordinator(client, options = {}) {
         limit,
         remaining: Math.max(0, limit - count),
         resetInMs: ttlMs,
+      };
+    },
+
+    async issueUploadGrant(binding, { ttlMs = 15 * 60 * 1000 } = {}) {
+      const normalizedTtlMs = positiveInteger(ttlMs, 15 * 60 * 1000);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const grantId = randomUUID();
+        const secret = randomBytes(32).toString("base64url");
+        const entry = {
+          state: "ready",
+          secretDigest: uploadGrantSecretDigest(grantId, secret),
+          bindingDigest: uploadBindingDigest(binding),
+          binding: structuredClone(binding),
+          budgetDebited: false,
+        };
+        const stored = await client.set(
+          uploadGrantKey(grantId),
+          JSON.stringify(entry),
+          { NX: true, PX: normalizedTtlMs },
+        );
+        if (stored === "OK") {
+          return {
+            grant: `${grantId}.${secret}`,
+            expiresAt: new Date(now() + normalizedTtlMs).toISOString(),
+          };
+        }
+      }
+      throw new Error("Could not allocate a unique upload grant identifier.");
+    },
+
+    async claimUploadGrant(
+      grant,
+      binding,
+      {
+        budgetLimitBytes,
+        budgetWindowMs = 24 * 60 * 60 * 1000,
+      } = {},
+    ) {
+      const parsed = parseUploadGrant(grant);
+      if (!parsed) return { state: "rejected" };
+      const claimToken = randomUUID();
+      const normalizedBudgetLimitBytes = positiveInteger(
+        budgetLimitBytes,
+        2 * 1024 * 1024 * 1024,
+      );
+      const result = await client.eval(CLAIM_UPLOAD_GRANT_SCRIPT, {
+        keys: [uploadGrantKey(parsed.grantId), storageAdmissionKey()],
+        arguments: [
+          uploadGrantSecretDigest(parsed.grantId, parsed.secret),
+          uploadBindingDigest(binding),
+          claimToken,
+          String(binding.ciphertextBytes),
+          String(normalizedBudgetLimitBytes),
+          String(positiveInteger(budgetWindowMs, 24 * 60 * 60 * 1000)),
+        ],
+      });
+      const state = String(result?.[0] ?? "REJECTED");
+      if (state === "REJECTED") return { state: "rejected" };
+      if (state === "IN_PROGRESS") return { state: "in_progress" };
+      if (state === "EXHAUSTED") {
+        return {
+          state: "exhausted",
+          resetInMs: Math.max(1, Number(result?.[1] ?? budgetWindowMs)),
+          usedBytes: Math.max(0, Number(result?.[2] ?? 0)),
+        };
+      }
+      if (state === "COMPLETED") {
+        return {
+          state: "completed",
+          descriptor: JSON.parse(String(result?.[1] ?? "null")),
+        };
+      }
+      if (state !== "CLAIMED") {
+        throw new Error(`Unexpected Redis upload grant state: ${state}.`);
+      }
+
+      let settled = false;
+      return {
+        state: "claimed",
+        binding: structuredClone(binding),
+        admissionRemainingBytes: Math.max(0, Number(result?.[1] ?? 0)),
+        async complete(descriptor) {
+          if (settled) return false;
+          const completed = await client.eval(COMPLETE_UPLOAD_GRANT_SCRIPT, {
+            keys: [uploadGrantKey(parsed.grantId)],
+            arguments: [claimToken, JSON.stringify(descriptor)],
+          });
+          if (Number(completed) === 1) settled = true;
+          return Number(completed) === 1;
+        },
+        async release() {
+          if (settled) return false;
+          const released = await client.eval(RELEASE_UPLOAD_GRANT_SCRIPT, {
+            keys: [uploadGrantKey(parsed.grantId)],
+            arguments: [claimToken],
+          });
+          if (Number(released) === 1) settled = true;
+          return Number(released) === 1;
+        },
       };
     },
 
@@ -231,6 +441,8 @@ export function createRedisCoordinator(client, options = {}) {
         authoritative: false,
         distributed: true,
         rateLimiting: true,
+        uploadGrants: true,
+        boundedStorageAdmission: true,
         verificationCache: true,
         runtimeRailStatus: true,
       };
@@ -248,6 +460,8 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
   const cachedRecords = new Map();
   const locks = new Map();
   const railStatuses = new Map();
+  const uploadGrants = new Map();
+  let storageAdmission = null;
 
   function removeExpired(timestamp) {
     for (const [key, entry] of rateLimits) {
@@ -262,6 +476,10 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
     for (const [key, entry] of railStatuses) {
       if (entry.expiresAt <= timestamp) railStatuses.delete(key);
     }
+    for (const [key, entry] of uploadGrants) {
+      if (entry.expiresAt <= timestamp) uploadGrants.delete(key);
+    }
+    if (storageAdmission?.resetAt <= timestamp) storageAdmission = null;
   }
 
   return {
@@ -286,6 +504,132 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
         limit,
         remaining: Math.max(0, limit - entry.count),
         resetInMs: Math.max(1, entry.resetAt - timestamp),
+      };
+    },
+
+    async issueUploadGrant(binding, { ttlMs = 15 * 60 * 1000 } = {}) {
+      const timestamp = now();
+      removeExpired(timestamp);
+      const normalizedTtlMs = positiveInteger(ttlMs, 15 * 60 * 1000);
+      const grantId = randomUUID();
+      const secret = randomBytes(32).toString("base64url");
+      uploadGrants.set(uploadGrantKey(grantId), {
+        state: "ready",
+        secretDigest: uploadGrantSecretDigest(grantId, secret),
+        bindingDigest: uploadBindingDigest(binding),
+        binding: structuredClone(binding),
+        budgetDebited: false,
+        expiresAt: timestamp + normalizedTtlMs,
+      });
+      return {
+        grant: `${grantId}.${secret}`,
+        expiresAt: new Date(timestamp + normalizedTtlMs).toISOString(),
+      };
+    },
+
+    async claimUploadGrant(
+      grant,
+      binding,
+      {
+        budgetLimitBytes = 2 * 1024 * 1024 * 1024,
+        budgetWindowMs = 24 * 60 * 60 * 1000,
+      } = {},
+    ) {
+      const timestamp = now();
+      removeExpired(timestamp);
+      const parsed = parseUploadGrant(grant);
+      if (!parsed) return { state: "rejected" };
+      const key = uploadGrantKey(parsed.grantId);
+      const entry = uploadGrants.get(key);
+      const suppliedSecretDigest = uploadGrantSecretDigest(
+        parsed.grantId,
+        parsed.secret,
+      );
+      if (
+        !entry ||
+        !safeHexEqual(entry.secretDigest, suppliedSecretDigest) ||
+        !safeHexEqual(entry.bindingDigest, uploadBindingDigest(binding))
+      ) {
+        return { state: "rejected" };
+      }
+      if (entry.state === "completed") {
+        return {
+          state: "completed",
+          descriptor: structuredClone(entry.descriptor),
+        };
+      }
+      if (entry.state === "claimed") {
+        return { state: "in_progress" };
+      }
+
+      const normalizedBudgetLimitBytes = positiveInteger(
+        budgetLimitBytes,
+        2 * 1024 * 1024 * 1024,
+      );
+      const normalizedBudgetWindowMs = positiveInteger(
+        budgetWindowMs,
+        24 * 60 * 60 * 1000,
+      );
+      storageAdmission ??= {
+        usedBytes: 0,
+        resetAt: timestamp + normalizedBudgetWindowMs,
+      };
+      if (
+        !entry.budgetDebited &&
+        storageAdmission.usedBytes + binding.ciphertextBytes >
+          normalizedBudgetLimitBytes
+      ) {
+        return {
+          state: "exhausted",
+          resetInMs: Math.max(1, storageAdmission.resetAt - timestamp),
+          usedBytes: storageAdmission.usedBytes,
+        };
+      }
+      if (!entry.budgetDebited) {
+        storageAdmission.usedBytes += binding.ciphertextBytes;
+        entry.budgetDebited = true;
+      }
+
+      const claimToken = randomUUID();
+      entry.state = "claimed";
+      entry.claimToken = claimToken;
+      let settled = false;
+      return {
+        state: "claimed",
+        binding: structuredClone(entry.binding),
+        admissionRemainingBytes: Math.max(
+          0,
+          normalizedBudgetLimitBytes - storageAdmission.usedBytes,
+        ),
+        async complete(descriptor) {
+          if (settled) return false;
+          const current = uploadGrants.get(key);
+          if (
+            current?.state !== "claimed" ||
+            current.claimToken !== claimToken
+          ) {
+            return false;
+          }
+          current.state = "completed";
+          current.descriptor = structuredClone(descriptor);
+          delete current.claimToken;
+          settled = true;
+          return true;
+        },
+        async release() {
+          if (settled) return false;
+          const current = uploadGrants.get(key);
+          if (
+            current?.state !== "claimed" ||
+            current.claimToken !== claimToken
+          ) {
+            return false;
+          }
+          current.state = "ready";
+          delete current.claimToken;
+          settled = true;
+          return true;
+        },
       };
     },
 
@@ -366,6 +710,8 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
         authoritative: false,
         distributed: false,
         rateLimiting: true,
+        uploadGrants: true,
+        boundedStorageAdmission: true,
         verificationCache: true,
         runtimeRailStatus: true,
       };

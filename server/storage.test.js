@@ -26,6 +26,7 @@ function uploadFixture() {
       "x-sitesealed-cipher-iv": Buffer.alloc(12, 8).toString("base64"),
       "x-sitesealed-original-bytes": "16",
       "x-sitesealed-recovery-token-sha256": sha256(recoveryToken),
+      "content-length": String(body.length),
     },
     body,
   });
@@ -83,6 +84,7 @@ test("encrypted uploads are re-hashed server-side before storage", () => {
           "x-sitesealed-original-bytes": "16",
           "x-sitesealed-recovery-token-sha256":
             upload.recoveryTokenSha256,
+          "content-length": String(upload.body.length),
         },
         body: upload.body,
       }),
@@ -93,53 +95,82 @@ test("encrypted uploads are re-hashed server-side before storage", () => {
 test("the memory object store is private, idempotent and integrity checked", async () => {
   const store = createMemoryObjectStore();
   const upload = uploadFixture();
-  const first = await store.putEncryptedOriginal(upload);
-  const second = await store.putEncryptedOriginal(upload);
+  const first = await store.putStagedEncryptedOriginal(upload);
+  const second = await store.putStagedEncryptedOriginal(upload);
   assert.equal(first.created, true);
   assert.equal(second.created, false);
   assert.equal(first.descriptor.objectKey, second.descriptor.objectKey);
-  await store.assertStored(first.descriptor, upload);
+  await assert.rejects(store.getEncryptedOriginal(first.descriptor));
+  const promoted = await store.promoteEncryptedOriginal(
+    first.descriptor,
+    upload,
+  );
+  assert.equal(promoted.created, true);
   assert.deepEqual(
     await store.getEncryptedOriginal(first.descriptor),
     upload.body,
   );
+  await store.discardStagedEncryptedOriginal(first.descriptor, upload);
 });
 
 test("the S3 adapter writes only ciphertext and verifies object metadata", async () => {
   const upload = uploadFixture();
-  let headCount = 0;
   const commands = [];
+  const objects = new Map();
+  const metadata = {
+    "submission-id": upload.submissionId,
+    "record-sha256": upload.recordSha256,
+    "cipher-sha256": upload.ciphertextSha256,
+    "cipher-iv": upload.iv,
+    "original-bytes": String(upload.plaintextBytes),
+    "recovery-token-sha256": upload.recoveryTokenSha256,
+    encryption: "AES-256-GCM",
+    "client-encrypted": "true",
+  };
   const client = {
     async send(command) {
       commands.push(command);
       const name = command.constructor.name;
       if (name === "HeadObjectCommand") {
-        headCount += 1;
-        if (headCount === 1) {
+        const stored = objects.get(command.input.Key);
+        if (!stored) {
           const error = new Error("missing");
           error.$metadata = { httpStatusCode: 404 };
           throw error;
         }
         return {
-          ContentLength: upload.body.length,
-          Metadata: {
-            "submission-id": upload.submissionId,
-            "record-sha256": upload.recordSha256,
-            "cipher-sha256": upload.ciphertextSha256,
-            "cipher-iv": upload.iv,
-            "original-bytes": String(upload.plaintextBytes),
-            "recovery-token-sha256": upload.recoveryTokenSha256,
-            encryption: "AES-256-GCM",
-            "client-encrypted": "true",
-          },
+          ContentLength: stored.body.length,
+          Metadata: stored.metadata,
         };
       }
-      if (name === "PutObjectCommand") return { ETag: "ciphertext-etag" };
+      if (name === "PutObjectCommand") {
+        objects.set(command.input.Key, {
+          body: Buffer.from(command.input.Body),
+          metadata: command.input.Metadata,
+        });
+        return { ETag: "ciphertext-etag" };
+      }
+      if (name === "CopyObjectCommand") {
+        const sourceKey = decodeURIComponent(
+          command.input.CopySource.split("/").slice(1).join("/"),
+        );
+        const source = objects.get(sourceKey);
+        objects.set(command.input.Key, {
+          body: Buffer.from(source.body),
+          metadata: { ...source.metadata },
+        });
+        return { CopyObjectResult: { ETag: "copied-etag" } };
+      }
+      if (name === "DeleteObjectCommand") {
+        objects.delete(command.input.Key);
+        return {};
+      }
       if (name === "GetObjectCommand") {
+        const stored = objects.get(command.input.Key);
         return {
           Body: {
             async transformToByteArray() {
-              return Uint8Array.from(upload.body);
+              return Uint8Array.from(stored.body);
             },
           },
         };
@@ -154,20 +185,43 @@ test("the S3 adapter writes only ciphertext and verifies object metadata", async
     client,
     bucket: "private-bucket",
   });
-  const stored = await store.putEncryptedOriginal(upload);
+  const stored = await store.putStagedEncryptedOriginal(upload);
   assert.equal(stored.created, true);
-  await store.assertStored(stored.descriptor, upload);
+  assert.equal(stored.staged, true);
+  const stagedPut = commands.find(
+    (command) => command.constructor.name === "PutObjectCommand",
+  );
+  assert.match(stagedPut.input.Key, /^staging\/v1\.2\//);
+  await store.promoteEncryptedOriginal(stored.descriptor, upload);
   assert.deepEqual(
     await store.getEncryptedOriginal(stored.descriptor),
     upload.body,
   );
+  await store.discardStagedEncryptedOriginal(stored.descriptor, upload);
   assert.equal((await store.healthCheck()).mode, "s3");
 
-  const put = commands.find(
-    (command) => command.constructor.name === "PutObjectCommand",
+  const copy = commands.find(
+    (command) => command.constructor.name === "CopyObjectCommand",
   );
-  assert.equal(put.input.Bucket, "private-bucket");
-  assert.deepEqual(Buffer.from(put.input.Body), upload.body);
-  assert.equal(put.input.Metadata["client-encrypted"], "true");
-  assert.equal(JSON.stringify(put.input).includes("secret-access-key"), false);
+  assert.match(copy.input.Key, /^sealed\/v1\.2\//);
+  assert.equal(stagedPut.input.Bucket, "private-bucket");
+  assert.deepEqual(Buffer.from(stagedPut.input.Body), upload.body);
+  assert.deepEqual(stagedPut.input.Metadata, metadata);
+  assert.equal(
+    JSON.stringify(stagedPut.input).includes("secret-access-key"),
+    false,
+  );
+});
+
+test("the application reaper deletes only expired staging objects", async () => {
+  let timestamp = Date.parse("2026-08-13T12:00:00.000Z");
+  const store = createMemoryObjectStore({ now: () => timestamp });
+  const oldUpload = uploadFixture();
+  await store.putStagedEncryptedOriginal(oldUpload);
+  timestamp += 25 * 60 * 60 * 1000;
+  const result = await store.cleanupStagedObjects({
+    olderThan: new Date(timestamp - 24 * 60 * 60 * 1000),
+  });
+  assert.equal(result.deleted, 1);
+  assert.equal(result.deletedBytes, oldUpload.body.length);
 });

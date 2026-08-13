@@ -1,4 +1,4 @@
-# SiteSealed Genesis v1.4-alpha.7.1 — MVP hotfix
+# SiteSealed Genesis v1.4-alpha.8 — dépôt chiffré contrôlé
 
 Cette version clôt le MVP technique avec les deux rails externes retenus :
 
@@ -6,11 +6,11 @@ Cette version clôt le MVP technique avec les deux rails externes retenus :
 - **Ethereum mainnet (chain ID 1)** comme rail public définitif pour les racines
   Merkle horaires.
 
-L'alpha.7.1 conserve la vérification RFC 3161 indépendante introduite en
-alpha.6 et la barrière de mise en service Ethereum Mainnet de l'alpha.7. Ce
-hotfix ne change ni le schéma public des preuves ni le schéma MySQL. Il corrige
-la reprise Railway des lots Ethereum et fonctionne en sélection automatique,
-sans `ETHEREUM_TARGET_RECORD_ID` :
+L'alpha.8 conserve la vérification RFC 3161 indépendante introduite en alpha.6,
+la barrière Ethereum Mainnet de l'alpha.7 et la reprise MySQL de l'alpha.7.1.
+Elle ne change ni le schéma public des preuves ni le schéma MySQL. Elle ajoute
+une frontière d'autorisation et de coût devant le Bucket, tout en gardant la
+sélection Ethereum automatique, sans `ETHEREUM_TARGET_RECORD_ID` :
 
 - sélection automatique des reçus éligibles, par ordre de création, dans un
   lot Merkle borné ;
@@ -61,10 +61,56 @@ aucun effet juridique et ne devient jamais un horodatage qualifié eIDAS. Même
 avec un ancrage mainnet finalisé, l'état maximal de cette version est
 `ALPHA_DUAL_RAIL_COMPLETE`.
 
+## Sécurité du dépôt chiffré en alpha.8
+
+Une limite par IP n'est pas une autorisation : une rotation d'adresses pouvait
+auparavant envoyer jusqu'à 25 Mo de ciphertext par PUT et faire supporter le
+stockage à l'opérateur. L'alpha.8 remplace ce modèle par quatre barrières
+cumulatives :
+
+1. `POST /api/storage/upload-grants` exige le secret opérateur
+   `UPLOAD_ADMISSION_SECRET`. Le secret est saisi dans le formulaire, transmis
+   uniquement en HTTPS, jamais inclus dans le build et jamais écrit par
+   l'application dans un cookie, `localStorage` ou `sessionStorage` ;
+2. Redis émet un grant aléatoire de 15 minutes lié exactement au
+   `submissionId`, aux deux empreintes, à l'IV et aux tailles. Seul un digest
+   séparé par domaine du secret du grant est conservé ;
+3. le PUT valide le grant, sa liaison et `Content-Length`, puis le réclame
+   atomiquement **avant** le parseur de corps. Un faux grant ne peut donc pas
+   faire bufferiser 25 Mo par Express. Deux PUT concurrents ne peuvent pas
+   atteindre le Bucket avec le même grant ;
+4. le premier claim réserve les octets une seule fois dans un plafond Redis
+   global de 2 048 Mio par fenêtre de 24 heures, configurable par
+   `STORAGE_ADMISSION_MB_PER_DAY`. La limite IP de 20/h reste une défense
+   supplémentaire, mais n'est plus la frontière principale.
+
+Le ciphertext arrive d'abord sous `staging/v1.2/`. La création du reçu exige le
+même grant déjà complété, copie l'objet vérifié sous `sealed/v1.2/`, persiste le
+reçu et supprime ensuite la copie de staging. Une panne de stockage libère le
+claim pour une reprise exacte sans débiter une seconde fois le plafond.
+
+Les Buckets Railway prennent en charge `Put`, `Head`, `List`, `Copy`, `Delete`
+et les tags, mais pas encore la configuration Bucket Lifecycle. Il ne faut donc
+pas appliquer une règle fictive ou une expiration sur `sealed/`, qui mettrait
+les reçus valides en danger. Le cron horaire existant exécute à la place un
+nettoyeur applicatif verrouillé par Redis : il supprime uniquement les objets
+`staging/` non finalisés âgés de plus de 24 heures, avec un nombre maximal
+d'objets traité par run. Un échec d'accès au Bucket fait échouer le worker au
+lieu de prétendre que le nettoyage a réussi.
+
+Cette alpha devient volontairement un environnement contrôlé. Pour un dépôt
+public sans secret partagé, il faudra ajouter une véritable identité, un quota
+de compte ou un droit payé ; une preuve de travail ou un jeton anonyme émis
+librement ne constitue pas une autorisation.
+
 ## Ce qui fonctionne réellement
 
 - SHA-256 du fichier dans le navigateur ;
 - AES-256-GCM du manifeste et de l'original avant tout envoi ;
+- grant de dépôt à usage unique, exact-bound et réclamé avant lecture du corps ;
+- plafond global Redis en octets, en plus de la limite par IP ;
+- staging privé, promotion par copie vers `sealed/` et nettoyage horaire des
+  staging orphelins ;
 - stockage du seul ciphertext dans un Bucket S3 privé ;
 - registre MySQL, audit PostgreSQL append-only et coordination Redis ;
 - evidence digest séparé par domaine, lié aux empreintes du fichier et du
@@ -147,13 +193,13 @@ Le statut Ethereum suit une machine distincte :
 | MySQL | Reçus, preuves externes et lots Merkle | Oui pour l'index applicatif | Non |
 | Bucket S3 | Ciphertexts AES-256-GCM | Oui pour les octets chiffrés | Non |
 | PostgreSQL | Événements internes hash-chaînés | Audit interne uniquement | Non |
-| Redis | Limites, verrous, cache et statut récent des rails | Non | Non |
+| Redis | Grants/claims et plafond éphémères, limites, verrous, cache et statut récent | Oui pour l'admission éphémère, non pour les reçus | Non |
 | Evidency sandbox | Jeton RFC 3161 de test | Artefact externe de test | Non, digest seulement |
 | Ethereum mainnet | Racine Merkle publique | Rail public | Non, racine seulement |
 
 Le protocole privé de dépôt reste `1.2` afin de préserver les objets et kits de
 récupération existants. Le reçu et le bundle publics passent en
-`1.4-alpha.1` pour préserver la compatibilité des preuves. L'alpha.7.1 ne
+`1.4-alpha.1` pour préserver la compatibilité des preuves. L'alpha.8 ne
 modifie ni le protocole de dépôt ni le schéma JSON public ; elle enrichit les
 champs de preuve compatibles. La migration MySQL additive
 `005_rfc3161_independent_verification` conserve l'état des anciens jetons sans
@@ -162,6 +208,9 @@ les présenter rétroactivement comme vérifiés.
 ## Structure utile
 
 - `server/evidency.js` : client sandbox strict et barrière avant stockage ;
+- `server/admission.js` : secret de dépôt contrôlé, paramètres de grants et
+  plafond global ;
+- `server/storage.js` : validation pré-corps, staging, promotion et reaper S3 ;
 - `server/rfc3161.js` : validation DER, CMS, TSTInfo, ESSCertIDv2, certificat et
   chemin X.509 ;
 - `server/trust/` : racine et CA Timestamp Sandbox publiques, versionnées et
@@ -169,7 +218,8 @@ les présenter rétroactivement comme vérifiés.
 - `server/merkle.js` : arbre et preuves d'inclusion déterministes ;
 - `server/ethereum.js` : dry-run, plafonds, signature locale vérifiée,
   transaction mainnet et inspection de finalité ;
-- `server/rails-worker.js` : orchestration idempotente des deux files ;
+- `server/rails-worker.js` : orchestration idempotente des deux files et
+  nettoyage horaire des staging expirés ;
 - `server/database.js` : migration, persistance des artefacts et reprise
   MySQL text-protocol des lots Ethereum ;
 - `client/public/schemas/` : schéma JSON du bundle exporté ;
@@ -200,6 +250,11 @@ Avec `DATABASE_MODE=optional`, les adaptateurs mémoire sont réservés au
 développement et disparaissent au redémarrage. Les deux rails externes sont
 désactivés par défaut : aucun appel Evidency et aucune dépense ETH ne peuvent se
 produire sans activation explicite.
+
+Pour tester aussi la création de reçu en local, renseigner dans `.env` un secret
+d'au moins 32 octets, par exemple une valeur générée par
+`openssl rand -base64 48`, puis saisir exactement cette valeur dans le champ
+**Deposit access**. Sans ce secret, l'API de grant répond volontairement `503`.
 
 Pour vérifier un bundle hors du site :
 
@@ -247,6 +302,9 @@ REDIS_URL=${{Redis.REDIS_URL}}
 
 PUBLIC_BASE_URL=https://app.sitesealed.com
 SEAL_RATE_LIMIT_PER_HOUR=20
+UPLOAD_ADMISSION_SECRET=<secret aléatoire de 32 octets minimum>
+UPLOAD_GRANT_TTL_SECONDS=900
+STORAGE_ADMISSION_MB_PER_DAY=2048
 
 S3_ACCESS_KEY=${{"Bucket S3".ACCESS_KEY_ID}}
 S3_BUCKET=${{"Bucket S3".BUCKET}}
@@ -254,6 +312,13 @@ S3_ENDPOINT=${{"Bucket S3".ENDPOINT}}
 S3_REGION=${{"Bucket S3".REGION}}
 S3_SECRET_KEY=${{"Bucket S3".SECRET_ACCESS_KEY}}
 ```
+
+Générer `UPLOAD_ADMISSION_SECRET` hors du dépôt avec
+`openssl rand -base64 48`, le placer comme secret Railway, puis le conserver
+dans le gestionnaire de mots de passe de l'opérateur. Ne pas le préfixer par
+`VITE_`, ne pas le mettre dans Git et ne pas l'écrire dans le code client.
+`DATABASE_MODE=required` fait échouer le démarrage si cette variable manque ou
+contient moins de 32 octets.
 
 Les secrets des rails ne doivent pas être placés dans le service web. Le worker
 publie dans Redis un état sanitaire limité et sans secret ; l'API le lit pour
@@ -275,6 +340,14 @@ DATABASE_MODE=required
 MYSQL_URL=${{MySQL.MYSQL_URL}}
 DATABASE_URL=${{Postgres.DATABASE_URL}}
 REDIS_URL=${{Redis.REDIS_URL}}
+
+S3_ACCESS_KEY=${{"Bucket S3".ACCESS_KEY_ID}}
+S3_BUCKET=${{"Bucket S3".BUCKET}}
+S3_ENDPOINT=${{"Bucket S3".ENDPOINT}}
+S3_REGION=${{"Bucket S3".REGION}}
+S3_SECRET_KEY=${{"Bucket S3".SECRET_ACCESS_KEY}}
+STAGING_OBJECT_TTL_HOURS=24
+STAGING_REAPER_MAX_OBJECTS=1000
 
 EVIDENCY_MODE=sandbox
 EVIDENCY_API_BASE_URL=https://api-sandbox.evidency.io
@@ -314,14 +387,14 @@ directement comme secret Railway.
 
 Mise en service contrôlée :
 
-1. déployer l'alpha.7.1 avec `ETHEREUM_ANCHOR_MODE=disabled`, puis vérifier le
+1. déployer l'alpha.8 avec `ETHEREUM_ANCHOR_MODE=disabled`, puis vérifier le
    build, les migrations et le fonctionnement Evidency existant ;
 2. créer un portefeuille Ethereum dédié et sans autre actif. Conserver sa clé
    uniquement comme secret du worker et copier son adresse publique dans
    `ETHEREUM_EXPECTED_ANCHOR_ADDRESS` ;
 3. approvisionner ce portefeuille du strict montant choisi pour les tests et
    vérifier l'adresse par une seconde source avant tout transfert ;
-4. créer un reçu alpha.7.1, attendre son jeton Evidency Sandbox, puis vérifier que
+4. créer un reçu alpha.8 avec le code de dépôt opérateur, attendre son jeton Evidency Sandbox, puis vérifier que
    `validatorVersion`, `signatureVerification` et
    `certificateChainVerification` ont les valeurs exigées ;
 5. laisser `ETHEREUM_TARGET_RECORD_ID` absent, activer
@@ -345,13 +418,13 @@ Mise en service contrôlée :
 
 Toute incohérence d'adresse, réseau, signature, preuve RFC 3161, gas, frais,
 solde ou liaison on-chain fait échouer le run. Une transaction déjà signée
-reste persistée et sera reprise à l'identique ; l'alpha.7.1 ne la remplace jamais
+reste persistée et sera reprise à l'identique ; l'alpha.8 ne la remplace jamais
 silencieusement.
 
 ### Reprise directe d'un lot alpha.7 interrompu
 
 Aucune nouvelle preuve Evidency, aucune nouvelle adresse et aucun identifiant
-de reçu ne sont nécessaires. Laisser le cron désactivé, déployer l'alpha.7.1,
+de reçu ne sont nécessaires. Laisser le cron désactivé, déployer l'alpha.8,
 supprimer `ETHEREUM_TARGET_RECORD_ID`, conserver le même portefeuille et le
 même réseau, puis lancer le worker une fois avec `ETHEREUM_DRY_RUN=false`. Le
 lot `PREPARED` ou `SIGNED` existant est retrouvé avant toute nouvelle sélection.

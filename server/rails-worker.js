@@ -16,6 +16,10 @@ import { createEthereumAnchorClientFromEnv } from "./ethereum.js";
 import { buildMerkleTree } from "./merkle.js";
 import { RFC3161_VALIDATOR_VERSION } from "./rfc3161.js";
 import { createMemoryRecordStore } from "./specimen.js";
+import {
+  createMemoryObjectStore,
+  createS3ObjectStoreFromEnv,
+} from "./storage.js";
 
 const VALID_CERTIFICATE_CHAIN = "VALID_TO_PINNED_SANDBOX_ROOT";
 
@@ -34,7 +38,7 @@ function positiveInteger(value, fallback) {
 function exactlyOne(value, variableName) {
   const normalized = String(value ?? "1").trim();
   if (normalized !== "1") {
-    throw new Error(`${variableName} must remain exactly 1 in alpha.7.1.`);
+    throw new Error(`${variableName} must remain exactly 1 in alpha.8.`);
   }
   return 1;
 }
@@ -75,6 +79,34 @@ function independentlyVerifiedAnchorCandidate(record) {
     independentlyVerifiedTimestamp(record) &&
       record.chainRail?.state === "NOT_ANCHORED",
   );
+}
+
+export async function processStorageOrphans({
+  objectStore,
+  coordinator,
+  ttlMs = 24 * 60 * 60 * 1000,
+  limit = 1000,
+  now = () => Date.now(),
+} = {}) {
+  const release = await coordinator.acquireJobLock("storage-orphan-reaper", {
+    ttlMs: 10 * 60 * 1000,
+  });
+  if (!release) {
+    return {
+      status: "SKIPPED_LOCKED",
+      scanned: 0,
+      deleted: 0,
+      deletedBytes: 0,
+    };
+  }
+  try {
+    return objectStore.cleanupStagedObjects({
+      olderThan: new Date(now() - ttlMs),
+      limit,
+    });
+  } finally {
+    await release();
+  }
 }
 
 export function deriveEvidencyRuntimeStatus({
@@ -311,7 +343,7 @@ export async function processAnchorQueue({
   }
   if (maxTransactionsPerRun !== 1) {
     throw new Error(
-      "ETHEREUM_MAX_TRANSACTIONS_PER_RUN must remain exactly 1 in alpha.7.1.",
+      "ETHEREUM_MAX_TRANSACTIONS_PER_RUN must remain exactly 1 in alpha.8.",
     );
   }
   const release = await coordinator.acquireJobLock("ethereum-mainnet-anchor", {
@@ -683,6 +715,7 @@ async function publishEthereumRuntimeStatus({
 
 export async function runRailsWorker(environment = process.env) {
   let recordStore;
+  let objectStore;
   let auditStore;
   let coordinator;
   let timestampService;
@@ -691,12 +724,31 @@ export async function runRailsWorker(environment = process.env) {
     recordStore =
       (await createMysqlRecordStoreFromEnv(environment)) ??
       createMemoryRecordStore();
+    objectStore =
+      (await createS3ObjectStoreFromEnv(environment)) ??
+      createMemoryObjectStore();
     auditStore =
       (await createPostgresAuditStoreFromEnv(environment)) ??
       createMemoryAuditStore();
     coordinator =
       (await createRedisCoordinatorFromEnv(environment)) ??
       createMemoryCoordinator();
+    const storageCleanup = await processStorageOrphans({
+      objectStore,
+      coordinator,
+      ttlMs:
+        Math.min(
+          positiveInteger(environment.STAGING_OBJECT_TTL_HOURS, 24),
+          24 * 30,
+        ) *
+        60 *
+        60 *
+        1000,
+      limit: Math.min(
+        positiveInteger(environment.STAGING_REAPER_MAX_OBJECTS, 1000),
+        10000,
+      ),
+    });
     timestampService = createEvidencyTimestampServiceFromEnv(environment);
     try {
       ethereumRail = createEthereumAnchorClientFromEnv(environment);
@@ -859,11 +911,13 @@ export async function runRailsWorker(environment = process.env) {
       ok: !workerFailed,
       timestamps,
       anchors,
+      storageCleanup,
       runtime: { evidency: evidencyRuntime, ethereum: ethereumRuntime },
     };
   } finally {
     await Promise.all([
       recordStore?.close().catch(() => {}),
+      objectStore?.close().catch(() => {}),
       auditStore?.close().catch(() => {}),
       coordinator?.close().catch(() => {}),
       timestampService?.close().catch(() => {}),

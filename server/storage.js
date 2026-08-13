@@ -1,8 +1,10 @@
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -24,6 +26,17 @@ const S3_CONFIG_KEYS = [
   "S3_REGION",
   "S3_SECRET_KEY",
 ];
+const STAGING_PREFIX = "staging/v1.2/";
+const SEALED_PREFIX = "sealed/v1.2/";
+const UPLOAD_BINDING_FIELDS = new Set([
+  "submissionId",
+  "recordSha256",
+  "ciphertextSha256",
+  "ciphertextBytes",
+  "plaintextBytes",
+  "iv",
+  "recoveryTokenSha256",
+]);
 
 function sha256Hex(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -46,10 +59,23 @@ function normalizedMetadata(metadata = {}) {
   );
 }
 
+function sealedObjectKey(upload) {
+  return (
+    `${SEALED_PREFIX}${upload.submissionId}/${upload.ciphertextSha256.slice(0, 2)}/` +
+    `${upload.ciphertextSha256}.ssenc`
+  );
+}
+
+function stagingObjectKey(upload) {
+  return (
+    `${STAGING_PREFIX}${upload.submissionId}/${upload.ciphertextSha256.slice(0, 2)}/` +
+    `${upload.ciphertextSha256}.ssenc`
+  );
+}
+
 function descriptorFromUpload(upload) {
   const objectKey =
-    `sealed/v1.2/${upload.submissionId}/${upload.ciphertextSha256.slice(0, 2)}/` +
-    `${upload.ciphertextSha256}.ssenc`;
+    sealedObjectKey(upload);
   return {
     version: 1,
     storageClass: "PRIVATE_CLIENT_ENCRYPTED_ORIGINAL",
@@ -119,8 +145,118 @@ function positiveIntegerHeader(value, fieldName, maximum) {
   return parsed;
 }
 
+function positiveIntegerValue(value, fieldName, maximum) {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
+    throw new ApiError(
+      400,
+      "INVALID_UPLOAD_GRANT_REQUEST",
+      `${fieldName} must be a positive integer no greater than ${maximum}.`,
+    );
+  }
+  return value;
+}
+
+function canonicalIv(value, fieldName) {
+  const iv = String(value ?? "").trim();
+  if (decodeCanonicalBase64(iv, fieldName).length !== 12) {
+    throw new ApiError(
+      400,
+      "INVALID_UPLOAD_METADATA",
+      `${fieldName} must contain exactly 12 bytes.`,
+    );
+  }
+  return iv;
+}
+
+function bindingFromValues({
+  submissionId,
+  recordSha256,
+  ciphertextSha256,
+  ciphertextBytes,
+  plaintextBytes,
+  iv,
+  recoveryTokenSha256,
+}) {
+  const normalizedPlaintextBytes = positiveIntegerValue(
+    plaintextBytes,
+    "plaintextBytes",
+    MAX_ORIGINAL_BYTES,
+  );
+  const normalizedCiphertextBytes = positiveIntegerValue(
+    ciphertextBytes,
+    "ciphertextBytes",
+    MAX_ENCRYPTED_ORIGINAL_BYTES,
+  );
+  if (normalizedCiphertextBytes !== normalizedPlaintextBytes + 16) {
+    throw new ApiError(
+      400,
+      "INVALID_UPLOAD_LENGTH",
+      "The encrypted original must be exactly 16 bytes longer than the plaintext size.",
+    );
+  }
+  return {
+    submissionId: normalizeSubmissionId(submissionId),
+    recordSha256: normalizeDigest(recordSha256, "recordSha256"),
+    ciphertextSha256: normalizeDigest(
+      ciphertextSha256,
+      "ciphertextSha256",
+    ),
+    ciphertextBytes: normalizedCiphertextBytes,
+    plaintextBytes: normalizedPlaintextBytes,
+    iv: canonicalIv(iv, "iv"),
+    recoveryTokenSha256: normalizeDigest(
+      recoveryTokenSha256,
+      "recoveryTokenSha256",
+    ),
+  };
+}
+
+export function validateUploadGrantRequest(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ApiError(
+      400,
+      "INVALID_UPLOAD_GRANT_REQUEST",
+      "The upload grant request must contain the exact encrypted-object binding.",
+    );
+  }
+  const unknown = Object.keys(value).find(
+    (field) => !UPLOAD_BINDING_FIELDS.has(field),
+  );
+  if (unknown) {
+    throw new ApiError(
+      400,
+      "INVALID_UPLOAD_GRANT_REQUEST",
+      `Unexpected upload grant field: ${unknown}.`,
+    );
+  }
+  return bindingFromValues(value);
+}
+
+export function validateEncryptedUploadHeaders({ submissionId, headers }) {
+  const plaintextBytes = positiveIntegerHeader(
+    headers["x-sitesealed-original-bytes"],
+    "x-sitesealed-original-bytes",
+    MAX_ORIGINAL_BYTES,
+  );
+  const ciphertextBytes = positiveIntegerHeader(
+    headers["content-length"],
+    "content-length",
+    MAX_ENCRYPTED_ORIGINAL_BYTES,
+  );
+  return bindingFromValues({
+    submissionId,
+    recordSha256: headers["x-sitesealed-record-sha256"],
+    ciphertextSha256: headers["x-sitesealed-cipher-sha256"],
+    ciphertextBytes,
+    plaintextBytes,
+    iv: headers["x-sitesealed-cipher-iv"],
+    recoveryTokenSha256:
+      headers["x-sitesealed-recovery-token-sha256"],
+  });
+}
+
 export function validateEncryptedUpload({ submissionId, headers, body }) {
-  const normalizedSubmissionId = normalizeSubmissionId(submissionId);
+  const binding = validateEncryptedUploadHeaders({ submissionId, headers });
   if (!Buffer.isBuffer(body) || body.length === 0) {
     throw new ApiError(
       400,
@@ -136,12 +272,7 @@ export function validateEncryptedUpload({ submissionId, headers, body }) {
     );
   }
 
-  const plaintextBytes = positiveIntegerHeader(
-    headers["x-sitesealed-original-bytes"],
-    "x-sitesealed-original-bytes",
-    MAX_ORIGINAL_BYTES,
-  );
-  if (body.length !== plaintextBytes + 16) {
+  if (body.length !== binding.ciphertextBytes) {
     throw new ApiError(
       400,
       "INVALID_UPLOAD_LENGTH",
@@ -149,11 +280,7 @@ export function validateEncryptedUpload({ submissionId, headers, body }) {
     );
   }
 
-  const ciphertextSha256 = normalizeDigest(
-    headers["x-sitesealed-cipher-sha256"],
-    "x-sitesealed-cipher-sha256",
-  );
-  if (sha256Hex(body) !== ciphertextSha256) {
+  if (sha256Hex(body) !== binding.ciphertextSha256) {
     throw new ApiError(
       400,
       "CIPHERTEXT_DIGEST_MISMATCH",
@@ -161,28 +288,8 @@ export function validateEncryptedUpload({ submissionId, headers, body }) {
     );
   }
 
-  const iv = String(headers["x-sitesealed-cipher-iv"] ?? "").trim();
-  if (decodeCanonicalBase64(iv, "x-sitesealed-cipher-iv").length !== 12) {
-    throw new ApiError(
-      400,
-      "INVALID_UPLOAD_METADATA",
-      "x-sitesealed-cipher-iv must contain exactly 12 bytes.",
-    );
-  }
-
   return {
-    submissionId: normalizedSubmissionId,
-    recordSha256: normalizeDigest(
-      headers["x-sitesealed-record-sha256"],
-      "x-sitesealed-record-sha256",
-    ),
-    ciphertextSha256,
-    plaintextBytes,
-    iv,
-    recoveryTokenSha256: normalizeDigest(
-      headers["x-sitesealed-recovery-token-sha256"],
-      "x-sitesealed-recovery-token-sha256",
-    ),
+    ...binding,
     body,
   };
 }
@@ -249,11 +356,11 @@ async function bodyToBuffer(body) {
 }
 
 export function createS3ObjectStore({ client, bucket }) {
-  async function headDescriptor(descriptor, input) {
+  async function headDescriptorAtKey(objectKey, descriptor, input) {
     let head;
     try {
       head = await client.send(
-        new HeadObjectCommand({ Bucket: bucket, Key: descriptor.objectKey }),
+        new HeadObjectCommand({ Bucket: bucket, Key: objectKey }),
       );
     } catch (error) {
       if (isNotFound(error)) {
@@ -269,45 +376,162 @@ export function createS3ObjectStore({ client, bucket }) {
     return head;
   }
 
+  async function findDescriptorAtKey(objectKey, descriptor, input) {
+    try {
+      const head = await client.send(
+        new HeadObjectCommand({ Bucket: bucket, Key: objectKey }),
+      );
+      assertStoredMetadata(head, descriptor, input);
+      return head;
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
+    }
+  }
+
+  function copySource(objectKey) {
+    const encodedBucket = encodeURIComponent(bucket);
+    const encodedKey = objectKey
+      .split("/")
+      .map((segment) => encodeURIComponent(segment))
+      .join("/");
+    return `${encodedBucket}/${encodedKey}`;
+  }
+
   return {
     mode: "s3",
     persistent: true,
 
-    async putEncryptedOriginal(upload) {
+    async putStagedEncryptedOriginal(upload) {
       const descriptor = descriptorFromUpload(upload);
       validateEncryptedObjectDescriptor(descriptor, upload.submissionId);
+      const stagedObjectKey = stagingObjectKey(upload);
 
-      try {
-        const existing = await client.send(
-          new HeadObjectCommand({ Bucket: bucket, Key: descriptor.objectKey }),
-        );
-        assertStoredMetadata(existing, descriptor, upload);
-        return { descriptor, created: false };
-      } catch (error) {
-        if (!isNotFound(error)) throw error;
+      if (
+        await findDescriptorAtKey(descriptor.objectKey, descriptor, upload)
+      ) {
+        return { descriptor, created: false, staged: false };
+      }
+      if (await findDescriptorAtKey(stagedObjectKey, descriptor, upload)) {
+        return { descriptor, created: false, staged: true };
       }
 
       await client.send(
         new PutObjectCommand({
           Bucket: bucket,
-          Key: descriptor.objectKey,
+          Key: stagedObjectKey,
           Body: upload.body,
           ContentLength: upload.body.length,
           ContentType: "application/vnd.sitesealed.encrypted-original",
           CacheControl: "private, no-store",
           Metadata: storageMetadata(upload),
+          Tagging: "sitesealed-state=staging",
         }),
       );
-      return { descriptor, created: true };
+      return { descriptor, created: true, staged: true };
     },
 
-    async assertStored(descriptor, input) {
+    async promoteEncryptedOriginal(descriptor, input) {
       const validated = validateEncryptedObjectDescriptor(
         descriptor,
         input.submissionId,
       );
-      await headDescriptor(validated, input);
-      return validated;
+      if (
+        await findDescriptorAtKey(
+          validated.objectKey,
+          validated,
+          input,
+        )
+      ) {
+        return { descriptor: validated, created: false };
+      }
+
+      const stagedObjectKey = stagingObjectKey({
+        submissionId: input.submissionId,
+        ciphertextSha256: validated.ciphertextSha256,
+      });
+      await headDescriptorAtKey(stagedObjectKey, validated, input);
+      await client.send(
+        new CopyObjectCommand({
+          Bucket: bucket,
+          Key: validated.objectKey,
+          CopySource: copySource(stagedObjectKey),
+          MetadataDirective: "COPY",
+          TaggingDirective: "REPLACE",
+          Tagging: "sitesealed-state=sealed",
+        }),
+      );
+      await headDescriptorAtKey(validated.objectKey, validated, input);
+      return { descriptor: validated, created: true };
+    },
+
+    async discardStagedEncryptedOriginal(descriptor, input) {
+      const validated = validateEncryptedObjectDescriptor(
+        descriptor,
+        input.submissionId,
+      );
+      const key = stagingObjectKey({
+        submissionId: input.submissionId,
+        ciphertextSha256: validated.ciphertextSha256,
+      });
+      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+    },
+
+    async cleanupStagedObjects({ olderThan, limit = 1000 } = {}) {
+      const cutoff = new Date(olderThan ?? Date.now() - 24 * 60 * 60 * 1000);
+      if (!Number.isFinite(cutoff.valueOf())) {
+        throw new Error("The staging cleanup cutoff must be a valid date.");
+      }
+      const maximum = Math.max(1, Math.min(Number(limit) || 1000, 10000));
+      let continuationToken;
+      let scanned = 0;
+      let deleted = 0;
+      let deletedBytes = 0;
+      let truncated = false;
+
+      do {
+        const page = await client.send(
+          new ListObjectsV2Command({
+            Bucket: bucket,
+            Prefix: STAGING_PREFIX,
+            ContinuationToken: continuationToken,
+            MaxKeys: Math.min(1000, maximum - scanned),
+          }),
+        );
+        const contents = Array.isArray(page.Contents) ? page.Contents : [];
+        for (const object of contents) {
+          if (scanned >= maximum) break;
+          scanned += 1;
+          const key = String(object.Key ?? "");
+          const lastModified = new Date(object.LastModified ?? 0);
+          if (
+            !key.startsWith(STAGING_PREFIX) ||
+            !Number.isFinite(lastModified.valueOf()) ||
+            lastModified > cutoff
+          ) {
+            continue;
+          }
+          await client.send(
+            new DeleteObjectCommand({ Bucket: bucket, Key: key }),
+          );
+          deleted += 1;
+          deletedBytes += Math.max(0, Number(object.Size) || 0);
+        }
+        continuationToken = page.IsTruncated
+          ? page.NextContinuationToken
+          : undefined;
+        truncated = Boolean(continuationToken);
+      } while (continuationToken && scanned < maximum);
+
+      return {
+        status: "COMPLETED",
+        prefix: STAGING_PREFIX,
+        cutoff: cutoff.toISOString(),
+        scanned,
+        deleted,
+        deletedBytes,
+        truncated: truncated && scanned >= maximum,
+      };
     },
 
     async getEncryptedOriginal(reference) {
@@ -333,6 +557,8 @@ export function createS3ObjectStore({ client, bucket }) {
         writable: true,
         private: true,
         clientEncryptedOnly: true,
+        stagedUploadPrefix: STAGING_PREFIX,
+        orphanCleanup: "APPLICATION_WORKER",
       };
     },
 
@@ -362,17 +588,27 @@ export function createS3ObjectStore({ client, bucket }) {
   };
 }
 
-export function createMemoryObjectStore() {
+export function createMemoryObjectStore({ now = () => Date.now() } = {}) {
   const objects = new Map();
 
   return {
     mode: "memory",
     persistent: false,
 
-    async putEncryptedOriginal(upload) {
+    async putStagedEncryptedOriginal(upload) {
       const descriptor = descriptorFromUpload(upload);
       validateEncryptedObjectDescriptor(descriptor, upload.submissionId);
-      const existing = objects.get(descriptor.objectKey);
+      const stagedObjectKey = stagingObjectKey(upload);
+      const final = objects.get(descriptor.objectKey);
+      if (final) {
+        assertStoredMetadata(
+          { ContentLength: final.body.length, Metadata: final.metadata },
+          descriptor,
+          upload,
+        );
+        return { descriptor, created: false, staged: false };
+      }
+      const existing = objects.get(stagedObjectKey);
       if (existing) {
         assertStoredMetadata(
           {
@@ -382,22 +618,36 @@ export function createMemoryObjectStore() {
           descriptor,
           upload,
         );
-        return { descriptor, created: false };
+        return { descriptor, created: false, staged: true };
       }
-      objects.set(descriptor.objectKey, {
+      objects.set(stagedObjectKey, {
         body: Buffer.from(upload.body),
         metadata: storageMetadata(upload),
+        createdAt: now(),
       });
-      return { descriptor, created: true };
+      return { descriptor, created: true, staged: true };
     },
 
-    async assertStored(descriptor, input) {
+    async promoteEncryptedOriginal(descriptor, input) {
       const validated = validateEncryptedObjectDescriptor(
         descriptor,
         input.submissionId,
       );
-      const stored = objects.get(validated.objectKey);
-      if (!stored) {
+      const final = objects.get(validated.objectKey);
+      if (final) {
+        assertStoredMetadata(
+          { ContentLength: final.body.length, Metadata: final.metadata },
+          validated,
+          input,
+        );
+        return { descriptor: validated, created: false };
+      }
+      const stagedObjectKey = stagingObjectKey({
+        submissionId: input.submissionId,
+        ciphertextSha256: validated.ciphertextSha256,
+      });
+      const staged = objects.get(stagedObjectKey);
+      if (!staged) {
         throw new ApiError(
           409,
           "STORAGE_OBJECT_NOT_FOUND",
@@ -405,11 +655,56 @@ export function createMemoryObjectStore() {
         );
       }
       assertStoredMetadata(
-        { ContentLength: stored.body.length, Metadata: stored.metadata },
+        { ContentLength: staged.body.length, Metadata: staged.metadata },
         validated,
         input,
       );
-      return validated;
+      objects.set(validated.objectKey, {
+        body: Buffer.from(staged.body),
+        metadata: { ...staged.metadata },
+        createdAt: now(),
+      });
+      return { descriptor: validated, created: true };
+    },
+
+    async discardStagedEncryptedOriginal(descriptor, input) {
+      const validated = validateEncryptedObjectDescriptor(
+        descriptor,
+        input.submissionId,
+      );
+      objects.delete(
+        stagingObjectKey({
+          submissionId: input.submissionId,
+          ciphertextSha256: validated.ciphertextSha256,
+        }),
+      );
+    },
+
+    async cleanupStagedObjects({ olderThan, limit = 1000 } = {}) {
+      const cutoff = new Date(olderThan ?? Date.now() - 24 * 60 * 60 * 1000);
+      const maximum = Math.max(1, Math.min(Number(limit) || 1000, 10000));
+      let scanned = 0;
+      let deleted = 0;
+      let deletedBytes = 0;
+      for (const [key, object] of objects) {
+        if (!key.startsWith(STAGING_PREFIX) || scanned >= maximum) continue;
+        scanned += 1;
+        if (object.createdAt > cutoff.valueOf()) continue;
+        objects.delete(key);
+        deleted += 1;
+        deletedBytes += object.body.length;
+      }
+      return {
+        status: "COMPLETED",
+        prefix: STAGING_PREFIX,
+        cutoff: cutoff.toISOString(),
+        scanned,
+        deleted,
+        deletedBytes,
+        truncated:
+          [...objects.keys()].filter((key) => key.startsWith(STAGING_PREFIX))
+            .length > scanned,
+      };
     },
 
     async getEncryptedOriginal(reference) {
@@ -430,6 +725,8 @@ export function createMemoryObjectStore() {
         writable: true,
         private: true,
         clientEncryptedOnly: true,
+        stagedUploadPrefix: STAGING_PREFIX,
+        orphanCleanup: "APPLICATION_WORKER",
       };
     },
 
