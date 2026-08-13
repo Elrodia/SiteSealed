@@ -145,7 +145,7 @@ export function normalizeSubmissionId(value) {
   return submissionId;
 }
 
-function positiveByteCount(value, fieldName, maximum) {
+export function positiveByteCount(value, fieldName, maximum) {
   if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
     throw new ApiError(
       400,

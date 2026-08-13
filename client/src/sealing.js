@@ -3,6 +3,7 @@ import { sha256 as nobleSha256 } from "@noble/hashes/sha2.js";
 
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
 export const PROTOCOL_VERSION = "1.2";
+export const UPLOAD_GRANT_HEADER = "x-sitesealed-upload-grant";
 
 export function createRandomUuid() {
   const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
@@ -279,12 +280,21 @@ export async function createRecoveryToken() {
   };
 }
 
+export function createUploadGrantRequest({ submissionId, encryptedOriginal }) {
+  return {
+    submissionId,
+    ciphertextSha256: encryptedOriginal.envelope.ciphertextSha256,
+    byteLength: encryptedOriginal.envelope.ciphertextBytes,
+  };
+}
+
 export function createEncryptedUploadHeaders({
   recordSha256,
   encryptedOriginal,
   recoveryTokenSha256,
+  uploadGrantId,
 }) {
-  return {
+  const headers = {
     "content-type": "application/octet-stream",
     "x-sitesealed-record-sha256": recordSha256,
     "x-sitesealed-cipher-sha256": encryptedOriginal.envelope.ciphertextSha256,
@@ -294,6 +304,8 @@ export function createEncryptedUploadHeaders({
     ),
     "x-sitesealed-recovery-token-sha256": recoveryTokenSha256,
   };
+  if (uploadGrantId) headers[UPLOAD_GRANT_HEADER] = uploadGrantId;
+  return headers;
 }
 
 export function createSealRequest({

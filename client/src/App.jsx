@@ -6,6 +6,7 @@ import {
   createRecoveryToken,
   createRandomUuid,
   createSealRequest,
+  createUploadGrantRequest,
   encryptManifest,
   encryptOriginal,
   formatBytes,
@@ -497,6 +498,24 @@ function SealingWorkbench({ onVerify }) {
       } = attempt;
 
       setStatus("uploading");
+      const grantResponse = await fetch("/api/storage/upload-grants", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(
+          createUploadGrantRequest({
+            submissionId: activeSubmissionId,
+            encryptedOriginal,
+          }),
+        ),
+      });
+      const grantPayload = await readApiJson(grantResponse);
+      if (!grantResponse.ok) {
+        throw new Error(
+          grantPayload.message ||
+            "The private upload authorisation could not be obtained.",
+        );
+      }
+
       const uploadResponse = await fetch(
         `/api/storage/uploads/${encodeURIComponent(activeSubmissionId)}`,
         {
@@ -505,6 +524,7 @@ function SealingWorkbench({ onVerify }) {
             recordSha256,
             encryptedOriginal,
             recoveryTokenSha256: recoveryToken.sha256,
+            uploadGrantId: grantPayload.grantId,
           }),
           body: encryptedOriginal.ciphertext,
         },

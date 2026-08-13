@@ -1,17 +1,54 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
+import {
+  createMemoryCoordinator,
+  createRedisCoordinator,
+  UPLOAD_GRANT_TTL_MS,
+} from "./coordination.js";
 import {
   createMemoryObjectStore,
   createS3ObjectStore,
   resolveS3Config,
   validateEncryptedUpload,
+  validateUploadGrantRequest,
 } from "./storage.js";
 
 const submissionId = "123e4567-e89b-42d3-a456-426614174000";
+const otherSubmissionId = "123e4567-e89b-42d3-a456-426614174001";
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function createFakeRedisClient() {
+  const entries = new Map();
+  const live = (key) => {
+    const entry = entries.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now()) {
+      entries.delete(key);
+      return null;
+    }
+    return entry;
+  };
+  return {
+    async set(key, value, options = {}) {
+      if (options.NX && live(key)) return null;
+      entries.set(key, {
+        value: String(value),
+        expiresAt: Date.now() + Number(options.PX ?? 60_000),
+      });
+      return "OK";
+    },
+    async get(key) {
+      return live(key)?.value ?? null;
+    },
+    async del(key) {
+      return entries.delete(key) ? 1 : 0;
+    },
+  };
 }
 
 function uploadFixture() {
@@ -170,4 +207,156 @@ test("the S3 adapter writes only ciphertext and verifies object metadata", async
   assert.deepEqual(Buffer.from(put.input.Body), upload.body);
   assert.equal(put.input.Metadata["client-encrypted"], "true");
   assert.equal(JSON.stringify(put.input).includes("secret-access-key"), false);
+});
+
+test("upload grant requests reuse the shared submission, digest and size validators", () => {
+  const body = Buffer.from("0123456789abcdef0123456789abcdef");
+  assert.deepEqual(
+    validateUploadGrantRequest({
+      submissionId: submissionId.toUpperCase(),
+      ciphertextSha256: sha256(body).toUpperCase(),
+      byteLength: body.length,
+    }),
+    {
+      submissionId,
+      ciphertextSha256: sha256(body),
+      byteLength: body.length,
+    },
+  );
+
+  assert.throws(
+    () =>
+      validateUploadGrantRequest({
+        submissionId,
+        ciphertextSha256: sha256(body),
+        byteLength: body.length,
+        originalBase64: "do-not-accept",
+      }),
+    /must never be sent/,
+  );
+  assert.throws(
+    () =>
+      validateUploadGrantRequest({
+        submissionId: "not-a-uuid",
+        ciphertextSha256: sha256(body),
+        byteLength: body.length,
+      }),
+    /submissionId must be a random UUID v4/,
+  );
+  assert.throws(
+    () =>
+      validateUploadGrantRequest({
+        submissionId,
+        ciphertextSha256: "zz",
+        byteLength: body.length,
+      }),
+    /ciphertextSha256 must be a 64-character hexadecimal/,
+  );
+  assert.throws(
+    () =>
+      validateUploadGrantRequest({
+        submissionId,
+        ciphertextSha256: sha256(body),
+        byteLength: 25 * 1024 * 1024 + 17,
+      }),
+    /byteLength must be a positive integer/,
+  );
+  assert.throws(
+    () =>
+      validateUploadGrantRequest({
+        submissionId,
+        ciphertextSha256: sha256(body),
+        byteLength: 0,
+      }),
+    /byteLength must be a positive integer/,
+  );
+});
+
+async function uploadGrantScenario(coordinator) {
+  const body = Buffer.from("0123456789abcdef0123456789abcdef");
+  const otherBody = Buffer.from("fedcba9876543210fedcba9876543210");
+  const binding = {
+    submissionId,
+    ciphertextSha256: sha256(body),
+    byteLength: body.length,
+  };
+  const outcome = [];
+
+  const grant = await coordinator.issueUploadGrant(binding);
+  outcome.push(`format:${/^[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/.test(grant.grantId)}`);
+  outcome.push(`ttl:${Date.parse(grant.expiresAt) - Date.now() > 14 * 60 * 1000}`);
+
+  outcome.push(`unknown:${await coordinator.openUploadGrant(`${crypto.randomUUID()}.${"a".repeat(43)}`, binding)}`);
+  outcome.push(`malformed:${await coordinator.openUploadGrant("not-a-grant", binding)}`);
+  outcome.push(
+    `tampered:${await coordinator.openUploadGrant(
+      `${grant.grantId.split(".")[0]}.${"b".repeat(43)}`,
+      binding,
+    )}`,
+  );
+  outcome.push(
+    `submission:${await coordinator.openUploadGrant(grant.grantId, {
+      ...binding,
+      submissionId: otherSubmissionId,
+    })}`,
+  );
+  outcome.push(
+    `digest:${await coordinator.openUploadGrant(grant.grantId, {
+      ...binding,
+      ciphertextSha256: sha256(otherBody),
+    })}`,
+  );
+  outcome.push(
+    `size:${await coordinator.openUploadGrant(grant.grantId, {
+      ...binding,
+      byteLength: body.length + 1,
+    })}`,
+  );
+
+  const opened = await coordinator.openUploadGrant(grant.grantId, binding);
+  outcome.push(`opened:${opened.consumed}`);
+  outcome.push(`consume:${await opened.consume()}`);
+  outcome.push(`consumeTwice:${await opened.consume()}`);
+
+  const replayed = await coordinator.openUploadGrant(grant.grantId, binding);
+  outcome.push(`replayConsumed:${replayed.consumed}`);
+  outcome.push(
+    `replayOtherCiphertext:${await coordinator.openUploadGrant(grant.grantId, {
+      ...binding,
+      ciphertextSha256: sha256(otherBody),
+      byteLength: otherBody.length,
+    })}`,
+  );
+
+  const expiring = await coordinator.issueUploadGrant(binding, { ttlMs: 20 });
+  await sleep(60);
+  outcome.push(`expired:${await coordinator.openUploadGrant(expiring.grantId, binding)}`);
+
+  return outcome;
+}
+
+test("the memory and Redis adapters enforce identical single-use upload grants", async () => {
+  const memory = await uploadGrantScenario(createMemoryCoordinator());
+  const redis = await uploadGrantScenario(
+    createRedisCoordinator(createFakeRedisClient()),
+  );
+
+  assert.deepEqual(memory, [
+    "format:true",
+    "ttl:true",
+    "unknown:null",
+    "malformed:null",
+    "tampered:null",
+    "submission:null",
+    "digest:null",
+    "size:null",
+    "opened:false",
+    "consume:true",
+    "consumeTwice:false",
+    "replayConsumed:true",
+    "replayOtherCiphertext:null",
+    "expired:null",
+  ]);
+  assert.deepEqual(redis, memory);
+  assert.equal(UPLOAD_GRANT_TTL_MS, 15 * 60 * 1000);
 });

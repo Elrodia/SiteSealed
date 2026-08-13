@@ -159,6 +159,53 @@ champs de preuve compatibles. La migration MySQL additive
 `005_rfc3161_independent_verification` conserve l'état des anciens jetons sans
 les présenter rétroactivement comme vérifiés.
 
+## Cycle de vie du stockage privé
+
+Le dépôt d'un ciphertext n'est plus anonyme. Le navigateur demande d'abord une
+autorisation d'envoi à usage unique, puis la présente à l'envoi :
+
+1. `POST /api/storage/upload-grants` avec `{ submissionId, ciphertextSha256,
+   byteLength }` renvoie `{ grantId, expiresAt }`. L'autorisation est conservée
+   par le coordinateur (Redis en production, mémoire avec
+   `DATABASE_MODE=optional`) pendant **15 minutes** ;
+2. `PUT /api/storage/uploads/:submissionId` exige l'en-tête
+   `X-SiteSealed-Upload-Grant`. Son absence renvoie `401
+   UPLOAD_GRANT_REQUIRED`. Une autorisation inconnue, expirée, déjà consommée
+   pour un autre objet, ou dont le `submissionId`, le `ciphertextSha256` ou le
+   `byteLength` ne correspondent pas exactement renvoie `403
+   UPLOAD_GRANT_REJECTED` ;
+3. l'autorisation est consommée atomiquement au premier stockage réussi. Un
+   renvoi du **même** objet chiffré reste idempotent et répond `200`
+   `ENCRYPTED_ORIGINAL_REUSED` ; une autorisation consommée ne peut jamais
+   écrire un objet différent.
+
+La limite anonyme par IP (`SEAL_RATE_LIMIT_PER_HOUR`, 20 par défaut) reste
+appliquée aux deux points d'entrée. Le serveur ne reçoit toujours ni original
+lisible ni clé AES : l'autorisation ne porte que sur une empreinte et une
+taille.
+
+**Expiration des objets orphelins.** Un ciphertext peut être stocké sans que le
+reçu correspondant soit jamais créé (abandon, erreur réseau, requête
+malveillante). Ces objets orphelins ne sont pas supprimés par l'application :
+aucune suppression de bucket n'est implémentée dans le code, afin qu'aucune
+preuve référencée ne puisse être effacée par un bug applicatif. L'opérateur
+**doit** configurer une règle de cycle de vie S3 sur le Bucket privé :
+
+```text
+Préfixe          : sealed/v1.2/
+Action           : expiration des objets courants après 1 jour (24 h)
+Portée attendue  : ciphertexts sans reçu MySQL associé
+```
+
+Les objets déjà liés à un reçu doivent être exclus de cette règle : supprimer
+un ciphertext référencé casserait le téléchargement de la sauvegarde chiffrée
+du kit de récupération. S3 ne peut pas lire le registre MySQL ; c'est donc à
+l'opérateur de restreindre la portée de la règle (marquage d'objet appliqué par
+un rapprochement externe, ou préfixe dédié) et de la vérifier sur un objet de
+test avant de l'appliquer au Bucket de production. La suppression d'un
+ciphertext, orphelin ou non, ne modifie jamais une preuve publique : le reçu,
+l'empreinte du fichier et celle du ciphertext restent vérifiables sans l'objet.
+
 ## Structure utile
 
 - `server/evidency.js` : client sandbox strict et barrière avant stockage ;

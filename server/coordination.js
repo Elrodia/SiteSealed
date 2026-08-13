@@ -1,8 +1,16 @@
-import { createHash, randomUUID } from "node:crypto";
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import { createClient } from "redis";
 
 const KEY_PREFIX = "sitesealed:v1.4";
 const DEFAULT_RAIL_STATUS_TTL_MS = 25 * 60 * 60 * 1000;
+export const UPLOAD_GRANT_TTL_MS = 15 * 60 * 1000;
+const UPLOAD_GRANT_ID_PATTERN =
+  /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.([A-Za-z0-9_-]{43})$/;
 const RATE_LIMIT_SCRIPT = `
 local current = redis.call('INCR', KEYS[1])
 if current == 1 then
@@ -64,6 +72,62 @@ function jobLockKey(name) {
 function railStatusKey(name) {
   const safeName = String(name ?? "rail").replace(/[^a-z0-9:_-]/gi, "_");
   return `${KEY_PREFIX}:runtime-rail:${safeName}`;
+}
+
+function uploadGrantKey(reference) {
+  return `${KEY_PREFIX}:upload-grant:${reference}`;
+}
+
+function uploadGrantConsumedKey(reference) {
+  return `${KEY_PREFIX}:upload-grant-consumed:${reference}`;
+}
+
+function createUploadGrantId() {
+  return `${randomUUID()}.${randomBytes(32).toString("base64url")}`;
+}
+
+function parseUploadGrantId(grantId) {
+  const match = UPLOAD_GRANT_ID_PATTERN.exec(String(grantId ?? "").trim());
+  return match ? { reference: match[1], secret: match[2] } : null;
+}
+
+function uploadGrantSecretDigest(secret) {
+  return createHash("sha256")
+    .update(`${KEY_PREFIX}:upload-grant-secret:${secret}`)
+    .digest("hex");
+}
+
+function sameUploadGrantSecret(left, right) {
+  const leftBytes = Buffer.from(String(left), "hex");
+  const rightBytes = Buffer.from(String(right), "hex");
+  return (
+    leftBytes.length === 32 &&
+    rightBytes.length === 32 &&
+    timingSafeEqual(leftBytes, rightBytes)
+  );
+}
+
+function uploadGrantBinding(binding) {
+  const submissionId = String(binding?.submissionId ?? "");
+  const ciphertextSha256 = String(binding?.ciphertextSha256 ?? "");
+  const byteLength = Number(binding?.byteLength);
+  if (
+    !submissionId ||
+    !ciphertextSha256 ||
+    !Number.isSafeInteger(byteLength) ||
+    byteLength <= 0
+  ) {
+    return null;
+  }
+  return { submissionId, ciphertextSha256, byteLength };
+}
+
+function matchesUploadGrant(record, binding) {
+  return (
+    record.submissionId === binding.submissionId &&
+    record.ciphertextSha256 === binding.ciphertextSha256 &&
+    record.byteLength === binding.byteLength
+  );
 }
 
 function serializeRailStatus(status) {
@@ -199,6 +263,66 @@ export function createRedisCoordinator(client, options = {}) {
       };
     },
 
+    async issueUploadGrant(binding, { ttlMs = UPLOAD_GRANT_TTL_MS } = {}) {
+      const bound = uploadGrantBinding(binding);
+      if (!bound) throw new Error("An upload grant requires a validated binding.");
+      const grantId = createUploadGrantId();
+      const { reference, secret } = parseUploadGrantId(grantId);
+      const lifetimeMs = positiveInteger(ttlMs, UPLOAD_GRANT_TTL_MS);
+      const expiresAt = Date.now() + lifetimeMs;
+      const stored = await client.set(
+        uploadGrantKey(reference),
+        JSON.stringify({
+          ...bound,
+          secretSha256: uploadGrantSecretDigest(secret),
+          expiresAt,
+        }),
+        { NX: true, PX: lifetimeMs },
+      );
+      if (stored !== "OK") {
+        throw new Error("The upload grant could not be stored for single use.");
+      }
+      return { grantId, expiresAt: new Date(expiresAt).toISOString() };
+    },
+
+    async openUploadGrant(grantId, binding) {
+      const parsed = parseUploadGrantId(grantId);
+      const bound = uploadGrantBinding(binding);
+      if (!parsed || !bound) return null;
+      const serialized = await client.get(uploadGrantKey(parsed.reference));
+      if (!serialized) return null;
+      let record;
+      try {
+        record = JSON.parse(serialized);
+      } catch {
+        return null;
+      }
+      if (
+        !sameUploadGrantSecret(
+          uploadGrantSecretDigest(parsed.secret),
+          record.secretSha256,
+        ) ||
+        !matchesUploadGrant(record, bound)
+      ) {
+        return null;
+      }
+      const expiresAt = Number(record.expiresAt);
+      if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null;
+      const consumedKey = uploadGrantConsumedKey(parsed.reference);
+      const consumed = Boolean(await client.get(consumedKey));
+      return {
+        consumed,
+        expiresAt: new Date(expiresAt).toISOString(),
+        async consume() {
+          const claimed = await client.set(consumedKey, "1", {
+            NX: true,
+            PX: Math.max(1, expiresAt - Date.now()),
+          });
+          return claimed === "OK";
+        },
+      };
+    },
+
     async acquireJobLock(name, { ttlMs = 10 * 60 * 1000 } = {}) {
       const token = randomUUID();
       const key = jobLockKey(name);
@@ -248,6 +372,7 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
   const cachedRecords = new Map();
   const locks = new Map();
   const railStatuses = new Map();
+  const uploadGrants = new Map();
 
   function removeExpired(timestamp) {
     for (const [key, entry] of rateLimits) {
@@ -261,6 +386,9 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
     }
     for (const [key, entry] of railStatuses) {
       if (entry.expiresAt <= timestamp) railStatuses.delete(key);
+    }
+    for (const [key, entry] of uploadGrants) {
+      if (entry.expiresAt <= timestamp) uploadGrants.delete(key);
     }
   }
 
@@ -339,6 +467,53 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
         if (released) return;
         released = true;
         if (locks.get(key)?.token === token) locks.delete(key);
+      };
+    },
+
+    async issueUploadGrant(binding, { ttlMs = UPLOAD_GRANT_TTL_MS } = {}) {
+      const timestamp = now();
+      removeExpired(timestamp);
+      const bound = uploadGrantBinding(binding);
+      if (!bound) throw new Error("An upload grant requires a validated binding.");
+      const grantId = createUploadGrantId();
+      const { reference, secret } = parseUploadGrantId(grantId);
+      const expiresAt =
+        timestamp + positiveInteger(ttlMs, UPLOAD_GRANT_TTL_MS);
+      uploadGrants.set(uploadGrantKey(reference), {
+        ...bound,
+        secretSha256: uploadGrantSecretDigest(secret),
+        expiresAt,
+        consumed: false,
+      });
+      return { grantId, expiresAt: new Date(expiresAt).toISOString() };
+    },
+
+    async openUploadGrant(grantId, binding) {
+      const timestamp = now();
+      removeExpired(timestamp);
+      const parsed = parseUploadGrantId(grantId);
+      const bound = uploadGrantBinding(binding);
+      if (!parsed || !bound) return null;
+      const record = uploadGrants.get(uploadGrantKey(parsed.reference));
+      if (!record) return null;
+      if (
+        !sameUploadGrantSecret(
+          uploadGrantSecretDigest(parsed.secret),
+          record.secretSha256,
+        ) ||
+        !matchesUploadGrant(record, bound) ||
+        record.expiresAt <= timestamp
+      ) {
+        return null;
+      }
+      return {
+        consumed: record.consumed,
+        expiresAt: new Date(record.expiresAt).toISOString(),
+        async consume() {
+          if (record.consumed) return false;
+          record.consumed = true;
+          return true;
+        },
       };
     },
 

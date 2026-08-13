@@ -7,11 +7,13 @@ import {
   createEncryptedUploadHeaders,
   createRecoveryToken,
   createSealRequest,
+  createUploadGrantRequest,
   encryptManifest,
   encryptOriginal,
   recalculateEvidenceDigest,
   sha256File,
   stableStringify,
+  UPLOAD_GRANT_HEADER,
   verifyPublicProofArtifacts,
 } from "../client/src/sealing.js";
 import { buildMerkleTree } from "./merkle.js";
@@ -215,4 +217,41 @@ test("the browser reports a valid local receipt while its external anchor is pen
     merkleInclusion: "NOT_ATTACHED",
     transactionBinding: "NOT_ATTACHED",
   });
+});
+
+test("the browser requests a single-use upload grant before sending ciphertext", async () => {
+  const file = new File(["grant"], "grant.txt", {
+    type: "text/plain",
+    lastModified: Date.parse("2026-08-11T20:00:00.000Z"),
+  });
+  const encrypted = await encryptManifest(
+    buildManifest(file, {
+      projectReference: "RBP-C-2026",
+      description: "Upload grant",
+    }),
+  );
+  const encryptedFile = await encryptOriginal(file, encrypted.recoveryKey);
+  const submissionId = "123e4567-e89b-42d3-a456-426614174000";
+
+  assert.deepEqual(
+    createUploadGrantRequest({
+      submissionId,
+      encryptedOriginal: encryptedFile,
+    }),
+    {
+      submissionId,
+      ciphertextSha256: encryptedFile.envelope.ciphertextSha256,
+      byteLength: encryptedFile.envelope.ciphertextBytes,
+    },
+  );
+
+  const recoveryToken = await createRecoveryToken();
+  const headers = createEncryptedUploadHeaders({
+    recordSha256: await sha256File(file),
+    encryptedOriginal: encryptedFile,
+    recoveryTokenSha256: recoveryToken.sha256,
+    uploadGrantId: "grant-id-from-the-server",
+  });
+  assert.equal(headers[UPLOAD_GRANT_HEADER], "grant-id-from-the-server");
+  assert.equal(JSON.stringify(headers).includes(encrypted.recoveryKey), false);
 });

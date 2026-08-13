@@ -47,24 +47,54 @@ function validRequest(overrides = {}) {
   return request;
 }
 
+async function requestUploadGrant(body, { overrides = {}, target } = {}) {
+  const upload = body[TEST_UPLOAD];
+  const response = await fetch(`${target ?? baseUrl}/api/storage/upload-grants`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      submissionId: body.submissionId,
+      ciphertextSha256: sha256(upload.ciphertext),
+      byteLength: upload.ciphertext.length,
+      ...overrides,
+    }),
+  });
+  return { response, payload: await response.json() };
+}
+
+function uploadHeaders(body, grantId) {
+  const upload = body[TEST_UPLOAD];
+  const headers = {
+    "content-type": "application/octet-stream",
+    "x-sitesealed-record-sha256": body.recordSha256,
+    "x-sitesealed-cipher-sha256": sha256(upload.ciphertext),
+    "x-sitesealed-cipher-iv": upload.iv,
+    "x-sitesealed-original-bytes": String(upload.plaintextBytes),
+    "x-sitesealed-recovery-token-sha256": upload.recoveryTokenSha256,
+  };
+  if (grantId) headers["x-sitesealed-upload-grant"] = grantId;
+  return headers;
+}
+
+function uploadEncryptedOriginal(body, { grantId, target } = {}) {
+  return fetch(
+    `${target ?? baseUrl}/api/storage/uploads/${encodeURIComponent(body.submissionId)}`,
+    {
+      method: "PUT",
+      headers: uploadHeaders(body, grantId),
+      body: body[TEST_UPLOAD].ciphertext,
+    },
+  );
+}
+
 async function createReceipt(body = validRequest()) {
   const upload = body[TEST_UPLOAD];
   if (!body.encryptedObject) {
-    const uploadResponse = await fetch(
-      `${baseUrl}/api/storage/uploads/${encodeURIComponent(body.submissionId)}`,
-      {
-        method: "PUT",
-        headers: {
-          "content-type": "application/octet-stream",
-          "x-sitesealed-record-sha256": body.recordSha256,
-          "x-sitesealed-cipher-sha256": sha256(upload.ciphertext),
-          "x-sitesealed-cipher-iv": upload.iv,
-          "x-sitesealed-original-bytes": String(upload.plaintextBytes),
-          "x-sitesealed-recovery-token-sha256": upload.recoveryTokenSha256,
-        },
-        body: upload.ciphertext,
-      },
-    );
+    const grant = await requestUploadGrant(body);
+    assert.ok(grant.response.ok, JSON.stringify(grant.payload));
+    const uploadResponse = await uploadEncryptedOriginal(body, {
+      grantId: grant.payload.grantId,
+    });
     const uploadPayload = await uploadResponse.json();
     assert.ok(uploadResponse.ok, JSON.stringify(uploadPayload));
     body.encryptedObject = uploadPayload.encryptedObject;
@@ -538,8 +568,10 @@ test("malformed JSON receives a controlled client error", async () => {
 });
 
 test("the anonymous sealing limiter returns standard retry guidance", async () => {
+  const coordinator = createMemoryCoordinator();
   const limitedApp = createApp({
     recordStore: createMemoryRecordStore(),
+    coordinator,
     sealRateLimit: 1,
   });
   const limitedServer = await new Promise((resolve) => {
@@ -551,22 +583,15 @@ test("the anonymous sealing limiter returns standard retry guidance", async () =
   try {
     const upload = async (body) => {
       const fixture = body[TEST_UPLOAD];
-      return fetch(
-        `${limitedBaseUrl}/api/storage/uploads/${encodeURIComponent(body.submissionId)}`,
-        {
-          method: "PUT",
-          headers: {
-            "content-type": "application/octet-stream",
-            "x-sitesealed-record-sha256": body.recordSha256,
-            "x-sitesealed-cipher-sha256": sha256(fixture.ciphertext),
-            "x-sitesealed-cipher-iv": fixture.iv,
-            "x-sitesealed-original-bytes": String(fixture.plaintextBytes),
-            "x-sitesealed-recovery-token-sha256":
-              fixture.recoveryTokenSha256,
-          },
-          body: fixture.ciphertext,
-        },
-      );
+      const grant = await coordinator.issueUploadGrant({
+        submissionId: body.submissionId,
+        ciphertextSha256: sha256(fixture.ciphertext),
+        byteLength: fixture.ciphertext.length,
+      });
+      return uploadEncryptedOriginal(body, {
+        grantId: grant.grantId,
+        target: limitedBaseUrl,
+      });
     };
     const first = await upload(validRequest());
     const second = await upload(validRequest());
@@ -578,4 +603,147 @@ test("the anonymous sealing limiter returns standard retry guidance", async () =
       limitedServer.close((error) => (error ? reject(error) : resolve())),
     );
   }
+});
+
+test("an encrypted upload without a server-issued grant is refused", async () => {
+  const body = validRequest();
+  const response = await uploadEncryptedOriginal(body);
+  assert.equal(response.status, 401);
+  const payload = await response.json();
+  assert.equal(payload.ok, false);
+  assert.equal(payload.code, "UPLOAD_GRANT_REQUIRED");
+
+  const unknown = await uploadEncryptedOriginal(body, {
+    grantId: `${crypto.randomUUID()}.${"a".repeat(43)}`,
+  });
+  assert.equal(unknown.status, 403);
+  assert.equal((await unknown.json()).code, "UPLOAD_GRANT_REJECTED");
+});
+
+test("an upload grant authorises exactly one submission, digest and size", async () => {
+  const body = validRequest();
+  const other = validRequest();
+
+  const wrongSubmission = await requestUploadGrant(body, {
+    overrides: { submissionId: other.submissionId },
+  });
+  assert.equal(wrongSubmission.response.status, 201);
+  const submissionRejected = await uploadEncryptedOriginal(body, {
+    grantId: wrongSubmission.payload.grantId,
+  });
+  assert.equal(submissionRejected.status, 403);
+  assert.equal((await submissionRejected.json()).code, "UPLOAD_GRANT_REJECTED");
+
+  const wrongDigest = await requestUploadGrant(body, {
+    overrides: { ciphertextSha256: sha256(other[TEST_UPLOAD].ciphertext) },
+  });
+  const digestRejected = await uploadEncryptedOriginal(body, {
+    grantId: wrongDigest.payload.grantId,
+  });
+  assert.equal(digestRejected.status, 403);
+  assert.equal((await digestRejected.json()).code, "UPLOAD_GRANT_REJECTED");
+
+  const wrongSize = await requestUploadGrant(body, {
+    overrides: { byteLength: body[TEST_UPLOAD].ciphertext.length + 1 },
+  });
+  const sizeRejected = await uploadEncryptedOriginal(body, {
+    grantId: wrongSize.payload.grantId,
+  });
+  assert.equal(sizeRejected.status, 403);
+  assert.equal((await sizeRejected.json()).code, "UPLOAD_GRANT_REJECTED");
+});
+
+test("an upload grant cannot be replayed for a different ciphertext", async () => {
+  const body = validRequest();
+  const grant = await requestUploadGrant(body);
+  const stored = await uploadEncryptedOriginal(body, {
+    grantId: grant.payload.grantId,
+  });
+  assert.equal(stored.status, 201);
+  assert.equal((await stored.json()).status, "ENCRYPTED_ORIGINAL_STORED");
+
+  const replay = validRequest();
+  replay.submissionId = body.submissionId;
+  const replayed = await uploadEncryptedOriginal(replay, {
+    grantId: grant.payload.grantId,
+  });
+  assert.equal(replayed.status, 403);
+  assert.equal((await replayed.json()).code, "UPLOAD_GRANT_REJECTED");
+});
+
+test("an identical re-upload of the same object stays idempotent", async () => {
+  const body = validRequest();
+  const first = await requestUploadGrant(body);
+  const created = await uploadEncryptedOriginal(body, {
+    grantId: first.payload.grantId,
+  });
+  assert.equal(created.status, 201);
+
+  const replayedGrant = await uploadEncryptedOriginal(body, {
+    grantId: first.payload.grantId,
+  });
+  assert.equal(replayedGrant.status, 200);
+  assert.equal(
+    (await replayedGrant.json()).status,
+    "ENCRYPTED_ORIGINAL_REUSED",
+  );
+
+  const second = await requestUploadGrant(body);
+  const reused = await uploadEncryptedOriginal(body, {
+    grantId: second.payload.grantId,
+  });
+  assert.equal(reused.status, 200);
+  const payload = await reused.json();
+  assert.equal(payload.created, false);
+  assert.equal(payload.status, "ENCRYPTED_ORIGINAL_REUSED");
+});
+
+test("an expired upload grant is refused after its 15 minute window", async () => {
+  let timestamp = Date.now();
+  const expiringApp = createApp({
+    recordStore: createMemoryRecordStore(),
+    coordinator: createMemoryCoordinator({ now: () => timestamp }),
+    sealRateLimit: 100,
+  });
+  const expiringServer = await new Promise((resolve) => {
+    const instance = expiringApp.listen(0, "127.0.0.1", () => resolve(instance));
+  });
+  const target = `http://127.0.0.1:${expiringServer.address().port}`;
+
+  try {
+    const body = validRequest();
+    const grant = await requestUploadGrant(body, { target });
+    assert.equal(grant.response.status, 201);
+    assert.equal(
+      Date.parse(grant.payload.expiresAt) - timestamp,
+      15 * 60 * 1000,
+    );
+
+    timestamp += 15 * 60 * 1000 + 1;
+    const expired = await uploadEncryptedOriginal(body, {
+      grantId: grant.payload.grantId,
+      target,
+    });
+    assert.equal(expired.status, 403);
+    assert.equal((await expired.json()).code, "UPLOAD_GRANT_REJECTED");
+  } finally {
+    await new Promise((resolve, reject) =>
+      expiringServer.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("upload grant requests refuse original file data and malformed bindings", async () => {
+  const body = validRequest();
+  const rejected = await requestUploadGrant(body, {
+    overrides: { originalBase64: "do-not-accept" },
+  });
+  assert.equal(rejected.response.status, 400);
+  assert.equal(rejected.payload.code, "INVALID_UPLOAD_GRANT_REQUEST");
+
+  const invalidSize = await requestUploadGrant(body, {
+    overrides: { byteLength: 0 },
+  });
+  assert.equal(invalidSize.response.status, 400);
+  assert.equal(invalidSize.payload.code, "INVALID_ENCRYPTED_OBJECT");
 });

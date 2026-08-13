@@ -38,7 +38,9 @@ import { createMemoryRecordStore } from "./specimen.js";
 import {
   createMemoryObjectStore,
   createS3ObjectStoreFromEnv,
+  UPLOAD_GRANT_HEADER,
   validateEncryptedUpload,
+  validateUploadGrantRequest,
 } from "./storage.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -420,6 +422,34 @@ export function createApp({
     });
   });
 
+  app.post(
+    "/api/storage/upload-grants",
+    createSealRateLimiter({
+      coordinator,
+      scope: "upload-grant",
+      limit: sealRateLimit,
+    }),
+    async (request, response) => {
+      const requested = validateUploadGrantRequest(request.body);
+      let grant;
+      try {
+        grant = await coordinator.issueUploadGrant(requested);
+      } catch (error) {
+        console.error(`Upload grant issuance failed: ${error.message}`);
+        throw new ApiError(
+          503,
+          "COORDINATION_UNAVAILABLE",
+          "The private upload authorisation service is temporarily unavailable.",
+        );
+      }
+      return response.status(201).json({
+        ok: true,
+        grantId: grant.grantId,
+        expiresAt: grant.expiresAt,
+      });
+    },
+  );
+
   app.put(
     "/api/storage/uploads/:submissionId",
     createSealRateLimiter({
@@ -427,6 +457,18 @@ export function createApp({
       scope: "encrypted-upload",
       limit: sealRateLimit,
     }),
+    (request, _response, next) => {
+      if (!String(request.get(UPLOAD_GRANT_HEADER) ?? "").trim()) {
+        return next(
+          new ApiError(
+            401,
+            "UPLOAD_GRANT_REQUIRED",
+            `Request a single-use upload grant and send it in the ${UPLOAD_GRANT_HEADER} header.`,
+          ),
+        );
+      }
+      return next();
+    },
     express.raw({
       type: "application/octet-stream",
       limit: MAX_ENCRYPTED_ORIGINAL_BYTES,
@@ -444,7 +486,34 @@ export function createApp({
         headers: request.headers,
         body: request.body,
       });
+      let grant;
+      try {
+        grant = await coordinator.openUploadGrant(
+          request.get(UPLOAD_GRANT_HEADER),
+          {
+            submissionId: upload.submissionId,
+            ciphertextSha256: upload.ciphertextSha256,
+            byteLength: upload.body.length,
+          },
+        );
+      } catch (error) {
+        console.error(`Upload grant verification failed: ${error.message}`);
+        throw new ApiError(
+          503,
+          "COORDINATION_UNAVAILABLE",
+          "The private upload authorisation service is temporarily unavailable.",
+        );
+      }
+      if (!grant) {
+        throw new ApiError(
+          403,
+          "UPLOAD_GRANT_REJECTED",
+          "This upload grant is unknown, expired or does not authorise exactly this ciphertext.",
+        );
+      }
+
       const result = await objectStore.putEncryptedOriginal(upload);
+      if (!grant.consumed) await grant.consume();
       return response.status(result.created ? 201 : 200).json({
         ok: true,
         created: result.created,

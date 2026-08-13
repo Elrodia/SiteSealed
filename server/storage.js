@@ -14,6 +14,7 @@ import {
   decodeCanonicalBase64,
   normalizeDigest,
   normalizeSubmissionId,
+  positiveByteCount,
   validateEncryptedObjectDescriptor,
 } from "./records.js";
 
@@ -24,6 +25,12 @@ const S3_CONFIG_KEYS = [
   "S3_REGION",
   "S3_SECRET_KEY",
 ];
+const UPLOAD_GRANT_FIELDS = new Set([
+  "submissionId",
+  "ciphertextSha256",
+  "byteLength",
+]);
+export const UPLOAD_GRANT_HEADER = "x-sitesealed-upload-grant";
 
 function sha256Hex(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -184,6 +191,31 @@ export function validateEncryptedUpload({ submissionId, headers, body }) {
       "x-sitesealed-recovery-token-sha256",
     ),
     body,
+  };
+}
+
+export function validateUploadGrantRequest(body) {
+  if (
+    !body ||
+    typeof body !== "object" ||
+    Array.isArray(body) ||
+    Object.keys(body).some((key) => !UPLOAD_GRANT_FIELDS.has(key))
+  ) {
+    throw new ApiError(
+      400,
+      "INVALID_UPLOAD_GRANT_REQUEST",
+      "An upload grant request must contain only submissionId, ciphertextSha256 and byteLength. Original file bytes must never be sent to this endpoint.",
+    );
+  }
+
+  return {
+    submissionId: normalizeSubmissionId(body.submissionId),
+    ciphertextSha256: normalizeDigest(body.ciphertextSha256, "ciphertextSha256"),
+    byteLength: positiveByteCount(
+      body.byteLength,
+      "byteLength",
+      MAX_ENCRYPTED_ORIGINAL_BYTES,
+    ),
   };
 }
 
