@@ -448,13 +448,11 @@ function GoogleAccountAccess({ auth, onLogout }) {
         });
         buttonRef.current.replaceChildren();
         window.google.accounts.id.renderButton(buttonRef.current, {
-          type: "standard",
+          type: "icon",
           theme: "outline_dark",
-          size: "large",
-          shape: "rectangular",
+          size: "small",
+          shape: "square",
           text: "continue_with",
-          logo_alignment: "left",
-          width: 240,
           locale: "en",
         });
         setButtonError("");
