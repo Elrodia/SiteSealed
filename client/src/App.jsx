@@ -239,6 +239,34 @@ function Icon({ name, size = 20 }) {
   );
 }
 
+function GoogleMark() {
+  return (
+    <svg
+      className="google-mark"
+      viewBox="0 0 18 18"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path
+        fill="#4285f4"
+        d="M17.64 9.205c0-.638-.057-1.252-.164-1.841H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.258h2.909c1.702-1.566 2.683-3.874 2.683-6.614Z"
+      />
+      <path
+        fill="#34a853"
+        d="M9 18c2.43 0 4.468-.806 5.957-2.18l-2.909-2.259c-.806.54-1.835.859-3.048.859-2.344 0-4.328-1.585-5.037-3.715H.956v2.332A9 9 0 0 0 9 18Z"
+      />
+      <path
+        fill="#fbbc05"
+        d="M3.963 10.705A5.41 5.41 0 0 1 3.682 9c0-.592.102-1.168.281-1.705V4.963H.956A9 9 0 0 0 0 9c0 1.452.347 2.827.956 4.037l3.007-2.332Z"
+      />
+      <path
+        fill="#ea4335"
+        d="M9 3.58c1.322 0 2.507.454 3.441 1.346l2.581-2.58C13.463.892 11.425 0 9 0A9 9 0 0 0 .956 4.963l3.007 2.332C4.672 5.165 6.656 3.58 9 3.58Z"
+      />
+    </svg>
+  );
+}
+
 function Brand({ compact = false }) {
   return (
     <a className={`brand${compact ? " brand--compact" : ""}`} href="#top" aria-label="SiteSealed home">
@@ -481,7 +509,7 @@ function GoogleSignInControl({ auth }) {
           shape: "rectangular",
           text: "continue_with",
           logo_alignment: "left",
-          width: 260,
+          width: 400,
           locale: "en_US",
         });
         setButtonError("");
@@ -519,20 +547,30 @@ function GoogleSignInControl({ auth }) {
 
   return (
     <div className="google-signin-control">
-      <div className="google-signin-slot">
+      <div className="google-signin-slot" data-ready={buttonReady ? "true" : "false"}>
+        <span
+          className="google-signin-visual button button--amber"
+          aria-hidden="true"
+        >
+          <span className="google-signin-logo"><GoogleMark /></span>
+          <span className="google-signin-label">
+            Continue with Google before uploading
+          </span>
+          <Icon name="arrow" size={17} />
+        </span>
+        {/* Google keeps ownership of the real clickable and keyboard-focusable control. */}
         <div
           ref={buttonRef}
           className="google-signin-button"
-          aria-label="Continue with Google"
+          aria-label="Continue with Google before uploading"
           aria-busy={!buttonReady}
         />
-        {!buttonReady && (
-          <span className="google-signin-button__loading">
-            {buttonError ? "Google sign-in unavailable" : "Loading secure sign-in…"}
-          </span>
-        )}
       </div>
-      {buttonError && <small role="alert">{buttonError}</small>}
+      {!buttonReady && (
+        <small role={buttonError ? "alert" : "status"}>
+          {buttonError || "Loading secure Google sign-in…"}
+        </small>
+      )}
     </div>
   );
 }

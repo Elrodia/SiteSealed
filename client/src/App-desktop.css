@@ -1547,7 +1547,7 @@ button {
 
 .google-signin-control {
   display: flex;
-  width: 260px;
+  width: 400px;
   max-width: 100%;
   align-items: flex-start;
   flex: 0 0 auto;
@@ -1563,57 +1563,97 @@ button {
 
 .google-signin-slot {
   position: relative;
-  width: 260px;
+  width: 400px;
   max-width: 100%;
-  height: 44px;
+  height: 52px;
+  border-radius: 4px;
+  cursor: wait;
 }
 
 .google-signin-button {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
   contain: layout paint;
-  width: 260px;
-  max-width: 260px;
-  height: 44px;
-  max-height: 44px;
+  width: 100%;
+  max-width: 400px;
+  height: 52px;
+  max-height: 52px;
   overflow: hidden;
+  border-radius: 4px;
+  cursor: pointer;
   isolation: isolate;
+  opacity: 0;
 }
 
 .google-signin-button > div,
 .google-signin-button iframe {
-  width: 260px !important;
-  max-width: 260px !important;
-  height: 44px !important;
-  max-height: 44px !important;
+  width: 100% !important;
+  max-width: 400px !important;
+  height: 52px !important;
+  max-height: 52px !important;
   overflow: hidden !important;
 }
 
-.google-signin-button svg,
-.google-signin-button img {
-  width: 18px !important;
-  max-width: 18px !important;
-  height: 18px !important;
-  max-height: 18px !important;
-}
-
-.google-signin-button__loading {
+.google-signin-visual {
   position: absolute;
   inset: 0;
   z-index: 1;
-  display: flex;
-  width: 260px;
-  max-width: 100%;
-  height: 44px;
-  align-items: center;
-  padding: 0 15px;
-  border: 1px solid #8e918f;
-  border-radius: 4px;
-  background: #131314;
-  color: #c6c7c9;
+  width: 100%;
+  min-height: 52px;
+  justify-content: flex-start;
+  padding-inline: 20px;
   pointer-events: none;
-  font-family: var(--font-sans);
-  font-size: 0.8rem;
-  font-weight: 600;
-  letter-spacing: 0;
+  transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease, opacity 180ms ease, transform 180ms ease;
+}
+
+.google-signin-logo {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(8, 23, 35, 0.22);
+  flex: 0 0 auto;
+  place-items: center;
+}
+
+.google-mark {
+  display: block;
+  width: 17px;
+  height: 17px;
+}
+
+.google-signin-label {
+  overflow: hidden;
+  flex: 1 1 auto;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.google-signin-visual > .icon {
+  flex: 0 0 auto;
+}
+
+.google-signin-slot[data-ready="false"] .google-signin-visual {
+  opacity: 0.68;
+}
+
+.google-signin-slot[data-ready="true"] {
+  cursor: pointer;
+}
+
+.google-signin-slot[data-ready="true"]:hover .google-signin-visual {
+  border-color: var(--amber-400);
+  background: var(--amber-400);
+  box-shadow: 0 14px 32px rgba(243, 154, 18, 0.24);
+  transform: translateY(-2px);
+}
+
+.google-signin-slot:focus-within .google-signin-visual {
+  outline: 3px solid rgba(91, 199, 152, 0.48);
+  outline-offset: 3px;
 }
 
 .seal-form {

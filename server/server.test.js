@@ -899,6 +899,57 @@ test("receipt creation requires the same completed upload grant", async () => {
   assert.equal(accepted.status, 201);
 });
 
+test("receipt creation accepts a completed Redis descriptor with reordered JSON fields", async () => {
+  const coordinator = createMemoryCoordinator();
+  const claimUploadGrant = coordinator.claimUploadGrant.bind(coordinator);
+  coordinator.claimUploadGrant = async (...arguments_) => {
+    const claim = await claimUploadGrant(...arguments_);
+    if (claim.state !== "completed") return claim;
+    return {
+      ...claim,
+      descriptor: Object.fromEntries(
+        Object.entries(claim.descriptor).reverse(),
+      ),
+    };
+  };
+  const isolated = await listenAuthenticated({
+    coordinator,
+    recordStore: createMemoryRecordStore(),
+    objectStore: createMemoryObjectStore(),
+    sealRateLimit: 100,
+    uploadAdmission: TEST_UPLOAD_ADMISSION,
+  });
+  try {
+    const body = validRequest();
+    const issued = await issueUploadGrant(isolated.url, body, isolated.auth);
+    assert.equal(issued.response.status, 201);
+    const uploadResponse = await fetch(
+      `${isolated.url}/api/storage/uploads/${encodeURIComponent(body.submissionId)}`,
+      {
+        method: "PUT",
+        headers: uploadHeadersFor(body, issued.payload.grant, isolated.auth),
+        body: body[TEST_UPLOAD].ciphertext,
+      },
+    );
+    const uploaded = await uploadResponse.json();
+    assert.equal(uploadResponse.status, 201);
+    body.encryptedObject = uploaded.encryptedObject;
+
+    const recordResponse = await fetch(`${isolated.url}/api/records`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-sitesealed-upload-grant": issued.payload.grant,
+        ...isolated.auth,
+      },
+      body: JSON.stringify(body),
+    });
+    assert.equal(recordResponse.status, 201, await recordResponse.text());
+  } finally {
+    await close(isolated.server);
+  }
+});
+
 test("a forged grant is rejected before encrypted bytes reach object storage", async () => {
   const objectStore = createMemoryObjectStore();
   let storageCalls = 0;

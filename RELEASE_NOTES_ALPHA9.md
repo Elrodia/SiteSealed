@@ -13,9 +13,11 @@ d'auteur du fichier.
 ## Authentification
 
 - bouton officiel Google Identity Services en mode redirection ;
-- avant authentification, le véritable bouton Google officiel occupe la place
-  de l'action principale du formulaire ; il est assorti au thème sombre et
-  strictement borné, puis remplacé par l'action de scellement après connexion ;
+- avant authentification, l'action principale adopte exactement l'UI orange de
+  scellement, avec le petit logo Google, le libellé explicite **Continue with
+  Google before uploading** et une flèche ; la surface interactive reste
+  le contrôle Google Identity Services rendu par Google, puis l'ensemble est
+  remplacé par l'action de scellement après connexion ;
 - le SDK et son bouton sont verrouillés sur l'anglais américain ; un nonce CSP
   unique autorise uniquement les styles injectés par l'instance GIS chargée,
   sans ouvrir globalement `style-src` à `unsafe-inline` ;
@@ -40,6 +42,9 @@ d'auteur du fichier.
 - limites distinctes par IP et par compte ;
 - réservation atomique Redis avant lecture du corps et avant toute écriture S3 ;
 - conservation du nettoyage horaire borné des seuls objets `staging/` orphelins.
+- comparaison canonique du descripteur terminé : la réorganisation des
+  propriétés JSON par Redis/Lua ne peut plus rejeter un objet exact après un
+  upload réussi.
 
 ## Variables du service web
 

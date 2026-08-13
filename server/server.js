@@ -40,6 +40,7 @@ import {
   isValidRecordId,
   normalizeRecordId,
   scopeForRecord,
+  stableStringify,
   validateSealRequest,
 } from "./records.js";
 import { renderReceiptPdf } from "./report.js";
@@ -833,8 +834,8 @@ export function createApp({
       }
       if (
         completedUpload.state !== "completed" ||
-        JSON.stringify(completedUpload.descriptor) !==
-          JSON.stringify(input.encryptedObject)
+        stableStringify(completedUpload.descriptor) !==
+          stableStringify(input.encryptedObject)
       ) {
         throw new ApiError(
           403,

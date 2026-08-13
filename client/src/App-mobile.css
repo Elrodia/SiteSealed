@@ -743,10 +743,24 @@
     grid-template-columns: 1fr;
   }
 
+  .google-signin-control,
+  .google-signin-slot,
   .google-signin-button {
-    width: min(260px, 100%);
+    width: 100%;
     max-width: 100%;
     overflow: hidden;
+  }
+
+  .google-signin-visual {
+    padding-inline: 16px;
+    font-size: 0.73rem;
+  }
+
+  .google-signin-label {
+    overflow: visible;
+    line-height: 1.12;
+    text-overflow: clip;
+    white-space: normal;
   }
 
   .privacy-rail span {

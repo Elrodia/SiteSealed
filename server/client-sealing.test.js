@@ -255,8 +255,14 @@ test("the browser uses Google Identity Services and sends SiteSealed CSRF tokens
   assert.match(source, /type: "standard"/);
   assert.match(source, /theme: "outline_dark"/);
   assert.match(source, /size: "large"/);
-  assert.match(source, /width: 260/);
+  assert.match(source, /width: 400/);
   assert.match(source, /locale: "en_US"/);
+  assert.match(source, /function GoogleMark\(\)/);
+  assert.match(source, /Continue with Google before uploading/);
+  assert.match(
+    source,
+    /className="google-signin-visual button button--amber"/,
+  );
   assert.match(
     source,
     /auth\.status === "ready" && auth\.configured && !auth\.authenticated[\s\S]*?<GoogleSignInControl auth=\{auth\} \/>/,
@@ -268,7 +274,11 @@ test("the browser uses Google Identity Services and sends SiteSealed CSRF tokens
   );
   assert.match(
     desktopStyles,
-    /\.google-signin-button\s*\{[^}]*width: 260px;[^}]*max-width: 260px;[^}]*height: 44px;[^}]*overflow: hidden;/s,
+    /\.google-signin-button\s*\{[^}]*width: 100%;[^}]*max-width: 400px;[^}]*height: 52px;[^}]*overflow: hidden;[^}]*opacity: 0;/s,
+  );
+  assert.match(
+    desktopStyles,
+    /\.google-signin-visual\s*\{[^}]*width: 100%;[^}]*min-height: 52px;[^}]*pointer-events: none;/s,
   );
   assert.doesNotMatch(desktopStyles, /img,\s*\nsvg\s*\{/);
   assert.match(source, /"x-sitesealed-csrf": auth\.csrfToken/);
