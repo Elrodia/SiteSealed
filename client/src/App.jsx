@@ -1306,7 +1306,7 @@ function InfrastructureStatus() {
     <div className="infrastructure-status" aria-live="polite">
       <div className="infrastructure-status__heading">
         <div>
-          <span>V1.4 ALPHA.7 / SIX RUNTIME ROLES</span>
+          <span>V1.4 ALPHA.7.1 / SIX RUNTIME ROLES</span>
           <strong>Private storage, internal audit and two external proof rails.</strong>
         </div>
         <small className={failed ? "is-error" : health ? "is-online" : ""}>
@@ -1705,7 +1705,7 @@ function App() {
             </div>
             <div>
               <strong>Status</strong>
-              <span>Genesis v1.4 alpha.7 MVP</span>
+              <span>Genesis v1.4 alpha.7.1 MVP</span>
               <span>Evidency sandbox test rail</span>
               <span>Ethereum mainnet final rail</span>
             </div>

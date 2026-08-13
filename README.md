@@ -1,4 +1,4 @@
-# SiteSealed Genesis v1.4-alpha.7 — MVP
+# SiteSealed Genesis v1.4-alpha.7.1 — MVP hotfix
 
 Cette version clôt le MVP technique avec les deux rails externes retenus :
 
@@ -6,10 +6,14 @@ Cette version clôt le MVP technique avec les deux rails externes retenus :
 - **Ethereum mainnet (chain ID 1)** comme rail public définitif pour les racines
   Merkle horaires.
 
-L'alpha.7 conserve la vérification RFC 3161 indépendante introduite en alpha.6
-et ajoute la barrière de mise en service Ethereum Mainnet :
+L'alpha.7.1 conserve la vérification RFC 3161 indépendante introduite en
+alpha.6 et la barrière de mise en service Ethereum Mainnet de l'alpha.7. Ce
+hotfix ne change ni le schéma public des preuves ni le schéma MySQL. Il corrige
+la reprise Railway des lots Ethereum et fonctionne en sélection automatique,
+sans `ETHEREUM_TARGET_RECORD_ID` :
 
-- sélection d'un reçu exact avec `ETHEREUM_TARGET_RECORD_ID` ;
+- sélection automatique des reçus éligibles, par ordre de création, dans un
+  lot Merkle borné ;
 - éligibilité limitée aux jetons Sandbox ayant réellement passé le validateur
   `SITESEALED_RFC3161_VALIDATOR_V1` ;
 - dry-run sans création de lot, sans signature et sans diffusion ;
@@ -38,13 +42,19 @@ ISO 8601, tandis que l'ancien guide montrait un entier Unix en millisecondes.
 L'adaptateur accepte les deux formats documentés, les normalise en UTC et
 rejette les dates mal formées ou hors de la fenêtre d'émission attendue.
 
-Elle corrige aussi la sélection automatique MySQL observée après
-le passage du mode ciblé au cron global. Le protocole binaire de `mysql2`
-transmettait le paramètre numérique de `LIMIT ?` comme un `DOUBLE`, refusé par
-certaines versions MySQL avec `ER_WRONG_ARGUMENTS`. Les deux limites de file
-Evidency et Ethereum sont désormais strictement validées, bornées, puis émises
-comme littéraux entiers via le protocole texte ; toutes les données de reçu et
-de preuve restent paramétrées.
+Elle corrige aussi les incompatibilités MySQL observées sur Railway. Le
+protocole binaire de `mysql2` pouvait transmettre `LIMIT ?` ou certaines
+valeurs du cycle de lot sous une forme refusée par MySQL avec
+`ER_WRONG_ARGUMENTS` / `Incorrect arguments to COM_STMT_EXECUTE`. Les limites
+de file sont strictement validées et émises comme littéraux entiers. Toutes les
+lectures et écritures du cycle Ethereum (`PREPARED`, `SIGNED`, `SUBMITTED`,
+`CONFIRMED`, `FINALIZED`) utilisent le protocole texte paramétré. Les données
+de reçu, de preuve et de transaction restent séparées de la requête SQL.
+
+Un lot déjà créé par l'alpha.7 est repris idempotemment. S'il est `PREPARED`,
+le worker le signe puis le diffuse ; s'il est déjà `SIGNED`, il revalide et
+rediffuse exactement la transaction persistée, sans la remplacer ni augmenter
+les frais.
 
 Le mot `sealed` reste volontairement désactivé. Un jeton Evidency sandbox n'a
 aucun effet juridique et ne devient jamais un horodatage qualifié eIDAS. Même
@@ -143,9 +153,9 @@ Le statut Ethereum suit une machine distincte :
 
 Le protocole privé de dépôt reste `1.2` afin de préserver les objets et kits de
 récupération existants. Le reçu et le bundle publics passent en
-`1.4-alpha.1` pour préserver la compatibilité des preuves. L'alpha.7 ne modifie
-ni le protocole de dépôt ni le schéma JSON public ; elle enrichit les champs de
-preuve compatibles. La migration MySQL additive
+`1.4-alpha.1` pour préserver la compatibilité des preuves. L'alpha.7.1 ne
+modifie ni le protocole de dépôt ni le schéma JSON public ; elle enrichit les
+champs de preuve compatibles. La migration MySQL additive
 `005_rfc3161_independent_verification` conserve l'état des anciens jetons sans
 les présenter rétroactivement comme vérifiés.
 
@@ -160,7 +170,8 @@ les présenter rétroactivement comme vérifiés.
 - `server/ethereum.js` : dry-run, plafonds, signature locale vérifiée,
   transaction mainnet et inspection de finalité ;
 - `server/rails-worker.js` : orchestration idempotente des deux files ;
-- `server/database.js` : migration et persistance des artefacts ;
+- `server/database.js` : migration, persistance des artefacts et reprise
+  MySQL text-protocol des lots Ethereum ;
 - `client/public/schemas/` : schéma JSON du bundle exporté ;
 - le portail web recalcule dans le navigateur l'evidence digest, la preuve
   d'inclusion Merkle et la liaison du calldata Ethereum ;
@@ -277,19 +288,24 @@ EVIDENCY_MAX_REQUESTS_PER_RUN=1
 EVIDENCY_RUNTIME_STATUS_TTL_SECONDS=90000
 
 ETHEREUM_ANCHOR_MODE=mainnet
-ETHEREUM_RPC_URL=<endpoint HTTPS/WSS mainnet>
+ETHEREUM_RPC_URL=<endpoint WSS Ethereum mainnet>
 ETHEREUM_ANCHOR_PRIVATE_KEY=<secret Railway>
 ETHEREUM_EXPECTED_ANCHOR_ADDRESS=<adresse publique 0x du portefeuille dédié>
 ETHEREUM_DRY_RUN=true
-ETHEREUM_TARGET_RECORD_ID=<identifiant exact du reçu alpha.7>
 ETHEREUM_MAX_TRANSACTIONS_PER_RUN=1
 ETHEREUM_CONFIRMATIONS=12
 ETHEREUM_MAX_FEE_GWEI=5
 ETHEREUM_MAX_TX_FEE_ETH=0.00015
 ETHEREUM_GAS_LIMIT=30000
-ANCHOR_MAX_BATCH_SIZE=1
+ANCHOR_MAX_BATCH_SIZE=1024
 ETHEREUM_RUNTIME_STATUS_TTL_SECONDS=90000
 ```
+
+`ETHEREUM_TARGET_RECORD_ID` doit être absent du service Railway. Son absence
+active la sélection automatique ; aucun identifiant de reçu n'est nécessaire.
+Un second fournisseur RPC n'est pas requis pour exécuter le worker. Il peut
+être ajouté plus tard comme contrôle d'audit indépendant, sans faire partie de
+la configuration opérationnelle.
 
 `ETHEREUM_ANCHOR_PRIVATE_KEY` doit appartenir à un portefeuille dédié, peu
 approvisionné et sans autre usage. Le cron dépense de vrais ETH. Ne colle jamais
@@ -298,21 +314,20 @@ directement comme secret Railway.
 
 Mise en service contrôlée :
 
-1. déployer l'alpha.7 avec `ETHEREUM_ANCHOR_MODE=disabled`, puis vérifier le
+1. déployer l'alpha.7.1 avec `ETHEREUM_ANCHOR_MODE=disabled`, puis vérifier le
    build, les migrations et le fonctionnement Evidency existant ;
 2. créer un portefeuille Ethereum dédié et sans autre actif. Conserver sa clé
    uniquement comme secret du worker et copier son adresse publique dans
    `ETHEREUM_EXPECTED_ANCHOR_ADDRESS` ;
 3. approvisionner ce portefeuille du strict montant choisi pour les tests et
    vérifier l'adresse par une seconde source avant tout transfert ;
-4. créer un reçu alpha.7, attendre son jeton Evidency Sandbox, puis vérifier que
+4. créer un reçu alpha.7.1, attendre son jeton Evidency Sandbox, puis vérifier que
    `validatorVersion`, `signatureVerification` et
    `certificateChainVerification` ont les valeurs exigées ;
-5. renseigner l'identifiant exact dans `ETHEREUM_TARGET_RECORD_ID`, garder
-   `ANCHOR_MAX_BATCH_SIZE=1`, activer `ETHEREUM_ANCHOR_MODE=mainnet` et laisser
-   `ETHEREUM_DRY_RUN=true` ;
-6. lancer le worker manuellement. Le résultat attendu est `DRY_RUN`, exactement
-   un élément dans `selected`, `transactionsSigned: 0` et
+5. laisser `ETHEREUM_TARGET_RECORD_ID` absent, activer
+   `ETHEREUM_ANCHOR_MODE=mainnet` et laisser `ETHEREUM_DRY_RUN=true` ;
+6. lancer le worker manuellement. Le résultat attendu est `DRY_RUN`, au moins
+   un élément éligible dans `selected`, `transactionsSigned: 0` et
    `transactionsBroadcast: 0`. Contrôler l'adresse, la racine, le gas estimé,
    le solde et `maximumAuthorizedFeeEth` ;
 7. définir seulement `ETHEREUM_DRY_RUN=false`, puis relancer une fois. Noter le
@@ -322,16 +337,26 @@ Mise en service contrôlée :
    ni transaction de remplacement ni hausse automatique de frais. Attendre
    `runtime.ethereum.status: finalized`, avec
    `onChainBindingVerified: true` et `finalityVerified: true` ;
-9. vérifier le reçu, le bundle, le calldata et la finalité avec un RPC
-   indépendant via `npm run verify:bundle` ;
-10. après cette validation seulement, retirer `ETHEREUM_TARGET_RECORD_ID`,
-    passer `ANCHOR_MAX_BATCH_SIZE=1024` et activer le cron horaire. Conserver
-    `ETHEREUM_MAX_TRANSACTIONS_PER_RUN=1` et les deux plafonds de coût.
+9. vérifier le reçu, le bundle, le calldata et la finalité via
+   `npm run verify:bundle` et le lien Etherscan exporté ;
+10. après cette validation seulement, activer le cron horaire. Conserver
+    `ETHEREUM_MAX_TRANSACTIONS_PER_RUN=1`, `ANCHOR_MAX_BATCH_SIZE=1024` et les
+    deux plafonds de coût.
 
 Toute incohérence d'adresse, réseau, signature, preuve RFC 3161, gas, frais,
 solde ou liaison on-chain fait échouer le run. Une transaction déjà signée
-reste persistée et sera reprise à l'identique ; l'alpha.7 ne la remplace jamais
+reste persistée et sera reprise à l'identique ; l'alpha.7.1 ne la remplace jamais
 silencieusement.
+
+### Reprise directe d'un lot alpha.7 interrompu
+
+Aucune nouvelle preuve Evidency, aucune nouvelle adresse et aucun identifiant
+de reçu ne sont nécessaires. Laisser le cron désactivé, déployer l'alpha.7.1,
+supprimer `ETHEREUM_TARGET_RECORD_ID`, conserver le même portefeuille et le
+même réseau, puis lancer le worker une fois avec `ETHEREUM_DRY_RUN=false`. Le
+lot `PREPARED` ou `SIGNED` existant est retrouvé avant toute nouvelle sélection.
+Le résultat attendu est `SUBMITTED`; une exécution ultérieure suit ensuite le
+même hash jusqu'à `FINALIZED`.
 
 ## Limites restantes
 

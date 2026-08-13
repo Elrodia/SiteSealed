@@ -28,6 +28,27 @@ function boundedSqlLimit(value, { fallback, maximum }) {
   return Math.min(numeric, maximum);
 }
 
+function mysqlOperationError(operation, error) {
+  const detail = String(error?.message ?? "Unknown MySQL failure.");
+  const wrapped = new Error(`MySQL ${operation} failed: ${detail}`, {
+    cause: error,
+  });
+  for (const field of ["code", "errno", "sqlState", "sqlMessage"]) {
+    if (error?.[field] !== undefined) wrapped[field] = error[field];
+  }
+  return wrapped;
+}
+
+async function textQuery(client, operation, sql, parameters) {
+  try {
+    return parameters === undefined
+      ? await client.query(sql)
+      : await client.query(sql, parameters);
+  } catch (error) {
+    throw mysqlOperationError(operation, error);
+  }
+}
+
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS sealed_records (
     record_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -935,13 +956,17 @@ async function findAnchorBatch(pool, batchId = null) {
     where = "WHERE batch_id = ?";
     parameters.push(batchId);
   }
-  const [batches] = await pool.execute(
+  const [batches] = await textQuery(
+    pool,
+    batchId ? "anchor batch lookup by id" : "actionable anchor batch lookup",
     `SELECT * FROM anchor_batches ${where} ORDER BY created_at ASC LIMIT 1`,
     parameters,
   );
   const batch = batches[0];
   if (!batch) return null;
-  const [members] = await pool.execute(
+  const [members] = await textQuery(
+    pool,
+    "anchor batch member lookup",
     `SELECT * FROM anchor_batch_members
       WHERE batch_id = ? ORDER BY leaf_index ASC`,
     [batch.batch_id],
@@ -953,7 +978,9 @@ export function createMysqlRecordStore(pool) {
   async function findRow(column, value) {
     const allowedColumns = new Set(["record_id", "submission_id"]);
     if (!allowedColumns.has(column)) throw new Error("Unsupported lookup column.");
-    const [rows] = await pool.execute(
+    const [rows] = await textQuery(
+      pool,
+      "record lookup",
       `${recordSelect}
        WHERE records.${column} = ?
          AND records.record_status IN ('DEVELOPMENT_RECEIPT', 'SEALED', 'SEALED_SPECIMEN')
@@ -1038,7 +1065,9 @@ export function createMysqlRecordStore(pool) {
         fallback: 50,
         maximum: 1_000,
       });
-      const [ids] = await pool.query(
+      const [ids] = await textQuery(
+        pool,
+        "automatic Evidency candidate selection",
         `SELECT records.record_id
            FROM sealed_records AS records
            LEFT JOIN qualified_timestamp_proofs AS qualified
@@ -1173,7 +1202,9 @@ export function createMysqlRecordStore(pool) {
         fallback: 1_024,
         maximum: 10_000,
       });
-      const [ids] = await pool.query(
+      const [ids] = await textQuery(
+        pool,
+        "automatic Ethereum candidate selection",
         `SELECT records.record_id
            FROM sealed_records AS records
            JOIN qualified_timestamp_proofs AS qualified
@@ -1209,7 +1240,9 @@ export function createMysqlRecordStore(pool) {
       const connection = await pool.getConnection();
       try {
         await connection.beginTransaction();
-        await connection.execute(
+        await textQuery(
+          connection,
+          "anchor batch creation",
           `INSERT INTO anchor_batches (
             batch_id, merkle_protocol, merkle_root, leaf_count,
             chain_name, chain_id, batch_state
@@ -1217,7 +1250,9 @@ export function createMysqlRecordStore(pool) {
           [batch.batchId, batch.protocol, batch.root, batch.leafCount],
         );
         for (const member of batch.members) {
-          await connection.execute(
+          await textQuery(
+            connection,
+            "anchor batch member creation",
             `INSERT INTO anchor_batch_members (
               batch_id, record_id, leaf_index, evidence_digest,
               leaf_hash, inclusion_path
@@ -1258,7 +1293,9 @@ export function createMysqlRecordStore(pool) {
     },
 
     async saveSignedAnchor(batchId, signed) {
-      const [result] = await pool.execute(
+      const [result] = await textQuery(
+        pool,
+        "signed anchor persistence",
         `UPDATE anchor_batches
             SET batch_state = 'SIGNED', transaction_hash = ?,
                 transaction_input = ?, anchor_address = ?,
@@ -1288,7 +1325,9 @@ export function createMysqlRecordStore(pool) {
     },
 
     async markAnchorSubmitted(batchId) {
-      await pool.execute(
+      await textQuery(
+        pool,
+        "submitted anchor persistence",
         `UPDATE anchor_batches
             SET batch_state = 'SUBMITTED',
                 submitted_at = COALESCE(submitted_at, CURRENT_TIMESTAMP(3)),
@@ -1303,12 +1342,16 @@ export function createMysqlRecordStore(pool) {
       const connection = await pool.getConnection();
       try {
         await connection.beginTransaction();
-        const [members] = await connection.execute(
+        const [members] = await textQuery(
+          connection,
+          "anchor finality member lookup",
           `SELECT * FROM anchor_batch_members
             WHERE batch_id = ? ORDER BY leaf_index ASC`,
           [batchId],
         );
-        const [batches] = await connection.execute(
+        const [batches] = await textQuery(
+          connection,
+          "anchor finality batch lock",
           `SELECT * FROM anchor_batches WHERE batch_id = ? FOR UPDATE`,
           [batchId],
         );
@@ -1323,7 +1366,9 @@ export function createMysqlRecordStore(pool) {
           state === "FINALIZED"
             ? update.finalizedAt ?? new Date().toISOString()
             : batch.finalized_at;
-        await connection.execute(
+        await textQuery(
+          connection,
+          "anchor state persistence",
           `UPDATE anchor_batches
               SET batch_state = ?, block_number = ?, block_hash = ?,
                   confirmations = ?, verification_status = ?, error_code = ?,
@@ -1343,7 +1388,9 @@ export function createMysqlRecordStore(pool) {
         );
         if (batch.transaction_hash) {
           for (const member of members) {
-            await connection.execute(
+            await textQuery(
+              connection,
+              "public chain proof persistence",
               `INSERT INTO public_chain_proofs (
                 record_id, batch_id, chain_name, chain_id, block_number,
                 block_hash, transaction_hash, transaction_input,

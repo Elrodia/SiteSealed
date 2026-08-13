@@ -34,7 +34,7 @@ function positiveInteger(value, fallback) {
 function exactlyOne(value, variableName) {
   const normalized = String(value ?? "1").trim();
   if (normalized !== "1") {
-    throw new Error(`${variableName} must remain exactly 1 in alpha.7.`);
+    throw new Error(`${variableName} must remain exactly 1 in alpha.7.1.`);
   }
   return 1;
 }
@@ -311,7 +311,7 @@ export async function processAnchorQueue({
   }
   if (maxTransactionsPerRun !== 1) {
     throw new Error(
-      "ETHEREUM_MAX_TRANSACTIONS_PER_RUN must remain exactly 1 in alpha.7.",
+      "ETHEREUM_MAX_TRANSACTIONS_PER_RUN must remain exactly 1 in alpha.7.1.",
     );
   }
   const release = await coordinator.acquireJobLock("ethereum-mainnet-anchor", {

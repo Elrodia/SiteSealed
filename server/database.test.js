@@ -87,10 +87,13 @@ test("record lookup is parameterized and uses optional proof joins", async () =>
   let capturedSql = "";
   let capturedParameters = [];
   const pool = {
-    async execute(sql, parameters) {
+    async query(sql, parameters) {
       capturedSql = sql;
       capturedParameters = parameters;
       return [[], []];
+    },
+    async execute() {
+      throw new Error("Record lookup must avoid COM_STMT_EXECUTE.");
     },
   };
 
@@ -102,6 +105,173 @@ test("record lookup is parameterized and uses optional proof joins", async () =>
   assert.match(capturedSql, /LEFT JOIN public_chain_proofs/);
   assert.match(capturedSql, /records\.record_id = \?/);
   assert.deepEqual(capturedParameters, ["SR-20260811-ABCDEF0123456789ABCDEF01"]);
+});
+
+test("automatic Ethereum batch recovery never depends on COM_STMT_EXECUTE", async () => {
+  let batch = null;
+  const members = [];
+  const queries = [];
+  const actionableStates = new Set([
+    "PREPARED",
+    "SIGNED",
+    "SUBMITTED",
+    "CONFIRMED",
+  ]);
+  const query = async (sql, parameters = []) => {
+    queries.push({ sql, parameters });
+    const normalized = sql.replace(/\s+/g, " ").trim();
+    if (normalized.startsWith("INSERT INTO anchor_batches")) {
+      batch = {
+        batch_id: parameters[0],
+        merkle_protocol: parameters[1],
+        merkle_root: parameters[2],
+        leaf_count: parameters[3],
+        chain_name: "Ethereum mainnet",
+        chain_id: 1,
+        batch_state: "PREPARED",
+        confirmations: 0,
+        created_at: new Date("2026-08-13T02:00:00.000Z"),
+      };
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith("INSERT INTO anchor_batch_members")) {
+      members.push({
+        batch_id: parameters[0],
+        record_id: parameters[1],
+        leaf_index: parameters[2],
+        evidence_digest: parameters[3],
+        leaf_hash: parameters[4],
+        inclusion_path: parameters[5],
+      });
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith("SELECT * FROM anchor_batches")) {
+      if (!batch) return [[], []];
+      if (normalized.includes("batch_id = ?") && batch.batch_id !== parameters[0]) {
+        return [[], []];
+      }
+      if (
+        normalized.includes("batch_state IN") &&
+        !actionableStates.has(batch.batch_state)
+      ) {
+        return [[], []];
+      }
+      return [[batch], []];
+    }
+    if (normalized.startsWith("SELECT * FROM anchor_batch_members")) {
+      return [
+        members.filter(({ batch_id: batchId }) => batchId === parameters[0]),
+        [],
+      ];
+    }
+    if (
+      normalized.startsWith("UPDATE anchor_batches") &&
+      normalized.includes("batch_state = 'SIGNED'")
+    ) {
+      assert.equal(batch.batch_id, parameters[8]);
+      Object.assign(batch, {
+        batch_state: "SIGNED",
+        transaction_hash: parameters[0],
+        transaction_input: parameters[1],
+        anchor_address: parameters[2],
+        signed_transaction: parameters[3],
+        transaction_nonce: parameters[4],
+        max_fee_per_gas: parameters[5],
+        max_priority_fee_per_gas: parameters[6],
+        gas_limit: parameters[7],
+      });
+      return [{ affectedRows: 1 }, []];
+    }
+    if (
+      normalized.startsWith("UPDATE anchor_batches") &&
+      normalized.includes("batch_state = 'SUBMITTED'")
+    ) {
+      assert.equal(batch.batch_id, parameters[0]);
+      batch.batch_state = "SUBMITTED";
+      batch.submitted_at = new Date("2026-08-13T02:01:00.000Z");
+      return [{ affectedRows: 1 }, []];
+    }
+    throw new Error(`Unexpected text-protocol SQL: ${normalized}`);
+  };
+  const connection = {
+    query,
+    async beginTransaction() {},
+    async commit() {},
+    async rollback() {},
+    release() {},
+  };
+  const pool = {
+    query,
+    async execute() {
+      throw new Error("Incorrect arguments to COM_STMT_EXECUTE");
+    },
+    async getConnection() {
+      return connection;
+    },
+  };
+  const store = createMysqlRecordStore(pool);
+  const batchId = "123e4567-e89b-42d3-a456-426614174111";
+  const recordId = "SR-20260813-ABCDEF0123456789ABCDEF01";
+  const created = await store.createAnchorBatch({
+    batchId,
+    protocol: "SITESEALED_MERKLE_SHA256_V1",
+    root: "a".repeat(64),
+    leafCount: 1,
+    members: [
+      {
+        recordId,
+        leafIndex: 0,
+        evidenceDigest: "b".repeat(64),
+        leafHash: "c".repeat(64),
+        inclusionPath: [],
+      },
+    ],
+  });
+  assert.equal(created.batch.state, "PREPARED");
+  assert.equal((await store.getActionableAnchorBatch()).state, "PREPARED");
+
+  const signed = await store.saveSignedAnchor(batchId, {
+    transactionHash: `0x${"d".repeat(64)}`,
+    transactionInput: `0x53534c4401${"a".repeat(64)}`,
+    anchorAddress: `0x${"e".repeat(40)}`,
+    signedTransaction: "0x02f86c",
+    nonce: 0,
+    maxFeePerGas: "2000000000",
+    maxPriorityFeePerGas: "500000000",
+    gasLimit: "30000",
+  });
+  assert.equal(signed.state, "SIGNED");
+  assert.equal(signed.nonce, 0);
+
+  const submitted = await store.markAnchorSubmitted(batchId);
+  assert.equal(submitted.state, "SUBMITTED");
+  assert.equal(queries.length > 0, true);
+  assert.equal(
+    queries.every(({ parameters }) => Array.isArray(parameters)),
+    true,
+  );
+});
+
+test("Ethereum MySQL failures identify the exact recovery operation", async () => {
+  const pool = {
+    async query() {
+      const error = new Error("Incorrect arguments to COM_STMT_EXECUTE");
+      error.code = "ER_WRONG_ARGUMENTS";
+      throw error;
+    },
+  };
+
+  await assert.rejects(
+    () => createMysqlRecordStore(pool).getActionableAnchorBatch(),
+    (error) => {
+      assert.equal(error.code, "ER_WRONG_ARGUMENTS");
+      assert.match(
+        error.message,
+        /MySQL actionable anchor batch lookup failed: Incorrect arguments to COM_STMT_EXECUTE/,
+      );
+      return true;
+    },
+  );
 });
 
 test("database rows expose the independently verified RFC 3161 path", () => {
@@ -217,9 +387,13 @@ test("automatic rail selection uses validated integer LIMIT literals", async () 
 test("MySQL receipt creation stores digests, encrypted manifest and private S3 reference", async () => {
   const calls = [];
   const pool = {
-    async execute(sql, parameters) {
+    async query(sql, parameters) {
       calls.push({ sql, parameters });
       if (sql.includes("WHERE records.submission_id")) return [[], []];
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+    async execute(sql, parameters) {
+      calls.push({ sql, parameters });
       if (sql.startsWith("INSERT INTO sealed_records")) {
         return [{ affectedRows: 1 }, []];
       }

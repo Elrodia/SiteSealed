@@ -77,7 +77,7 @@ test("the sandbox adapter sends only the evidence digest and labels the token te
 
   assert.match(request.url, /\/v3\/projects\/project-a\/timestamp$/);
   assert.equal(request.options.headers["x-api-key"], "secret");
-  assert.equal(request.options.headers["user-agent"], "SiteSealed/1.4-alpha.7");
+  assert.equal(request.options.headers["user-agent"], "SiteSealed/1.4-alpha.7.1");
   assert.deepEqual(JSON.parse(request.options.body), {
     hashAlgorithm: "SHA256",
     hashedMessage: digest,
