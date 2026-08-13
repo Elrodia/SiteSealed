@@ -1,6 +1,6 @@
 {
   "name": "sitesealed",
-  "version": "1.4.0-alpha.10",
+  "version": "1.4.0-alpha.10.1",
   "description": "SiteSealed - a neutral proof layer for construction records.",
   "private": true,
   "type": "module",

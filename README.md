@@ -1,4 +1,4 @@
-# SiteSealed Genesis v1.4-alpha.10 — Evidence Report canonique
+# SiteSealed Genesis v1.4-alpha.10.1 — Evidence Report canonique
 
 SiteSealed crée des enregistrements d'intégrité SHA-256, conserve uniquement un
 original chiffré côté client sur le serveur et produit un seul artefact humain :
@@ -11,7 +11,7 @@ enregistrée. Deux rails externes asynchrones complètent la preuve :
 - une racine Merkle écrite sur **Ethereum Mainnet (chain ID 1)** par le worker
   horaire, avec une transaction au maximum par exécution.
 
-L'alpha.10 conserve l'admission par **Continue with Google** introduite en
+L'alpha.10.1 conserve l'admission par **Continue with Google** introduite en
 alpha.9. Il n'existe aucune variable
 `UPLOAD_ADMISSION_SECRET`, de champ « Deposit access » ni d'en-tête contenant
 un mot de passe opérateur.
@@ -37,7 +37,7 @@ quiconque reçoit le PDF peut voir et extraire le fichier original. Il n'existe
 aucune variante publique/privée du rapport. Le kit de récupération AES reste un
 secret séparé d'exploitation et n'est pas un second rapport de preuve.
 
-## Frontière de sécurité de l'alpha.10
+## Frontière de sécurité de l'alpha.10.1
 
 Google Identity Services authentifie le compte avec un ID token OpenID Connect.
 Le serveur vérifie sa signature, son audience, son émetteur et l'adresse e-mail
@@ -63,7 +63,7 @@ connexion Google n'est pas configurée et bloque seulement la création de recor
 
 ### Admission d'un objet chiffré
 
-Une limite par IP n'est pas une autorisation. L'alpha.10 cumule les barrières
+Une limite par IP n'est pas une autorisation. L'alpha.10.1 cumule les barrières
 suivantes :
 
 1. `POST /api/storage/upload-grants` exige une session Google valide et un
@@ -128,7 +128,7 @@ une racine de lot. Google ne reçoit pas le fichier ni son empreinte.
 | `ALPHA_DUAL_RAIL_COMPLETE` | test sandbox | finalisé | `false` |
 | `DUAL_RAIL_COMPLETE` | qualifié + signature validée | finalisé | `true` |
 
-L'alpha.10 ne peut pas atteindre la dernière ligne. Le mot `sealed` reste
+L'alpha.10.1 ne peut pas atteindre la dernière ligne. Le mot `sealed` reste
 désactivé, car le Sandbox Evidency n'est pas un horodatage qualifié.
 
 | Indicateur Evidency | Signification |
@@ -163,7 +163,7 @@ désactivé, car le Sandbox Evidency n'est pas un horodatage qualifié.
 
 Le protocole privé de dépôt reste `1.2` et le schéma public reste
 `1.4-alpha.1` afin de préserver la compatibilité des preuves et kits existants.
-L'alpha.10 ne modifie pas le schéma MySQL.
+L'alpha.10.1 ne modifie pas le schéma MySQL.
 
 ## Développement et tests
 

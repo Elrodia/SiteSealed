@@ -386,6 +386,12 @@ test("the browser uses Google Identity Services and sends SiteSealed CSRF tokens
   assert.match(source, /Continue with Google before uploading/);
   assert.match(source, /generateSiteSealedEvidenceReport/);
   assert.match(source, /Download SiteSealed Evidence Report/);
+  assert.match(source, /onChange=\{selectComparisonFile\}/);
+  assert.match(
+    source,
+    /nextFile && status === "success" && result && !result\.specimen[\s\S]*?runVerification\(result\.record\.recordId, nextFile\)/,
+  );
+  assert.match(source, /Its hash is checked automatically/);
   assert.doesNotMatch(source, /links\.receiptPdf/);
   assert.match(
     source,

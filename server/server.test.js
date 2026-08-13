@@ -259,13 +259,13 @@ after(async () => {
   });
 });
 
-test("health endpoint reports the honest v1.4-alpha.10 capability boundary", async () => {
+test("health endpoint reports the honest v1.4-alpha.10.1 capability boundary", async () => {
   const response = await fetch(`${baseUrl}/api/health`);
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.ok, true);
   assert.equal(payload.service, "sitesealed");
-  assert.equal(payload.version, "1.4.0-alpha.10");
+  assert.equal(payload.version, "1.4.0-alpha.10.1");
   assert.equal(payload.sealing.clientEncryptedObjectStorage, true);
   assert.equal(
     payload.sealing.operationalAudit,

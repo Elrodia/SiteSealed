@@ -66,7 +66,7 @@ export function resolveEvidencyConfig(environment = process.env) {
     .toLowerCase();
   if (mode === "disabled") return null;
   if (mode !== "sandbox") {
-    throw new Error('EVIDENCY_MODE must be either "disabled" or "sandbox" in v1.4-alpha.10.');
+    throw new Error('EVIDENCY_MODE must be either "disabled" or "sandbox" in v1.4-alpha.10.1.');
   }
 
   const apiKey = String(environment.EVIDENCY_API_KEY ?? "").trim();
@@ -165,7 +165,7 @@ export function createEvidencyTimestampService(
               "content-type": "application/json",
               accept: "application/json",
               "x-api-key": config.apiKey,
-              "user-agent": "SiteSealed/1.4-alpha.10",
+              "user-agent": "SiteSealed/1.4-alpha.10.1",
             },
             body: JSON.stringify({
               hashAlgorithm: "SHA256",

@@ -327,7 +327,7 @@ export function createApp({
         certificateChainVerification: "NOT_YET_VERIFIED",
         validatorVersion: RFC3161_VALIDATOR_VERSION,
         message:
-          "A fresh alpha.10 worker result is required before Evidency can be shown as operational.",
+          "A fresh alpha.10.1 worker result is required before Evidency can be shown as operational.",
       };
     }
     return shared;
@@ -377,7 +377,7 @@ export function createApp({
         onChainBindingVerified: false,
         finalityVerified: false,
         message:
-          "A fresh alpha.10 worker result with a verified transaction binding and finalized block is required.",
+          "A fresh alpha.10.1 worker result with a verified transaction binding and finalized block is required.",
       };
     }
     return shared;
@@ -555,7 +555,7 @@ export function createApp({
     response.status(200).json({
       ok: true,
       service: "sitesealed",
-      version: "1.4.0-alpha.10",
+      version: "1.4.0-alpha.10.1",
       sealing: {
         workflow: "IMPORTED_FILE_CLIENT_ENCRYPTED_STORAGE_RECEIPT",
         clientEncryptedObjectStorage: true,
@@ -1219,7 +1219,7 @@ export async function startServer() {
   });
   const server = app.listen(port, host, () => {
     console.log(
-      `SiteSealed v1.4-alpha.10 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${identityService.mode} identity, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
+      `SiteSealed v1.4-alpha.10.1 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${identityService.mode} identity, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
     );
   });
 

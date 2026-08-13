@@ -1334,6 +1334,17 @@ function VerifierV12({ requestedRecord }) {
     runVerification(recordId, comparisonFile);
   };
 
+  const selectComparisonFile = (event) => {
+    const nextFile = event.target.files?.[0] ?? null;
+    setComparisonFile(nextFile);
+    setReportStatus("idle");
+    setFileCheck({ state: "NOT_CHECKED", digest: null });
+
+    if (nextFile && status === "success" && result && !result.specimen) {
+      runVerification(result.record.recordId, nextFile);
+    }
+  };
+
   const useSpecimen = () => {
     setRecordId(SPECIMEN_ID);
     setStatus("idle");
@@ -1452,12 +1463,12 @@ function VerifierV12({ requestedRecord }) {
         <div className="local-file-check">
           <div>
             <span><Icon name="file" size={18} /></span>
-            <p><strong>Optional: select the original file.</strong><br />Its hash is recalculated locally and the file is never uploaded.</p>
+            <p><strong>Select the original to generate the Evidence Report.</strong><br />Its hash is checked automatically and the file is never uploaded.</p>
           </div>
           <input
             id={compareInputId}
             type="file"
-            onChange={(event) => setComparisonFile(event.target.files?.[0] ?? null)}
+            onChange={selectComparisonFile}
           />
           <label htmlFor={compareInputId}>
             {comparisonFile ? `${comparisonFile.name} (${formatBytes(comparisonFile.size)})` : "Choose local file"}
@@ -1593,9 +1604,13 @@ function VerifierV12({ requestedRecord }) {
                 >
                   {reportStatus === "loading"
                     ? "Generating SiteSealed Evidence Report..."
+                    : fileCheck.state === "HASHING"
+                      ? "Verifying the original..."
                     : fileCheck.state === "MATCH"
                       ? "Download SiteSealed Evidence Report"
-                      : "Select and verify the original to generate the Evidence Report"}
+                      : fileCheck.state === "MISMATCH"
+                        ? "Original does not match this record"
+                        : "Select the original to generate the Evidence Report"}
                   <Icon name="download" size={15} />
                 </button>
                 {result.record.chainRail?.anchor && (
@@ -2183,7 +2198,7 @@ function App() {
             </div>
             <div>
               <strong>Status</strong>
-              <span>Genesis v1.4 alpha.10 canonical Evidence Report MVP</span>
+              <span>Genesis v1.4 alpha.10.1 canonical Evidence Report MVP</span>
               <span>Evidency sandbox test rail</span>
               <span>Ethereum mainnet final rail</span>
             </div>
