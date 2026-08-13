@@ -383,7 +383,7 @@ test("close() survives a WebSocket torn down mid-handshake (teardown-during-hand
   function onUncaught(err) {
     uncaughtErrors.push(err);
   }
-  process.on("uncaughtException", onUncaught);
+  process.on("uncaughtExceptionMonitor", onUncaught);
 
   try {
     await assert.doesNotReject(() => client.close());
@@ -391,7 +391,7 @@ test("close() survives a WebSocket torn down mid-handshake (teardown-during-hand
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(uncaughtErrors, [], "no unhandled error must escape close()");
   } finally {
-    process.removeListener("uncaughtException", onUncaught);
+    process.removeListener("uncaughtExceptionMonitor", onUncaught);
   }
 });
 
