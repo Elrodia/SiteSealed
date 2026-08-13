@@ -103,3 +103,31 @@ test("submission locks are exclusive, expiring and safely released", async () =>
     "function",
   );
 });
+
+test("the shared storage budget is global, byte-based and window-scoped", async () => {
+  let timestamp = 30_000;
+  const coordinator = createMemoryCoordinator({ now: () => timestamp });
+  const input = { bytes: 400, limitBytes: 1_000, windowMs: 1_000 };
+
+  const first = await coordinator.consumeStorageAdmission(input);
+  assert.equal(first.allowed, true);
+  assert.equal(first.remainingBytes, 600);
+  assert.equal((await coordinator.consumeStorageAdmission(input)).allowed, true);
+
+  const refused = await coordinator.consumeStorageAdmission(input);
+  assert.equal(refused.allowed, false);
+  assert.equal(refused.admittedBytes, 800);
+  assert.equal(refused.remainingBytes, 200);
+  assert.equal(
+    (await coordinator.consumeStorageAdmission({ ...input, bytes: 200 }))
+      .allowed,
+    true,
+  );
+
+  timestamp = 31_001;
+  assert.equal((await coordinator.consumeStorageAdmission(input)).allowed, true);
+  await assert.rejects(
+    coordinator.consumeStorageAdmission({ ...input, bytes: 0 }),
+    /positive size and budget/,
+  );
+});

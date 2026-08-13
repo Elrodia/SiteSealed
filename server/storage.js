@@ -29,7 +29,21 @@ const UPLOAD_GRANT_FIELDS = new Set([
   "submissionId",
   "ciphertextSha256",
   "byteLength",
+  "challengeId",
+  "nonce",
 ]);
+const UPLOAD_CHALLENGE_FIELDS = new Set([
+  "submissionId",
+  "ciphertextSha256",
+  "byteLength",
+]);
+const UPLOAD_CHALLENGE_NONCE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const UPLOAD_CHALLENGE_TOKEN_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43}$/;
+export const UPLOAD_CHALLENGE_PREIMAGE_PREFIX =
+  "sitesealed:v1.4:upload-challenge";
+export const MIN_UPLOAD_CHALLENGE_DIFFICULTY_BITS = 8;
+export const MAX_UPLOAD_CHALLENGE_DIFFICULTY_BITS = 24;
 export const UPLOAD_GRANT_HEADER = "x-sitesealed-upload-grant";
 
 function sha256Hex(value) {
@@ -195,17 +209,17 @@ export function validateEncryptedUpload({ submissionId, headers, body }) {
   };
 }
 
-export function validateUploadGrantRequest(body) {
+function uploadAdmissionBinding(body, fields, code, subject) {
   if (
     !body ||
     typeof body !== "object" ||
     Array.isArray(body) ||
-    Object.keys(body).some((key) => !UPLOAD_GRANT_FIELDS.has(key))
+    Object.keys(body).some((key) => !fields.has(key))
   ) {
     throw new ApiError(
       400,
-      "INVALID_UPLOAD_GRANT_REQUEST",
-      "An upload grant request must contain only submissionId, ciphertextSha256 and byteLength. Original file bytes must never be sent to this endpoint.",
+      code,
+      `${subject} must contain only ${[...fields].join(", ")}. Original file bytes must never be sent to this endpoint.`,
     );
   }
 
@@ -218,6 +232,86 @@ export function validateUploadGrantRequest(body) {
       MAX_ENCRYPTED_ORIGINAL_BYTES,
     ),
   };
+}
+
+export function validateUploadChallengeRequest(body) {
+  return uploadAdmissionBinding(
+    body,
+    UPLOAD_CHALLENGE_FIELDS,
+    "INVALID_UPLOAD_CHALLENGE_REQUEST",
+    "An upload challenge request",
+  );
+}
+
+export function validateUploadGrantRequest(body) {
+  const binding = uploadAdmissionBinding(
+    body,
+    UPLOAD_GRANT_FIELDS,
+    "INVALID_UPLOAD_GRANT_REQUEST",
+    "An upload grant request",
+  );
+  const challengeId = String(body.challengeId ?? "").trim();
+  const nonce = String(body.nonce ?? "").trim();
+  if (!UPLOAD_CHALLENGE_TOKEN_PATTERN.test(challengeId)) {
+    throw new ApiError(
+      400,
+      "INVALID_UPLOAD_GRANT_REQUEST",
+      "challengeId must be the identifier returned by /api/storage/upload-challenges.",
+    );
+  }
+  if (!UPLOAD_CHALLENGE_NONCE_PATTERN.test(nonce)) {
+    throw new ApiError(
+      400,
+      "INVALID_UPLOAD_GRANT_REQUEST",
+      "nonce must be the base64url solution of the upload challenge, at most 64 characters.",
+    );
+  }
+  return { ...binding, challengeId, nonce };
+}
+
+export function uploadChallengeDifficulty(byteLength, baseBits) {
+  const base = Math.min(
+    MAX_UPLOAD_CHALLENGE_DIFFICULTY_BITS,
+    Math.max(
+      MIN_UPLOAD_CHALLENGE_DIFFICULTY_BITS,
+      Number.isInteger(baseBits) ? baseBits : MIN_UPLOAD_CHALLENGE_DIFFICULTY_BITS,
+    ),
+  );
+  const size = Number(byteLength);
+  const scale =
+    size > 8 * 1024 * 1024 ? 2 : size > 1024 * 1024 ? 1 : 0;
+  return Math.min(MAX_UPLOAD_CHALLENGE_DIFFICULTY_BITS, base + scale);
+}
+
+export function uploadChallengePreimage(challengeId, nonce) {
+  return `${UPLOAD_CHALLENGE_PREIMAGE_PREFIX}:${challengeId}:${nonce}`;
+}
+
+function leadingZeroBits(digest) {
+  let bits = 0;
+  for (const byte of digest) {
+    if (byte === 0) {
+      bits += 8;
+      continue;
+    }
+    return bits + Math.clz32(byte) - 24;
+  }
+  return bits;
+}
+
+export function solvesUploadChallenge({ challengeId, nonce, difficultyBits }) {
+  if (
+    !UPLOAD_CHALLENGE_TOKEN_PATTERN.test(String(challengeId ?? "")) ||
+    !UPLOAD_CHALLENGE_NONCE_PATTERN.test(String(nonce ?? "")) ||
+    !Number.isInteger(difficultyBits) ||
+    difficultyBits < MIN_UPLOAD_CHALLENGE_DIFFICULTY_BITS
+  ) {
+    return false;
+  }
+  const digest = createHash("sha256")
+    .update(uploadChallengePreimage(challengeId, nonce))
+    .digest();
+  return leadingZeroBits(digest) >= difficultyBits;
 }
 
 export function resolveS3Config(environment = process.env) {

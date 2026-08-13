@@ -7,17 +7,20 @@ import {
   createEncryptedUploadHeaders,
   createRecoveryToken,
   createSealRequest,
+  createUploadChallengeRequest,
   createUploadGrantRequest,
   encryptManifest,
   encryptOriginal,
   recalculateEvidenceDigest,
   sha256File,
+  solveUploadChallenge,
   stableStringify,
   UPLOAD_GRANT_HEADER,
   verifyPublicProofArtifacts,
 } from "../client/src/sealing.js";
 import { buildMerkleTree } from "./merkle.js";
 import { createEvidenceDigest } from "./records.js";
+import { solvesUploadChallenge } from "./storage.js";
 
 function fromBase64(value) {
   return Uint8Array.from(Buffer.from(value, "base64"));
@@ -219,7 +222,7 @@ test("the browser reports a valid local receipt while its external anchor is pen
   });
 });
 
-test("the browser requests a single-use upload grant before sending ciphertext", async () => {
+test("the browser solves an admission challenge before requesting an upload grant", async () => {
   const file = new File(["grant"], "grant.txt", {
     type: "text/plain",
     lastModified: Date.parse("2026-08-11T20:00:00.000Z"),
@@ -234,7 +237,7 @@ test("the browser requests a single-use upload grant before sending ciphertext",
   const submissionId = "123e4567-e89b-42d3-a456-426614174000";
 
   assert.deepEqual(
-    createUploadGrantRequest({
+    createUploadChallengeRequest({
       submissionId,
       encryptedOriginal: encryptedFile,
     }),
@@ -243,6 +246,32 @@ test("the browser requests a single-use upload grant before sending ciphertext",
       ciphertextSha256: encryptedFile.envelope.ciphertextSha256,
       byteLength: encryptedFile.envelope.ciphertextBytes,
     },
+  );
+
+  const challengeId = `${submissionId}.${"a".repeat(43)}`;
+  const nonce = await solveUploadChallenge({ challengeId, difficultyBits: 12 });
+  assert.equal(
+    solvesUploadChallenge({ challengeId, nonce, difficultyBits: 12 }),
+    true,
+  );
+  assert.deepEqual(
+    createUploadGrantRequest({
+      submissionId,
+      encryptedOriginal: encryptedFile,
+      challengeId,
+      nonce,
+    }),
+    {
+      submissionId,
+      ciphertextSha256: encryptedFile.envelope.ciphertextSha256,
+      byteLength: encryptedFile.envelope.ciphertextBytes,
+      challengeId,
+      nonce,
+    },
+  );
+  await assert.rejects(
+    solveUploadChallenge({ challengeId, difficultyBits: 32 }),
+    /unreasonably high/,
   );
 
   const recoveryToken = await createRecoveryToken();

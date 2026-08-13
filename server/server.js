@@ -38,8 +38,12 @@ import { createMemoryRecordStore } from "./specimen.js";
 import {
   createMemoryObjectStore,
   createS3ObjectStoreFromEnv,
+  solvesUploadChallenge,
+  uploadChallengeDifficulty,
+  UPLOAD_CHALLENGE_PREIMAGE_PREFIX,
   UPLOAD_GRANT_HEADER,
   validateEncryptedUpload,
+  validateUploadChallengeRequest,
   validateUploadGrantRequest,
 } from "./storage.js";
 
@@ -223,6 +227,14 @@ export function createApp({
   timestampService = createDisabledTimestampService(),
   ethereumRail = createDisabledEthereumRail(),
   sealRateLimit = positiveInteger(process.env.SEAL_RATE_LIMIT_PER_HOUR, 20),
+  uploadChallengeDifficultyBits = positiveInteger(
+    process.env.UPLOAD_CHALLENGE_DIFFICULTY_BITS,
+    16,
+  ),
+  storageAdmissionBytesPerDay =
+    positiveInteger(process.env.STORAGE_ADMISSION_MB_PER_DAY, 2048) *
+    1024 *
+    1024,
 } = {}) {
   const app = express();
 
@@ -387,6 +399,8 @@ export function createApp({
       sealing: {
         workflow: "IMPORTED_FILE_CLIENT_ENCRYPTED_STORAGE_RECEIPT",
         clientEncryptedObjectStorage: true,
+        uploadAdmission:
+          "PROOF_OF_WORK_CHALLENGE_AND_SHARED_STORAGE_BUDGET",
         operationalAudit: "POSTGRESQL_APPEND_ONLY_HASH_CHAIN",
         distributedCoordination: true,
         qualifiedTimestamp:
@@ -423,6 +437,43 @@ export function createApp({
   });
 
   app.post(
+    "/api/storage/upload-challenges",
+    createSealRateLimiter({
+      coordinator,
+      scope: "upload-challenge",
+      limit: sealRateLimit,
+    }),
+    async (request, response) => {
+      const requested = validateUploadChallengeRequest(request.body);
+      const difficultyBits = uploadChallengeDifficulty(
+        requested.byteLength,
+        uploadChallengeDifficultyBits,
+      );
+      let challenge;
+      try {
+        challenge = await coordinator.issueUploadChallenge(requested, {
+          difficultyBits,
+        });
+      } catch (error) {
+        console.error(`Upload challenge issuance failed: ${error.message}`);
+        throw new ApiError(
+          503,
+          "COORDINATION_UNAVAILABLE",
+          "The private upload authorisation service is temporarily unavailable.",
+        );
+      }
+      return response.status(201).json({
+        ok: true,
+        challengeId: challenge.challengeId,
+        algorithm: "SHA-256",
+        preimage: `${UPLOAD_CHALLENGE_PREIMAGE_PREFIX}:<challengeId>:<nonce>`,
+        difficultyBits: challenge.difficultyBits,
+        expiresAt: challenge.expiresAt,
+      });
+    },
+  );
+
+  app.post(
     "/api/storage/upload-grants",
     createSealRateLimiter({
       coordinator,
@@ -431,9 +482,90 @@ export function createApp({
     }),
     async (request, response) => {
       const requested = validateUploadGrantRequest(request.body);
+      const binding = {
+        submissionId: requested.submissionId,
+        ciphertextSha256: requested.ciphertextSha256,
+        byteLength: requested.byteLength,
+      };
+
+      let challenge;
+      try {
+        challenge = await coordinator.openUploadChallenge(
+          requested.challengeId,
+          binding,
+        );
+      } catch (error) {
+        console.error(`Upload challenge verification failed: ${error.message}`);
+        throw new ApiError(
+          503,
+          "COORDINATION_UNAVAILABLE",
+          "The private upload authorisation service is temporarily unavailable.",
+        );
+      }
+      if (!challenge || challenge.consumed) {
+        throw new ApiError(
+          403,
+          "UPLOAD_CHALLENGE_REJECTED",
+          "This upload challenge is unknown, expired, already spent or does not cover exactly this ciphertext.",
+        );
+      }
+      if (
+        !solvesUploadChallenge({
+          challengeId: requested.challengeId,
+          nonce: requested.nonce,
+          difficultyBits: challenge.difficultyBits,
+        })
+      ) {
+        throw new ApiError(
+          403,
+          "UPLOAD_CHALLENGE_UNSOLVED",
+          `The nonce does not solve this upload challenge at ${challenge.difficultyBits} bits of proof of work.`,
+        );
+      }
+
+      let claimed = false;
+      let admission;
+      try {
+        claimed = await challenge.consume();
+        if (claimed) {
+          admission = await coordinator.consumeStorageAdmission({
+            bytes: requested.byteLength,
+            limitBytes: storageAdmissionBytesPerDay,
+            windowMs: 24 * 60 * 60 * 1000,
+          });
+        }
+      } catch (error) {
+        console.error(`Upload admission accounting failed: ${error.message}`);
+        throw new ApiError(
+          503,
+          "COORDINATION_UNAVAILABLE",
+          "The private upload authorisation service is temporarily unavailable.",
+        );
+      }
+      if (!claimed) {
+        throw new ApiError(
+          403,
+          "UPLOAD_CHALLENGE_REJECTED",
+          "This upload challenge is unknown, expired, already spent or does not cover exactly this ciphertext.",
+        );
+      }
+      if (!admission.allowed) {
+        const resetSeconds = Math.max(
+          1,
+          Math.ceil(admission.resetInMs / 1000),
+        );
+        response.set("Retry-After", String(resetSeconds));
+        return response.status(429).json({
+          ok: false,
+          code: "STORAGE_ADMISSION_EXHAUSTED",
+          message:
+            "The shared alpha storage budget for this period is exhausted. Try again after the reset time.",
+        });
+      }
+
       let grant;
       try {
-        grant = await coordinator.issueUploadGrant(requested);
+        grant = await coordinator.issueUploadGrant(binding);
       } catch (error) {
         console.error(`Upload grant issuance failed: ${error.message}`);
         throw new ApiError(
@@ -446,6 +578,8 @@ export function createApp({
         ok: true,
         grantId: grant.grantId,
         expiresAt: grant.expiresAt,
+        admittedBytes: requested.byteLength,
+        remainingBudgetBytes: admission.remainingBytes,
       });
     },
   );

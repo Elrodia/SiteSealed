@@ -161,28 +161,57 @@ les présenter rétroactivement comme vérifiés.
 
 ## Cycle de vie du stockage privé
 
-Le dépôt d'un ciphertext n'est plus anonyme. Le navigateur demande d'abord une
-autorisation d'envoi à usage unique, puis la présente à l'envoi :
+Le dépôt d'un ciphertext n'est plus anonyme et n'est plus gratuit. Une
+autorisation d'envoi n'est jamais délivrée sur simple demande : elle doit être
+achetée par une preuve de travail liée à cet objet précis, puis imputée sur un
+budget de stockage partagé. La possession d'un grant n'est donc pas la frontière
+d'autorisation ; la ressource rare l'est.
 
-1. `POST /api/storage/upload-grants` avec `{ submissionId, ciphertextSha256,
-   byteLength }` renvoie `{ grantId, expiresAt }`. L'autorisation est conservée
-   par le coordinateur (Redis en production, mémoire avec
-   `DATABASE_MODE=optional`) pendant **15 minutes** ;
-2. `PUT /api/storage/uploads/:submissionId` exige l'en-tête
+1. `POST /api/storage/upload-challenges` avec `{ submissionId,
+   ciphertextSha256, byteLength }` renvoie `{ challengeId, algorithm,
+   difficultyBits, expiresAt }`. Le défi est lié à ce triplet, à usage unique,
+   valable **10 minutes**, et sa difficulté croît avec la taille annoncée
+   (`UPLOAD_CHALLENGE_DIFFICULTY_BITS`, 16 bits par défaut, +1 bit au-delà de
+   1 Mo, +2 bits au-delà de 8 Mo) ;
+2. le navigateur cherche un `nonce` tel que
+   `SHA-256("sitesealed:v1.4:upload-challenge:<challengeId>:<nonce>")` commence
+   par `difficultyBits` bits à zéro. Le secret du `challengeId` étant tiré au
+   hasard par le serveur, aucune solution ne peut être pré-calculée ni
+   réutilisée pour un autre objet ;
+3. `POST /api/storage/upload-grants` avec `{ submissionId, ciphertextSha256,
+   byteLength, challengeId, nonce }` renvoie `{ grantId, expiresAt,
+   admittedBytes, remainingBudgetBytes }`. Un défi inconnu, expiré, déjà
+   dépensé ou portant sur un autre objet renvoie `403
+   UPLOAD_CHALLENGE_REJECTED` ; un `nonce` insuffisant renvoie `403
+   UPLOAD_CHALLENGE_UNSOLVED`. Le défi est consommé atomiquement avant
+   l'émission : une preuve de travail n'achète qu'un seul grant ;
+4. les octets annoncés sont imputés sur un budget **global** (toutes IP
+   confondues) de `STORAGE_ADMISSION_MB_PER_DAY` (2048 Mo par défaut, fenêtre
+   de 24 h). Budget épuisé : `429 STORAGE_ADMISSION_EXHAUSTED` avec
+   `Retry-After`. Ce plafond borne le coût de stockage de l'opérateur même face
+   à une rotation d'adresses IP ;
+5. l'autorisation est conservée par le coordinateur (Redis en production,
+   mémoire avec `DATABASE_MODE=optional`) pendant **15 minutes** ;
+6. `PUT /api/storage/uploads/:submissionId` exige l'en-tête
    `X-SiteSealed-Upload-Grant`. Son absence renvoie `401
    UPLOAD_GRANT_REQUIRED`. Une autorisation inconnue, expirée, déjà consommée
    pour un autre objet, ou dont le `submissionId`, le `ciphertextSha256` ou le
    `byteLength` ne correspondent pas exactement renvoie `403
    UPLOAD_GRANT_REJECTED` ;
-3. l'autorisation est consommée atomiquement au premier stockage réussi. Un
+7. l'autorisation est consommée atomiquement au premier stockage réussi. Un
    renvoi du **même** objet chiffré reste idempotent et répond `200`
    `ENCRYPTED_ORIGINAL_REUSED` ; une autorisation consommée ne peut jamais
    écrire un objet différent.
 
 La limite anonyme par IP (`SEAL_RATE_LIMIT_PER_HOUR`, 20 par défaut) reste
-appliquée aux deux points d'entrée. Le serveur ne reçoit toujours ni original
-lisible ni clé AES : l'autorisation ne porte que sur une empreinte et une
-taille.
+appliquée aux trois points d'entrée. Le serveur ne reçoit toujours ni original
+lisible ni clé AES : le défi comme l'autorisation ne portent que sur une
+empreinte et une taille.
+
+Cette barrière est un coût, pas une identité : elle ne remplace pas un quota
+authentifié ou un droit payant, qui restent le seul moyen de rendre le dépôt
+strictement nominatif. Tant que l'alpha reste anonyme, le budget global est le
+plafond dur du coût opérateur et doit être calibré sur le Bucket réel.
 
 **Expiration des objets orphelins.** Un ciphertext peut être stocké sans que le
 reçu correspondant soit jamais créé (abandon, erreur réseau, requête
@@ -294,6 +323,8 @@ REDIS_URL=${{Redis.REDIS_URL}}
 
 PUBLIC_BASE_URL=https://app.sitesealed.com
 SEAL_RATE_LIMIT_PER_HOUR=20
+UPLOAD_CHALLENGE_DIFFICULTY_BITS=16
+STORAGE_ADMISSION_MB_PER_DAY=2048
 
 S3_ACCESS_KEY=${{"Bucket S3".ACCESS_KEY_ID}}
 S3_BUCKET=${{"Bucket S3".BUCKET}}

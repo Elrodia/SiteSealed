@@ -4,6 +4,9 @@ import { sha256 as nobleSha256 } from "@noble/hashes/sha2.js";
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
 export const PROTOCOL_VERSION = "1.2";
 export const UPLOAD_GRANT_HEADER = "x-sitesealed-upload-grant";
+export const UPLOAD_CHALLENGE_PREIMAGE_PREFIX =
+  "sitesealed:v1.4:upload-challenge";
+export const MAX_UPLOAD_CHALLENGE_DIFFICULTY_BITS = 24;
 
 export function createRandomUuid() {
   const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
@@ -280,11 +283,66 @@ export async function createRecoveryToken() {
   };
 }
 
-export function createUploadGrantRequest({ submissionId, encryptedOriginal }) {
+export function createUploadChallengeRequest({
+  submissionId,
+  encryptedOriginal,
+}) {
   return {
     submissionId,
     ciphertextSha256: encryptedOriginal.envelope.ciphertextSha256,
     byteLength: encryptedOriginal.envelope.ciphertextBytes,
+  };
+}
+
+function leadingZeroBits(digest) {
+  let bits = 0;
+  for (const byte of digest) {
+    if (byte === 0) {
+      bits += 8;
+      continue;
+    }
+    return bits + Math.clz32(byte) - 24;
+  }
+  return bits;
+}
+
+export async function solveUploadChallenge({ challengeId, difficultyBits }) {
+  const bits = Number(difficultyBits);
+  if (!Number.isInteger(bits) || bits < 1) {
+    throw new Error("The upload challenge difficulty is invalid.");
+  }
+  if (bits > MAX_UPLOAD_CHALLENGE_DIFFICULTY_BITS) {
+    throw new Error("The upload challenge difficulty is unreasonably high.");
+  }
+  const encoder = new TextEncoder();
+  const maxAttempts = 64 * 2 ** bits;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const nonce = attempt.toString(36);
+    const digest = nobleSha256(
+      encoder.encode(
+        `${UPLOAD_CHALLENGE_PREIMAGE_PREFIX}:${challengeId}:${nonce}`,
+      ),
+    );
+    if (leadingZeroBits(digest) >= bits) return nonce;
+    if ((attempt & 0x3fff) === 0x3fff) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+  throw new Error("The upload challenge could not be solved.");
+}
+
+export function createUploadGrantRequest({
+  submissionId,
+  encryptedOriginal,
+  challengeId,
+  nonce,
+}) {
+  return {
+    submissionId,
+    ciphertextSha256: encryptedOriginal.envelope.ciphertextSha256,
+    byteLength: encryptedOriginal.envelope.ciphertextBytes,
+    challengeId,
+    nonce,
   };
 }
 

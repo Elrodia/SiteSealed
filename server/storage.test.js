@@ -5,18 +5,23 @@ import { test } from "node:test";
 import {
   createMemoryCoordinator,
   createRedisCoordinator,
+  UPLOAD_CHALLENGE_TTL_MS,
   UPLOAD_GRANT_TTL_MS,
 } from "./coordination.js";
 import {
   createMemoryObjectStore,
   createS3ObjectStore,
   resolveS3Config,
+  solvesUploadChallenge,
+  uploadChallengeDifficulty,
   validateEncryptedUpload,
+  validateUploadChallengeRequest,
   validateUploadGrantRequest,
 } from "./storage.js";
 
 const submissionId = "123e4567-e89b-42d3-a456-426614174000";
 const otherSubmissionId = "123e4567-e89b-42d3-a456-426614174001";
+const challengeId = `${submissionId}.${"a".repeat(43)}`;
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -209,10 +214,10 @@ test("the S3 adapter writes only ciphertext and verifies object metadata", async
   assert.equal(JSON.stringify(put.input).includes("secret-access-key"), false);
 });
 
-test("upload grant requests reuse the shared submission, digest and size validators", () => {
+test("upload admission requests reuse the shared submission, digest and size validators", () => {
   const body = Buffer.from("0123456789abcdef0123456789abcdef");
   assert.deepEqual(
-    validateUploadGrantRequest({
+    validateUploadChallengeRequest({
       submissionId: submissionId.toUpperCase(),
       ciphertextSha256: sha256(body).toUpperCase(),
       byteLength: body.length,
@@ -223,10 +228,26 @@ test("upload grant requests reuse the shared submission, digest and size validat
       byteLength: body.length,
     },
   );
+  assert.deepEqual(
+    validateUploadGrantRequest({
+      submissionId,
+      ciphertextSha256: sha256(body),
+      byteLength: body.length,
+      challengeId,
+      nonce: "1ab",
+    }),
+    {
+      submissionId,
+      ciphertextSha256: sha256(body),
+      byteLength: body.length,
+      challengeId,
+      nonce: "1ab",
+    },
+  );
 
   assert.throws(
     () =>
-      validateUploadGrantRequest({
+      validateUploadChallengeRequest({
         submissionId,
         ciphertextSha256: sha256(body),
         byteLength: body.length,
@@ -237,6 +258,39 @@ test("upload grant requests reuse the shared submission, digest and size validat
   assert.throws(
     () =>
       validateUploadGrantRequest({
+        submissionId,
+        ciphertextSha256: sha256(body),
+        byteLength: body.length,
+        challengeId,
+        nonce: "1ab",
+        originalBase64: "do-not-accept",
+      }),
+    /must never be sent/,
+  );
+  assert.throws(
+    () =>
+      validateUploadGrantRequest({
+        submissionId,
+        ciphertextSha256: sha256(body),
+        byteLength: body.length,
+        nonce: "1ab",
+      }),
+    /challengeId must be the identifier returned/,
+  );
+  assert.throws(
+    () =>
+      validateUploadGrantRequest({
+        submissionId,
+        ciphertextSha256: sha256(body),
+        byteLength: body.length,
+        challengeId,
+        nonce: "x".repeat(65),
+      }),
+    /nonce must be the base64url solution/,
+  );
+  assert.throws(
+    () =>
+      validateUploadChallengeRequest({
         submissionId: "not-a-uuid",
         ciphertextSha256: sha256(body),
         byteLength: body.length,
@@ -245,7 +299,7 @@ test("upload grant requests reuse the shared submission, digest and size validat
   );
   assert.throws(
     () =>
-      validateUploadGrantRequest({
+      validateUploadChallengeRequest({
         submissionId,
         ciphertextSha256: "zz",
         byteLength: body.length,
@@ -254,7 +308,7 @@ test("upload grant requests reuse the shared submission, digest and size validat
   );
   assert.throws(
     () =>
-      validateUploadGrantRequest({
+      validateUploadChallengeRequest({
         submissionId,
         ciphertextSha256: sha256(body),
         byteLength: 25 * 1024 * 1024 + 17,
@@ -263,13 +317,155 @@ test("upload grant requests reuse the shared submission, digest and size validat
   );
   assert.throws(
     () =>
-      validateUploadGrantRequest({
+      validateUploadChallengeRequest({
         submissionId,
         ciphertextSha256: sha256(body),
         byteLength: 0,
       }),
     /byteLength must be a positive integer/,
   );
+});
+
+test("the proof of work is verified against the issued challenge and its size class", () => {
+  assert.equal(uploadChallengeDifficulty(32, 16), 16);
+  assert.equal(uploadChallengeDifficulty(2 * 1024 * 1024, 16), 17);
+  assert.equal(uploadChallengeDifficulty(25 * 1024 * 1024, 16), 18);
+  assert.equal(uploadChallengeDifficulty(32, 2), 8);
+  assert.equal(uploadChallengeDifficulty(25 * 1024 * 1024, 64), 24);
+
+  let nonce = null;
+  for (let attempt = 0; attempt < 100_000 && nonce === null; attempt += 1) {
+    const candidate = attempt.toString(36);
+    if (solvesUploadChallenge({ challengeId, nonce: candidate, difficultyBits: 12 })) {
+      nonce = candidate;
+    }
+  }
+  assert.ok(nonce);
+  assert.equal(
+    solvesUploadChallenge({ challengeId, nonce, difficultyBits: 12 }),
+    true,
+  );
+  assert.equal(
+    solvesUploadChallenge({ challengeId, nonce, difficultyBits: 24 }),
+    false,
+  );
+  assert.equal(
+    solvesUploadChallenge({
+      challengeId: `${otherSubmissionId}.${challengeId.split(".")[1]}`,
+      nonce,
+      difficultyBits: 12,
+    }),
+    false,
+  );
+  assert.equal(
+    solvesUploadChallenge({ challengeId, nonce: "not a nonce", difficultyBits: 12 }),
+    false,
+  );
+  assert.equal(
+    solvesUploadChallenge({ challengeId, nonce, difficultyBits: 4 }),
+    false,
+  );
+});
+
+async function uploadChallengeScenario(coordinator) {
+  const body = Buffer.from("0123456789abcdef0123456789abcdef");
+  const otherBody = Buffer.from("fedcba9876543210fedcba9876543210");
+  const binding = {
+    submissionId,
+    ciphertextSha256: sha256(body),
+    byteLength: body.length,
+  };
+  const outcome = [];
+
+  const challenge = await coordinator.issueUploadChallenge(binding, {
+    difficultyBits: 12,
+  });
+  outcome.push(
+    `format:${/^[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/.test(challenge.challengeId)}`,
+  );
+  outcome.push(`bits:${challenge.difficultyBits}`);
+  outcome.push(`ttl:${Date.parse(challenge.expiresAt) - Date.now() > 9 * 60 * 1000}`);
+
+  outcome.push(
+    `unknown:${await coordinator.openUploadChallenge(`${crypto.randomUUID()}.${"a".repeat(43)}`, binding)}`,
+  );
+  outcome.push(`malformed:${await coordinator.openUploadChallenge("nope", binding)}`);
+  outcome.push(
+    `tampered:${await coordinator.openUploadChallenge(
+      `${challenge.challengeId.split(".")[0]}.${"b".repeat(43)}`,
+      binding,
+    )}`,
+  );
+  outcome.push(
+    `digest:${await coordinator.openUploadChallenge(challenge.challengeId, {
+      ...binding,
+      ciphertextSha256: sha256(otherBody),
+    })}`,
+  );
+  outcome.push(
+    `size:${await coordinator.openUploadChallenge(challenge.challengeId, {
+      ...binding,
+      byteLength: body.length + 1,
+    })}`,
+  );
+
+  const opened = await coordinator.openUploadChallenge(
+    challenge.challengeId,
+    binding,
+  );
+  outcome.push(`opened:${opened.consumed}:${opened.difficultyBits}`);
+  outcome.push(`consume:${await opened.consume()}`);
+  outcome.push(`consumeTwice:${await opened.consume()}`);
+  outcome.push(
+    `replayConsumed:${(await coordinator.openUploadChallenge(challenge.challengeId, binding)).consumed}`,
+  );
+
+  const expiring = await coordinator.issueUploadChallenge(binding, {
+    difficultyBits: 12,
+    ttlMs: 20,
+  });
+  await sleep(60);
+  outcome.push(
+    `expired:${await coordinator.openUploadChallenge(expiring.challengeId, binding)}`,
+  );
+
+  let rejectedDifficulty = "accepted";
+  try {
+    await coordinator.issueUploadChallenge(binding, { difficultyBits: 0 });
+  } catch (error) {
+    rejectedDifficulty = error.message.includes("difficulty")
+      ? "rejected"
+      : "other";
+  }
+  outcome.push(`difficulty:${rejectedDifficulty}`);
+
+  return outcome;
+}
+
+test("the memory and Redis adapters enforce identical single-use upload challenges", async () => {
+  const memory = await uploadChallengeScenario(createMemoryCoordinator());
+  const redis = await uploadChallengeScenario(
+    createRedisCoordinator(createFakeRedisClient()),
+  );
+
+  assert.deepEqual(memory, [
+    "format:true",
+    "bits:12",
+    "ttl:true",
+    "unknown:null",
+    "malformed:null",
+    "tampered:null",
+    "digest:null",
+    "size:null",
+    "opened:false:12",
+    "consume:true",
+    "consumeTwice:false",
+    "replayConsumed:true",
+    "expired:null",
+    "difficulty:rejected",
+  ]);
+  assert.deepEqual(redis, memory);
+  assert.equal(UPLOAD_CHALLENGE_TTL_MS, 10 * 60 * 1000);
 });
 
 async function uploadGrantScenario(coordinator) {

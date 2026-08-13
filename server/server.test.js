@@ -4,6 +4,7 @@ import { after, before, test } from "node:test";
 import { createMemoryCoordinator } from "./coordination.js";
 import { createApp } from "./server.js";
 import { createMemoryRecordStore } from "./specimen.js";
+import { solvesUploadChallenge } from "./storage.js";
 
 let server;
 let baseUrl;
@@ -47,8 +48,47 @@ function validRequest(overrides = {}) {
   return request;
 }
 
+function solveChallenge(challengeId, difficultyBits) {
+  for (let attempt = 0; attempt < 1_000_000; attempt += 1) {
+    const nonce = attempt.toString(36);
+    if (solvesUploadChallenge({ challengeId, nonce, difficultyBits })) {
+      return nonce;
+    }
+  }
+  throw new Error("The test challenge could not be solved.");
+}
+
+async function requestUploadChallenge(body, { overrides = {}, target } = {}) {
+  const upload = body[TEST_UPLOAD];
+  const response = await fetch(
+    `${target ?? baseUrl}/api/storage/upload-challenges`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        submissionId: body.submissionId,
+        ciphertextSha256: sha256(upload.ciphertext),
+        byteLength: upload.ciphertext.length,
+        ...overrides,
+      }),
+    },
+  );
+  return { response, payload: await response.json() };
+}
+
+async function postUploadGrant(body, target) {
+  const response = await fetch(`${target ?? baseUrl}/api/storage/upload-grants`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return { response, payload: await response.json() };
+}
+
 async function requestUploadGrant(body, { overrides = {}, target } = {}) {
   const upload = body[TEST_UPLOAD];
+  const challenge = await requestUploadChallenge(body, { overrides, target });
+  if (!challenge.response.ok) return challenge;
   const response = await fetch(`${target ?? baseUrl}/api/storage/upload-grants`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -56,10 +96,15 @@ async function requestUploadGrant(body, { overrides = {}, target } = {}) {
       submissionId: body.submissionId,
       ciphertextSha256: sha256(upload.ciphertext),
       byteLength: upload.ciphertext.length,
+      challengeId: challenge.payload.challengeId,
+      nonce: solveChallenge(
+        challenge.payload.challengeId,
+        challenge.payload.difficultyBits,
+      ),
       ...overrides,
     }),
   });
-  return { response, payload: await response.json() };
+  return { response, payload: await response.json(), challenge: challenge.payload };
 }
 
 function uploadHeaders(body, grantId) {
@@ -111,6 +156,7 @@ before(async () => {
   const app = createApp({
     recordStore: createMemoryRecordStore(),
     sealRateLimit: 100,
+    uploadChallengeDifficultyBits: 10,
   });
   await new Promise((resolve) => {
     server = app.listen(0, "127.0.0.1", resolve);
@@ -173,6 +219,7 @@ test("health endpoint reports the honest v1.4-alpha.7.1 capability boundary", as
     authoritative: false,
     distributed: false,
     rateLimiting: true,
+    storageAdmission: true,
     verificationCache: true,
     runtimeRailStatus: true,
   });
@@ -704,6 +751,7 @@ test("an expired upload grant is refused after its 15 minute window", async () =
     recordStore: createMemoryRecordStore(),
     coordinator: createMemoryCoordinator({ now: () => timestamp }),
     sealRateLimit: 100,
+    uploadChallengeDifficultyBits: 10,
   });
   const expiringServer = await new Promise((resolve) => {
     const instance = expiringApp.listen(0, "127.0.0.1", () => resolve(instance));
@@ -733,17 +781,120 @@ test("an expired upload grant is refused after its 15 minute window", async () =
   }
 });
 
-test("upload grant requests refuse original file data and malformed bindings", async () => {
+test("upload admission requests refuse original file data and malformed bindings", async () => {
   const body = validRequest();
-  const rejected = await requestUploadGrant(body, {
+  const rejected = await requestUploadChallenge(body, {
     overrides: { originalBase64: "do-not-accept" },
   });
   assert.equal(rejected.response.status, 400);
-  assert.equal(rejected.payload.code, "INVALID_UPLOAD_GRANT_REQUEST");
+  assert.equal(rejected.payload.code, "INVALID_UPLOAD_CHALLENGE_REQUEST");
 
-  const invalidSize = await requestUploadGrant(body, {
+  const invalidSize = await requestUploadChallenge(body, {
     overrides: { byteLength: 0 },
   });
   assert.equal(invalidSize.response.status, 400);
   assert.equal(invalidSize.payload.code, "INVALID_ENCRYPTED_OBJECT");
+
+  const withoutSolution = await postUploadGrant({
+    submissionId: body.submissionId,
+    ciphertextSha256: sha256(body[TEST_UPLOAD].ciphertext),
+    byteLength: body[TEST_UPLOAD].ciphertext.length,
+  });
+  assert.equal(withoutSolution.response.status, 400);
+  assert.equal(withoutSolution.payload.code, "INVALID_UPLOAD_GRANT_REQUEST");
+});
+
+test("no upload grant is issued without a solved single-use challenge", async () => {
+  const body = validRequest();
+  const upload = body[TEST_UPLOAD];
+  const binding = {
+    submissionId: body.submissionId,
+    ciphertextSha256: sha256(upload.ciphertext),
+    byteLength: upload.ciphertext.length,
+  };
+
+  const unknown = await postUploadGrant({
+    ...binding,
+    challengeId: `${crypto.randomUUID()}.${"a".repeat(43)}`,
+    nonce: "0",
+  });
+  assert.equal(unknown.response.status, 403);
+  assert.equal(unknown.payload.code, "UPLOAD_CHALLENGE_REJECTED");
+
+  const challenge = await requestUploadChallenge(body);
+  assert.equal(challenge.response.status, 201);
+  assert.equal(challenge.payload.algorithm, "SHA-256");
+  assert.ok(challenge.payload.difficultyBits >= 10);
+  assert.ok(Date.parse(challenge.payload.expiresAt) > Date.now());
+
+  const unsolved = await postUploadGrant({
+    ...binding,
+    challengeId: challenge.payload.challengeId,
+    nonce: "not-a-solution",
+  });
+  assert.equal(unsolved.response.status, 403);
+  assert.equal(unsolved.payload.code, "UPLOAD_CHALLENGE_UNSOLVED");
+
+  const nonce = solveChallenge(
+    challenge.payload.challengeId,
+    challenge.payload.difficultyBits,
+  );
+  const otherCiphertext = await postUploadGrant({
+    ...binding,
+    ciphertextSha256: sha256(validRequest()[TEST_UPLOAD].ciphertext),
+    challengeId: challenge.payload.challengeId,
+    nonce,
+  });
+  assert.equal(otherCiphertext.response.status, 403);
+  assert.equal(otherCiphertext.payload.code, "UPLOAD_CHALLENGE_REJECTED");
+
+  const granted = await postUploadGrant({
+    ...binding,
+    challengeId: challenge.payload.challengeId,
+    nonce,
+  });
+  assert.equal(granted.response.status, 201);
+  assert.equal(granted.payload.admittedBytes, binding.byteLength);
+  assert.ok(granted.payload.remainingBudgetBytes > 0);
+
+  const replayed = await postUploadGrant({
+    ...binding,
+    challengeId: challenge.payload.challengeId,
+    nonce,
+  });
+  assert.equal(replayed.response.status, 403);
+  assert.equal(replayed.payload.code, "UPLOAD_CHALLENGE_REJECTED");
+
+  const stored = await uploadEncryptedOriginal(body, {
+    grantId: granted.payload.grantId,
+  });
+  assert.equal(stored.status, 201);
+});
+
+test("the shared storage budget caps admitted ciphertext across every client", async () => {
+  const budgetApp = createApp({
+    recordStore: createMemoryRecordStore(),
+    sealRateLimit: 100,
+    uploadChallengeDifficultyBits: 10,
+    storageAdmissionBytesPerDay: 48,
+  });
+  const budgetServer = await new Promise((resolve) => {
+    const instance = budgetApp.listen(0, "127.0.0.1", () => resolve(instance));
+  });
+  const target = `http://127.0.0.1:${budgetServer.address().port}`;
+
+  try {
+    const first = await requestUploadGrant(validRequest(), { target });
+    assert.equal(first.response.status, 201);
+    assert.equal(first.payload.remainingBudgetBytes, 16);
+
+    const second = await requestUploadGrant(validRequest(), { target });
+    assert.equal(second.response.status, 429);
+    assert.equal(second.payload.code, "STORAGE_ADMISSION_EXHAUSTED");
+    assert.ok(Number(second.response.headers.get("retry-after")) > 0);
+  } finally {
+    await new Promise((resolve, reject) =>
+      budgetServer.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
 });

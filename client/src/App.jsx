@@ -6,12 +6,14 @@ import {
   createRecoveryToken,
   createRandomUuid,
   createSealRequest,
+  createUploadChallengeRequest,
   createUploadGrantRequest,
   encryptManifest,
   encryptOriginal,
   formatBytes,
   MAX_FILE_BYTES,
   sha256File,
+  solveUploadChallenge,
   verifyPublicProofArtifacts,
 } from "./sealing.js";
 
@@ -497,7 +499,29 @@ function SealingWorkbench({ onVerify }) {
         recoveryToken,
       } = attempt;
 
-      setStatus("uploading");
+      setStatus("authorising");
+      const challengeResponse = await fetch("/api/storage/upload-challenges", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(
+          createUploadChallengeRequest({
+            submissionId: activeSubmissionId,
+            encryptedOriginal,
+          }),
+        ),
+      });
+      const challengePayload = await readApiJson(challengeResponse);
+      if (!challengeResponse.ok) {
+        throw new Error(
+          challengePayload.message ||
+            "The private upload authorisation could not be obtained.",
+        );
+      }
+      const nonce = await solveUploadChallenge({
+        challengeId: challengePayload.challengeId,
+        difficultyBits: challengePayload.difficultyBits,
+      });
+
       const grantResponse = await fetch("/api/storage/upload-grants", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -505,6 +529,8 @@ function SealingWorkbench({ onVerify }) {
           createUploadGrantRequest({
             submissionId: activeSubmissionId,
             encryptedOriginal,
+            challengeId: challengePayload.challengeId,
+            nonce,
           }),
         ),
       });
@@ -515,6 +541,8 @@ function SealingWorkbench({ onVerify }) {
             "The private upload authorisation could not be obtained.",
         );
       }
+
+      setStatus("uploading");
 
       const uploadResponse = await fetch(
         `/api/storage/uploads/${encodeURIComponent(activeSubmissionId)}`,
@@ -607,6 +635,7 @@ function SealingWorkbench({ onVerify }) {
   const progressLabel = {
     hashing: "Hashing the file locally...",
     encrypting: "Encrypting the manifest and original locally...",
+    authorising: "Solving the upload admission challenge locally...",
     uploading: "Sending only encrypted ciphertext to the private Bucket...",
     recording: "Binding the MySQL receipt and PostgreSQL audit event...",
   }[status];
@@ -692,7 +721,7 @@ function SealingWorkbench({ onVerify }) {
           <button
             className="button button--amber"
             type="submit"
-            disabled={["hashing", "encrypting", "uploading", "recording"].includes(status)}
+            disabled={["hashing", "encrypting", "authorising", "uploading", "recording"].includes(status)}
           >
             {progressLabel || "Hash, encrypt and record"}
             {!progressLabel && <Icon name="arrow" size={17} />}
@@ -702,7 +731,7 @@ function SealingWorkbench({ onVerify }) {
       </form>
 
       <div className="seal-response" aria-live="polite">
-        {["hashing", "encrypting", "uploading", "recording"].includes(status) && (
+        {["hashing", "encrypting", "authorising", "uploading", "recording"].includes(status) && (
           <div className="seal-progress">
             <span /><span /><span />
             <p>{progressLabel}</p>
