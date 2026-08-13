@@ -493,7 +493,7 @@ export function createApp({
           {
             submissionId: upload.submissionId,
             ciphertextSha256: upload.ciphertextSha256,
-            byteLength: upload.body.length,
+            byteLength: upload.ciphertextBytes,
           },
         );
       } catch (error) {

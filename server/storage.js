@@ -184,6 +184,7 @@ export function validateEncryptedUpload({ submissionId, headers, body }) {
       "x-sitesealed-record-sha256",
     ),
     ciphertextSha256,
+    ciphertextBytes: plaintextBytes + 16,
     plaintextBytes,
     iv,
     recoveryTokenSha256: normalizeDigest(
