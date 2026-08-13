@@ -1398,7 +1398,7 @@ export function createMysqlRecordStore(pool) {
                 leaf_hash, merkle_protocol, inclusion_path, batch_size,
                 verification_status, confirmations, finality_status,
                 submitted_at, confirmed_at, finalized_at
-              ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
               ON DUPLICATE KEY UPDATE
                 block_number = VALUES(block_number),
                 block_hash = VALUES(block_hash),
@@ -1411,6 +1411,8 @@ export function createMysqlRecordStore(pool) {
               [
                 member.record_id,
                 batchId,
+                batch.chain_name,
+                batch.chain_id,
                 update.blockNumber ?? batch.block_number,
                 update.blockHash ?? batch.block_hash,
                 batch.transaction_hash,
