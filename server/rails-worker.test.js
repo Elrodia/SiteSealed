@@ -7,6 +7,7 @@ import { buildMerkleTree, verifyMerkleProof } from "./merkle.js";
 import {
   deriveEvidencyRuntimeStatus,
   deriveEthereumRuntimeStatus,
+  operationalErrorMessage,
   processAnchorQueue,
   processTimestampQueue,
 } from "./rails-worker.js";
@@ -490,4 +491,28 @@ test("the worker completes an auditable sandbox-plus-mainnet alpha lifecycle", a
     ethereumRail: { configured: true },
   });
   assert.equal(second.status, "NO_ELIGIBLE_RECORDS");
+});
+
+
+test("operationalErrorMessage keeps host and redacts only the path", () => {
+  const msg = "Request failed: https://mainnet.infura.io/v3/SECRETKEY";
+  const result = operationalErrorMessage(new Error(msg));
+  assert.match(result, /https:\/\/mainnet\.infura\.io/, "host must be preserved");
+  assert.ok(!result.includes("SECRETKEY"), "API key in path must not appear");
+  assert.ok(result.includes("/[redacted]"), "path must be replaced with /[redacted]");
+});
+
+test("operationalErrorMessage handles URLs without a path", () => {
+  const msg = "connect ECONNREFUSED wss://mainnet.infura.io";
+  const result = operationalErrorMessage(new Error(msg));
+  assert.match(result, /wss:\/\/mainnet\.infura\.io/, "host must be preserved");
+  assert.ok(result.includes("/[redacted]"), "path must be appended");
+});
+
+test("operationalErrorMessage redacts query-only URLs", () => {
+  const msg = "Request failed: https://mainnet.infura.io?apiKey=SECRETKEY";
+  const result = operationalErrorMessage(new Error(msg));
+  assert.match(result, /https:\/\/mainnet\.infura\.io/, "host must be preserved");
+  assert.ok(!result.includes("SECRETKEY"), "API key in query must not appear");
+  assert.ok(result.includes("/[redacted]"), "redacted marker must be present");
 });

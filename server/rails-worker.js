@@ -19,10 +19,10 @@ import { createMemoryRecordStore } from "./specimen.js";
 
 const VALID_CERTIFICATE_CHAIN = "VALID_TO_PINNED_SANDBOX_ROOT";
 
-function operationalErrorMessage(error) {
+export function operationalErrorMessage(error) {
   return String(error?.message ?? "External rail operation failed.").replace(
-    /\b(?:https?|wss?):\/\/[^\s'"<>]+/gi,
-    "[redacted external URL]",
+    /\b((?:https?|wss?):\/\/[^/\s'"<>?#]+)([/?#][^\s'"<>]*)?/gi,
+    (_match, origin) => `${origin}/[redacted]`,
   );
 }
 
@@ -700,6 +700,8 @@ export async function runRailsWorker(environment = process.env) {
     timestampService = createEvidencyTimestampServiceFromEnv(environment);
     try {
       ethereumRail = createEthereumAnchorClientFromEnv(environment);
+      await ethereumRail.healthCheck();
+      await ethereumRail.probeRpc();
     } catch (error) {
       const lastCheckedAt = new Date().toISOString();
       const ttlMs =

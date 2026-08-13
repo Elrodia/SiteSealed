@@ -174,6 +174,7 @@ export function createDisabledEthereumRail() {
         writesEnabled: false,
       };
     },
+    async probeRpc() {},
     async close() {},
   };
 }
@@ -523,8 +524,23 @@ export function createEthereumAnchorClient(config, { provider, wallet } = {}) {
       };
     },
 
+    async probeRpc() {
+      // staticNetwork short-circuits getNetwork(), so probe the wire directly.
+      // This turns silent credential failures into an explicit, early error
+      // at worker startup — without burdening the server /api/health path.
+      await activeProvider.getBlockNumber();
+    },
+
     async close() {
-      await activeProvider.destroy?.();
+      const socket = activeProvider.websocket;
+      // A ws instance torn down mid-handshake emits an async 'error' event
+      // that no promise chain can catch. Attach the sink BEFORE destroy().
+      socket?.on?.("error", () => {});
+      try {
+        await activeProvider.destroy?.();
+      } catch {
+        // Teardown must never fail an otherwise-verified run.
+      }
     },
   };
 }
