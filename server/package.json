@@ -1,6 +1,6 @@
 {
   "name": "@sitesealed/server",
-  "version": "1.4.0-alpha.9",
+  "version": "1.4.0-alpha.10",
   "private": true,
   "type": "module",
   "main": "server.js",
@@ -23,9 +23,13 @@
     "google-auth-library": "11.0.2",
     "helmet": "^8.1.0",
     "mysql2": "^3.23.3",
-    "pdfkit": "^0.19.1",
     "pg": "^8.23.0",
     "pkijs": "^3.4.0",
     "redis": "^6.2.1"
+  },
+  "devDependencies": {
+    "@noble/ciphers": "^2.3.0",
+    "@noble/hashes": "^2.3.0",
+    "pdf-lib": "^1.17.1"
   }
 }

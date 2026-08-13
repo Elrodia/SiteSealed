@@ -1,19 +1,43 @@
-# SiteSealed Genesis v1.4-alpha.9 — dépôts liés à un compte Google
+# SiteSealed Genesis v1.4-alpha.10 — Evidence Report canonique
 
-SiteSealed crée des reçus d'intégrité SHA-256, conserve uniquement un original
-chiffré côté client et attache deux rails externes asynchrones :
+SiteSealed crée des enregistrements d'intégrité SHA-256, conserve uniquement un
+original chiffré côté client sur le serveur et produit un seul artefact humain :
+le **SiteSealed Evidence Report PDF**. Ce rapport affiche l'original et incorpore
+également sa séquence d'octets exacte, après comparaison avec l'empreinte
+enregistrée. Deux rails externes asynchrones complètent la preuve :
 
 - un jeton RFC 3161 **Evidency Sandbox**, vérifié cryptographiquement mais sans
   effet qualifié eIDAS ;
 - une racine Merkle écrite sur **Ethereum Mainnet (chain ID 1)** par le worker
   horaire, avec une transaction au maximum par exécution.
 
-L'alpha.9 remplace entièrement le secret partagé de l'alpha.8 par
-**Continue with Google**. Il n'existe plus de variable
+L'alpha.10 conserve l'admission par **Continue with Google** introduite en
+alpha.9. Il n'existe aucune variable
 `UPLOAD_ADMISSION_SECRET`, de champ « Deposit access » ni d'en-tête contenant
 un mot de passe opérateur.
 
-## Frontière de sécurité de l'alpha.9
+## Un seul artefact canonique
+
+Il n'existe plus de « reçu PDF public » séparé. Le serveur, qui ne possède que
+le ciphertext, refuse de fabriquer un PDF incomplet. Le rapport est généré dans
+le navigateur lors de sa création ou depuis le vérificateur, uniquement après
+sélection du fichier original et égalité de son SHA-256 avec le registre.
+
+Le même PDF contient :
+
+- une représentation visible de l'original sur sa première page ;
+- l'original complet et inchangé comme fichier source associé au PDF ;
+- l'identifiant du record, les empreintes et la portée probatoire honnête ;
+- le bundle de preuve JSON, le manifeste machine du rapport et, s'il existe,
+  le jeton RFC 3161 `.tsr` comme pièces jointes incorporées ;
+- l'état courant d'Evidency Sandbox et d'Ethereum Mainnet au moment de l'export.
+
+Le rapport est donc confidentiel exactement dans la mesure où l'original l'est :
+quiconque reçoit le PDF peut voir et extraire le fichier original. Il n'existe
+aucune variante publique/privée du rapport. Le kit de récupération AES reste un
+secret séparé d'exploitation et n'est pas un second rapport de preuve.
+
+## Frontière de sécurité de l'alpha.10
 
 Google Identity Services authentifie le compte avec un ID token OpenID Connect.
 Le serveur vérifie sa signature, son audience, son émetteur et l'adresse e-mail
@@ -29,16 +53,17 @@ vérifiée, puis crée sa propre session opaque dans Redis :
   par domaine lie la session, les grants et le quota.
 
 Le compte autorise uniquement la **création** d'un dépôt. Il ne prouve pas
-l'auteur du fichier et n'est pas ajouté au reçu public. La consultation, le
-bundle, le PDF et le vérificateur public restent accessibles sans compte.
+l'auteur du fichier et n'est pas ajouté au rapport. La consultation, le bundle
+brut, le jeton RFC 3161 et le vérificateur restent accessibles sans compte. La
+génération du rapport exige toujours l'original exact détenu localement.
 
 Si `GOOGLE_OAUTH_CLIENT_ID` manque ou est invalide, le serveur reste en ligne et
 la vérification publique continue de fonctionner. L'interface indique que la
-connexion Google n'est pas configurée et bloque seulement la création de reçus.
+connexion Google n'est pas configurée et bloque seulement la création de records.
 
 ### Admission d'un objet chiffré
 
-Une limite par IP n'est pas une autorisation. L'alpha.9 cumule les barrières
+Une limite par IP n'est pas une autorisation. L'alpha.10 cumule les barrières
 suivantes :
 
 1. `POST /api/storage/upload-grants` exige une session Google valide et un
@@ -83,7 +108,10 @@ orphelins et non finalisés âgés de plus de 24 heures. Il ne touche jamais à
   de frais avant signature ;
 - persistance de la transaction signée avant diffusion, reprise idempotente et
   contrôle on-chain jusqu'à `FINALIZED` ;
-- bundle JSON, jeton `.tsr`, PDF, lien Etherscan et vérificateur public ;
+- bundle JSON et jeton `.tsr` accessibles aux vérificateurs ;
+- Evidence Report PDF construit côté navigateur avec aperçu visible, original
+  exact, bundle, manifeste du rapport et jeton `.tsr` incorporés ;
+- lien Etherscan et vérificateur public ;
 - nettoyage borné des staging orphelins par le worker Railway horaire.
 
 Le serveur ne reçoit jamais l'original lisible, le manifeste lisible ou la clé
@@ -100,7 +128,7 @@ une racine de lot. Google ne reçoit pas le fichier ni son empreinte.
 | `ALPHA_DUAL_RAIL_COMPLETE` | test sandbox | finalisé | `false` |
 | `DUAL_RAIL_COMPLETE` | qualifié + signature validée | finalisé | `true` |
 
-L'alpha.9 ne peut pas atteindre la dernière ligne. Le mot `sealed` reste
+L'alpha.10 ne peut pas atteindre la dernière ligne. Le mot `sealed` reste
 désactivé, car le Sandbox Evidency n'est pas un horodatage qualifié.
 
 | Indicateur Evidency | Signification |
@@ -135,7 +163,7 @@ désactivé, car le Sandbox Evidency n'est pas un horodatage qualifié.
 
 Le protocole privé de dépôt reste `1.2` et le schéma public reste
 `1.4-alpha.1` afin de préserver la compatibilité des preuves et kits existants.
-L'alpha.9 ne modifie pas le schéma MySQL.
+L'alpha.10 ne modifie pas le schéma MySQL.
 
 ## Développement et tests
 
@@ -145,7 +173,7 @@ npm test
 ```
 
 Sans Google configuré, le développement local permet toujours la consultation
-et la vérification. Pour tester la création de reçu, créer un client OAuth Web
+et la vérification. Pour tester la création de record, créer un client OAuth Web
 Google autorisant l'origine locale et définir dans `.env` :
 
 ```text
@@ -220,7 +248,9 @@ S3_SECRET_KEY=${{"Bucket S3".SECRET_ACCESS_KEY}}
 ```
 
 Il ne faut définir ni `UPLOAD_ADMISSION_SECRET`, ni Google client secret dans
-Railway. Les secrets Evidency et Ethereum restent exclusivement dans le worker.
+Railway. `GOOGLE_CLIENT_ID` et `GOOGLE_CLIENT_SECRET` ne sont pas lus par cette
+version : seule `GOOGLE_OAUTH_CLIENT_ID` est attendue. Les secrets Evidency et
+Ethereum restent exclusivement dans le worker.
 
 ### Service cron `SiteSealed Rails`
 
@@ -293,6 +323,7 @@ passer à `FINALIZED` sans nouvelle signature, diffusion ou dépense d'ETH.
 - révocation CRL/OCSP : `NOT_CHECKED` ;
 - pas de capture in-app attestée, de confiance appareil ou de GNSS ;
 - la connexion Google autorise le dépôt mais ne prouve ni l'auteur ni la scène ;
+- le PDF contient l'original en clair et doit être distribué en conséquence ;
 - pas de preuve de véracité ou de scène non mise en scène ;
 - pas encore d'audit de sécurité indépendant ni de politique institutionnelle
   de gestion des clés.

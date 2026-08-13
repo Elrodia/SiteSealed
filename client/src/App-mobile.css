@@ -820,4 +820,8 @@
     align-items: flex-start;
     flex-direction: column;
   }
+
+  .evidence-report-download {
+    width: 100%;
+  }
 }

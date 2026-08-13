@@ -43,7 +43,6 @@ import {
   stableStringify,
   validateSealRequest,
 } from "./records.js";
-import { renderReceiptPdf } from "./report.js";
 import { createMemoryRecordStore } from "./specimen.js";
 import {
   createMemoryObjectStore,
@@ -85,7 +84,6 @@ function linksFor(request, recordId) {
   return {
     verify: `${baseUrl}/verify/${encoded}`,
     publicBundle: `${baseUrl}/api/records/${encoded}/bundle`,
-    receiptPdf: `${baseUrl}/api/records/${encoded}/report.pdf`,
     timestampToken: `${baseUrl}/api/records/${encoded}/timestamp.tsr`,
     encryptedOriginal: `${baseUrl}/api/records/${encoded}/encrypted-original`,
   };
@@ -329,7 +327,7 @@ export function createApp({
         certificateChainVerification: "NOT_YET_VERIFIED",
         validatorVersion: RFC3161_VALIDATOR_VERSION,
         message:
-          "A fresh alpha.9 worker result is required before Evidency can be shown as operational.",
+          "A fresh alpha.10 worker result is required before Evidency can be shown as operational.",
       };
     }
     return shared;
@@ -379,7 +377,7 @@ export function createApp({
         onChainBindingVerified: false,
         finalityVerified: false,
         message:
-          "A fresh alpha.9 worker result with a verified transaction binding and finalized block is required.",
+          "A fresh alpha.10 worker result with a verified transaction binding and finalized block is required.",
       };
     }
     return shared;
@@ -557,7 +555,7 @@ export function createApp({
     response.status(200).json({
       ok: true,
       service: "sitesealed",
-      version: "1.4.0-alpha.9",
+      version: "1.4.0-alpha.10",
       sealing: {
         workflow: "IMPORTED_FILE_CLIENT_ENCRYPTED_STORAGE_RECEIPT",
         clientEncryptedObjectStorage: true,
@@ -997,28 +995,6 @@ export function createApp({
     return response.send(`${JSON.stringify(publicBundle, null, 2)}\n`);
   });
 
-  app.get("/api/records/:recordId/report.pdf", async (request, response) => {
-    const recordId = requireRecordId(request.params.recordId);
-    const record = await findRecord(recordId);
-    if (!record) {
-      return response.status(404).json({
-        ok: false,
-        code: "RECORD_NOT_FOUND",
-        message: "No SiteSealed record was found for this identifier.",
-      });
-    }
-    if (record.specimen) {
-      return response.redirect(302, "/documents/SiteSealed_EvidenceReport_SPECIMEN.pdf");
-    }
-    const pdf = await renderReceiptPdf(record, { baseUrl: safeBaseUrl(request) });
-    response.set(
-      "Content-Disposition",
-      `attachment; filename="SiteSealed_${recordId}_alpha-receipt.pdf"`,
-    );
-    response.type("application/pdf");
-    return response.send(pdf);
-  });
-
   app.get("/api/records/:recordId/timestamp.tsr", async (request, response) => {
     const recordId = requireRecordId(request.params.recordId);
     const record = await findRecord(recordId);
@@ -1243,7 +1219,7 @@ export async function startServer() {
   });
   const server = app.listen(port, host, () => {
     console.log(
-      `SiteSealed v1.4-alpha.9 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${identityService.mode} identity, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
+      `SiteSealed v1.4-alpha.10 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${identityService.mode} identity, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
     );
   });
 

@@ -635,7 +635,7 @@ export function scopeForRecord(record) {
         record.qualifiedRail?.certificateChainVerification ===
           "VALID_TO_PINNED_SANDBOX_ROOT"
         ? " Evidency sandbox returned an RFC 3161 test token bound to the evidence digest; SiteSealed independently verified its CMS signature, signer binding and certificate path to the pinned sandbox root. Revocation was not checked, and the sandbox expressly has no legal effect."
-        : " Evidency sandbox returned an RFC 3161 test token, but this stored token has not passed the alpha.9 independent signature-and-chain gate. The sandbox expressly has no legal effect."
+        : " Evidency sandbox returned an RFC 3161 test token, but this stored token has not passed the alpha.10 independent signature-and-chain gate. The sandbox expressly has no legal effect."
       : " No external RFC 3161 timestamp token is attached.";
   const chainStatement =
     record.chainRail?.state === "FINALIZED"

@@ -4,6 +4,18 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { gcm } from "@noble/ciphers/aes.js";
 import {
+  PDFArray,
+  PDFDict,
+  PDFDocument,
+  PDFName,
+  PDFRawStream,
+  decodePDFRawStream,
+} from "pdf-lib";
+import {
+  evidenceReportFileName,
+  generateSiteSealedEvidenceReport,
+} from "../client/src/evidence-report.js";
+import {
   buildManifest,
   createEncryptedUploadHeaders,
   createRecoveryToken,
@@ -21,6 +33,22 @@ import { createEvidenceDigest } from "./records.js";
 
 function fromBase64(value) {
   return Uint8Array.from(Buffer.from(value, "base64"));
+}
+
+async function extractPdfAttachments(bytes) {
+  const document = await PDFDocument.load(bytes);
+  const names = document.catalog.lookup(PDFName.of("Names"), PDFDict);
+  const embeddedFiles = names.lookup(PDFName.of("EmbeddedFiles"), PDFDict);
+  const entries = embeddedFiles.lookup(PDFName.of("Names"), PDFArray);
+  const attachments = new Map();
+  for (let index = 0; index < entries.size(); index += 2) {
+    const name = entries.lookup(index).decodeText();
+    const fileSpec = entries.lookup(index + 1, PDFDict);
+    const streams = fileSpec.lookup(PDFName.of("EF"), PDFDict);
+    const stream = streams.lookup(PDFName.of("F"), PDFRawStream);
+    attachments.set(name, decodePDFRawStream(stream).decode());
+  }
+  return { document, attachments };
 }
 
 test("the browser workflow hashes the selected file locally", async () => {
@@ -238,6 +266,103 @@ test("the browser reports a valid local receipt while its external anchor is pen
   });
 });
 
+test("the browser creates one Evidence Report containing the visible and exact original", async () => {
+  const originalBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z0kYAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const originalFile = new File([originalBytes], "site-inspection.png", {
+    type: "image/png",
+    lastModified: Date.parse("2026-08-13T20:00:00.000Z"),
+  });
+  const sha256 = await sha256File(originalFile);
+  const recordId = "SR-20260814-CANONICAL";
+  const timestampToken = new Uint8Array([0x30, 0x03, 0x02, 0x01, 0x00]);
+  const verification = {
+    alphaComplete: true,
+    record: {
+      recordId,
+      sha256,
+      manifestSha256: "1".repeat(64),
+      evidenceDigest: "2".repeat(64),
+      receivedAt: "2026-08-13T20:01:00.000Z",
+      classification: "Imported file - web workflow",
+      qualifiedRail: {
+        state: "SANDBOX_TOKEN_ISSUED",
+        signatureVerification: "VALID",
+        certificateChainVerification: "VALID_TO_PINNED_SANDBOX_ROOT",
+        tokenSha256: "3".repeat(64),
+      },
+      chainRail: {
+        state: "FINALIZED",
+        block: 23_456_789,
+        status: "Mainnet transaction finalized",
+      },
+    },
+    scope: {
+      proves: "The attached original is byte-identical to the recorded digest.",
+      doesNotProve: "Authorship, live capture, location or truthfulness.",
+    },
+  };
+  const proofBundle = { schemaVersion: "sitesealed.proof-bundle.v1", recordId };
+
+  const reportBytes = await generateSiteSealedEvidenceReport({
+    originalFile,
+    verification,
+    proofBundle,
+    timestampToken,
+    baseUrl: "https://app.sitesealed.com",
+    generatedAt: new Date("2026-08-14T00:00:00.000Z"),
+  });
+  assert.equal(Buffer.from(reportBytes).subarray(0, 5).toString("ascii"), "%PDF-");
+  assert.equal(
+    evidenceReportFileName(recordId),
+    "SiteSealed_SR-20260814-CANONICAL_Evidence_Report.pdf",
+  );
+
+  const { document, attachments } = await extractPdfAttachments(reportBytes);
+  assert.equal(document.getPageCount(), 2);
+  assert.equal(document.getTitle(), `SiteSealed Evidence Report ${recordId}`);
+  assert.deepEqual(
+    Buffer.from(attachments.get("SiteSealed_ORIGINAL_site-inspection.png")),
+    originalBytes,
+  );
+  assert.deepEqual(
+    Buffer.from(attachments.get(`SiteSealed_${recordId}_timestamp.tsr`)),
+    Buffer.from(timestampToken),
+  );
+  const manifest = JSON.parse(
+    Buffer.from(
+      attachments.get(`SiteSealed_${recordId}_report-manifest.json`),
+    ).toString("utf8"),
+  );
+  assert.equal(manifest.original.sha256, sha256);
+  assert.equal(manifest.original.byteLength, originalBytes.length);
+  assert.equal(manifest.original.byteIdentityVerified, true);
+});
+
+test("the Evidence Report refuses a different original", async () => {
+  const recordedFile = new File(["recorded"], "recorded.txt", {
+    type: "text/plain",
+  });
+  const differentFile = new File(["different"], "different.txt", {
+    type: "text/plain",
+  });
+  await assert.rejects(
+    generateSiteSealedEvidenceReport({
+      originalFile: differentFile,
+      verification: {
+        record: {
+          recordId: "SR-20260814-MISMATCH",
+          sha256: await sha256File(recordedFile),
+        },
+      },
+      proofBundle: {},
+    }),
+    /does not match the recorded SHA-256/,
+  );
+});
+
 test("the browser uses Google Identity Services and sends SiteSealed CSRF tokens", async () => {
   const source = await readFile(
     new URL("../client/src/App.jsx", import.meta.url),
@@ -259,6 +384,9 @@ test("the browser uses Google Identity Services and sends SiteSealed CSRF tokens
   assert.match(source, /locale: "en_US"/);
   assert.match(source, /function GoogleMark\(\)/);
   assert.match(source, /Continue with Google before uploading/);
+  assert.match(source, /generateSiteSealedEvidenceReport/);
+  assert.match(source, /Download SiteSealed Evidence Report/);
+  assert.doesNotMatch(source, /links\.receiptPdf/);
   assert.match(
     source,
     /className="google-signin-visual button button--amber"/,

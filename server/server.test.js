@@ -259,13 +259,13 @@ after(async () => {
   });
 });
 
-test("health endpoint reports the honest v1.4-alpha.9 capability boundary", async () => {
+test("health endpoint reports the honest v1.4-alpha.10 capability boundary", async () => {
   const response = await fetch(`${baseUrl}/api/health`);
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.ok, true);
   assert.equal(payload.service, "sitesealed");
-  assert.equal(payload.version, "1.4.0-alpha.9");
+  assert.equal(payload.version, "1.4.0-alpha.10");
   assert.equal(payload.sealing.clientEncryptedObjectStorage, true);
   assert.equal(
     payload.sealing.operationalAudit,
@@ -689,17 +689,13 @@ test("the encrypted original requires the private recovery token and retains int
   );
 });
 
-test("each real receipt has a dynamic one-page PDF endpoint", async () => {
+test("the server does not manufacture an Evidence Report without the exact original", async () => {
   const created = await createReceipt();
   const response = await fetch(
     `${baseUrl}/api/records/${encodeURIComponent(created.payload.record.recordId)}/report.pdf`,
   );
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type"), /application\/pdf/);
-  assert.match(response.headers.get("content-disposition"), /alpha-receipt\.pdf/);
-  const bytes = Buffer.from(await response.arrayBuffer());
-  assert.equal(bytes.subarray(0, 5).toString("ascii"), "%PDF-");
-  assert.ok(bytes.length > 2_000);
+  assert.equal(response.status, 404);
+  assert.equal(Object.hasOwn(created.payload.links, "receiptPdf"), false);
 });
 
 test("requests that try to include original file data are rejected", async () => {

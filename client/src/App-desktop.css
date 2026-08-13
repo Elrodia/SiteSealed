@@ -2635,6 +2635,58 @@ button {
   font-size: 0.5rem;
 }
 
+.evidence-report-download {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 10px 15px;
+  border: 1px solid var(--amber-400);
+  background: var(--amber-500);
+  color: var(--navy-950);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+  transition: transform 160ms ease, background-color 160ms ease, opacity 160ms ease;
+}
+
+.evidence-report-download:hover:not(:disabled) {
+  background: var(--amber-400);
+  transform: translateY(-1px);
+}
+
+.evidence-report-download:focus-visible {
+  outline: 2px solid var(--white);
+  outline-offset: 3px;
+}
+
+.evidence-report-download:disabled {
+  border-color: rgba(148, 169, 182, 0.36);
+  background: rgba(148, 169, 182, 0.08);
+  color: rgba(213, 225, 232, 0.62);
+  cursor: not-allowed;
+}
+
+.verified-result__downloads small {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.5rem;
+  line-height: 1.55;
+}
+
+.verified-result__downloads .report-status--success {
+  color: var(--green-600);
+}
+
+.verified-result__downloads .report-status--error {
+  color: #ff8b82;
+}
+
 /* Principles */
 .principles {
   background: var(--paper);
