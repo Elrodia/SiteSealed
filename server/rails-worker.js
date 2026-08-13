@@ -21,7 +21,7 @@ const VALID_CERTIFICATE_CHAIN = "VALID_TO_PINNED_SANDBOX_ROOT";
 
 export function operationalErrorMessage(error) {
   return String(error?.message ?? "External rail operation failed.").replace(
-    /\b((?:https?|wss?):\/\/[^/\s'"<>]+)(\/[^\s'"<>]*)?/gi,
+    /\b((?:https?|wss?):\/\/[^/\s'"<>?#]+)([/?#][^\s'"<>]*)?/gi,
     (_match, origin) => `${origin}/[redacted]`,
   );
 }
