@@ -174,6 +174,7 @@ export function createDisabledEthereumRail() {
         writesEnabled: false,
       };
     },
+    async probeRpc() {},
     async close() {},
   };
 }
@@ -510,21 +511,24 @@ export function createEthereumAnchorClient(config, { provider, wallet } = {}) {
 
     async healthCheck() {
       await assertMainnet();
-      // staticNetwork short-circuits getNetwork(), so probe the wire directly.
-      // This turns silent credential failures into an explicit, early error.
-      const headNumber = await activeProvider.getBlockNumber();
       return {
         mode: "ethereum",
         status: "configured",
         network: "Ethereum mainnet",
         chainId: ETHEREUM_MAINNET_CHAIN_ID,
-        headNumber,
         configured: true,
         writesEnabled: true,
         anchorAddress: walletAddress,
         expectedAnchorAddress,
         calldataProtocol: "SITESEALED_ETHEREUM_CALLDATA_V1",
       };
+    },
+
+    async probeRpc() {
+      // staticNetwork short-circuits getNetwork(), so probe the wire directly.
+      // This turns silent credential failures into an explicit, early error
+      // at worker startup — without burdening the server /api/health path.
+      await activeProvider.getBlockNumber();
     },
 
     async close() {

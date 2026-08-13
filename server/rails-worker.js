@@ -701,6 +701,7 @@ export async function runRailsWorker(environment = process.env) {
     try {
       ethereumRail = createEthereumAnchorClientFromEnv(environment);
       await ethereumRail.healthCheck();
+      await ethereumRail.probeRpc();
     } catch (error) {
       const lastCheckedAt = new Date().toISOString();
       const ttlMs =
