@@ -252,6 +252,119 @@ test("automatic Ethereum batch recovery never depends on COM_STMT_EXECUTE", asyn
   );
 });
 
+test("public chain proof persistence in updateAnchorBatch keeps values aligned", async () => {
+  const calls = [];
+  const batchId = "123e4567-e89b-42d3-a456-426614174222";
+  const memberRecordId = "SR-20260813-ABCDEF0123456789ABCDEF02";
+  const batch = {
+    batch_id: batchId,
+    merkle_protocol: "SITESEALED_MERKLE_SHA256_V1",
+    merkle_root: "a".repeat(64),
+    leaf_count: 1,
+    chain_name: "Ethereum mainnet",
+    chain_id: 1,
+    batch_state: "SUBMITTED",
+    transaction_hash: `0x${"b".repeat(64)}`,
+    transaction_input: `0x53534c4401${"c".repeat(64)}`,
+    anchor_address: `0x${"d".repeat(40)}`,
+    block_number: 101,
+    block_hash: `0x${"e".repeat(64)}`,
+    verification_status: "TRANSACTION_SUBMITTED",
+    confirmations: 0,
+    submitted_at: new Date("2026-08-13T02:01:00.000Z"),
+    confirmed_at: null,
+    finalized_at: null,
+    created_at: new Date("2026-08-13T02:00:00.000Z"),
+  };
+  const members = [
+    {
+      batch_id: batchId,
+      record_id: memberRecordId,
+      leaf_index: 0,
+      leaf_hash: "f".repeat(64),
+      inclusion_path: JSON.stringify([]),
+    },
+  ];
+  const query = async (sql, parameters = []) => {
+    calls.push({ sql, parameters });
+    const normalized = sql.replace(/\s+/g, " ").trim();
+    if (normalized.startsWith("SELECT * FROM anchor_batch_members")) {
+      return [members, []];
+    }
+    if (normalized.startsWith("SELECT * FROM anchor_batches WHERE batch_id = ? FOR UPDATE")) {
+      return [[batch], []];
+    }
+    if (normalized.startsWith("UPDATE anchor_batches")) {
+      Object.assign(batch, {
+        batch_state: parameters[0],
+        block_number: parameters[1],
+        block_hash: parameters[2],
+        confirmations: parameters[3],
+        verification_status: parameters[4],
+        confirmed_at: parameters[6],
+        finalized_at: parameters[7],
+      });
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith("INSERT INTO public_chain_proofs")) {
+      return [{ affectedRows: 1 }, []];
+    }
+    if (
+      normalized.startsWith(
+        "SELECT * FROM anchor_batches WHERE batch_id = ? ORDER BY created_at ASC LIMIT 1",
+      )
+    ) {
+      return [[batch], []];
+    }
+    throw new Error(`Unexpected text-protocol SQL: ${normalized}`);
+  };
+  const connection = {
+    query,
+    async beginTransaction() {},
+    async commit() {},
+    async rollback() {},
+    release() {},
+  };
+  const pool = {
+    query,
+    async execute() {
+      throw new Error("updateAnchorBatch must use text protocol.");
+    },
+    async getConnection() {
+      return connection;
+    },
+  };
+  const store = createMysqlRecordStore(pool);
+
+  await store.updateAnchorBatch(batchId, {
+    state: "CONFIRMED",
+    blockNumber: 202,
+    blockHash: `0x${"1".repeat(64)}`,
+    confirmations: 12,
+    verificationStatus: "TRANSACTION_CONFIRMED",
+    anchoredAt: "2026-08-13T02:02:00.000Z",
+    confirmedAt: "2026-08-13T02:03:00.000Z",
+  });
+
+  const chainProofInsert = calls.find(({ sql }) =>
+    sql.includes("INSERT INTO public_chain_proofs"),
+  );
+  assert.ok(chainProofInsert);
+  const valuesClause = chainProofInsert.sql.match(
+    /\)\s*VALUES\s*\(([\s\S]*?)\)\s*ON DUPLICATE KEY UPDATE/i,
+  );
+  assert.ok(valuesClause);
+  const placeholderCount = (valuesClause[1].match(/\?/g) ?? []).length;
+
+  assert.equal(placeholderCount, chainProofInsert.parameters.length);
+  assert.equal(chainProofInsert.parameters.length, 22);
+  assert.equal(chainProofInsert.parameters[2], batch.chain_name);
+  assert.equal(chainProofInsert.parameters[3], batch.chain_id);
+  assert.equal(chainProofInsert.parameters[0], memberRecordId);
+  assert.equal(chainProofInsert.parameters[6], batch.transaction_hash);
+  assert.equal(chainProofInsert.parameters[10], batch.merkle_root);
+});
+
 test("Ethereum MySQL failures identify the exact recovery operation", async () => {
   const pool = {
     async query() {
