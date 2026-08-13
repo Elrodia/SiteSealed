@@ -679,7 +679,7 @@
   }
 
   .account-access__action {
-    width: 100%;
+    width: min(240px, 100%);
     text-align: left;
   }
 
@@ -744,8 +744,7 @@
   }
 
   .google-signin-button {
-    width: 100%;
-    min-width: 0;
+    width: min(240px, 100%);
     overflow: hidden;
   }
 

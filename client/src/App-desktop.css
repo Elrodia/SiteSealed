@@ -1505,7 +1505,7 @@ button {
   align-items: center;
   padding: 19px 32px;
   border-bottom: 1px solid var(--line);
-  background: #eef5f2;
+  background: #0d2232;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 24px;
 }
@@ -1522,7 +1522,7 @@ button {
 .account-access__copy > strong {
   display: block;
   margin-top: 4px;
-  color: var(--navy-900);
+  color: var(--ink);
   font-family: var(--font-condensed);
   font-size: 1rem;
 }
@@ -1537,17 +1537,33 @@ button {
 }
 
 .account-access__copy small {
-  color: #a54035;
+  color: #ffaaa2;
 }
 
 .account-access__action {
-  min-width: 160px;
+  width: 240px;
+  max-width: 100%;
+  overflow: hidden;
   text-align: right;
 }
 
 .google-signin-button {
-  min-width: 320px;
-  min-height: 44px;
+  contain: layout paint;
+  width: 240px;
+  max-width: 100%;
+  height: 44px;
+  max-height: 44px;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.google-signin-button > div,
+.google-signin-button iframe {
+  width: 240px !important;
+  max-width: 100% !important;
+  height: 44px !important;
+  max-height: 44px !important;
+  overflow: hidden !important;
 }
 
 .seal-form {

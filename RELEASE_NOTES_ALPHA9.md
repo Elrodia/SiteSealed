@@ -13,6 +13,8 @@ d'auteur du fichier.
 ## Authentification
 
 - bouton officiel Google Identity Services en mode redirection ;
+- bouton Google compact, strictement borné et assorti au thème sombre afin
+  qu'un rendu tiers dégradé ne puisse pas agrandir le panneau de connexion ;
 - vérification serveur de l'ID token avec `google-auth-library` : signature,
   audience, émetteur, `sub` et e-mail vérifiée ;
 - double-submit CSRF sur le retour Google ;

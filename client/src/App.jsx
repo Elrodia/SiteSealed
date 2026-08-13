@@ -449,12 +449,13 @@ function GoogleAccountAccess({ auth, onLogout }) {
         buttonRef.current.replaceChildren();
         window.google.accounts.id.renderButton(buttonRef.current, {
           type: "standard",
-          theme: "outline",
+          theme: "outline_dark",
           size: "large",
           shape: "rectangular",
           text: "continue_with",
           logo_alignment: "left",
-          width: 320,
+          width: 240,
+          locale: "en",
         });
         setButtonError("");
         return true;

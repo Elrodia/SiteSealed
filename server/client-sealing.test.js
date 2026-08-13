@@ -243,8 +243,22 @@ test("the browser uses Google Identity Services and sends SiteSealed CSRF tokens
     new URL("../client/src/App.jsx", import.meta.url),
     "utf8",
   );
+  const desktopStyles = await readFile(
+    new URL("../client/src/App-desktop.css", import.meta.url),
+    "utf8",
+  );
   assert.match(source, /google\.accounts\.id\.renderButton/);
   assert.match(source, /ux_mode: "redirect"/);
+  assert.match(source, /theme: "outline_dark"/);
+  assert.match(source, /width: 240/);
+  assert.match(
+    desktopStyles,
+    /\.account-access\s*\{[^}]*background: #0d2232;/s,
+  );
+  assert.match(
+    desktopStyles,
+    /\.google-signin-button\s*\{[^}]*max-height: 44px;[^}]*overflow: hidden;/s,
+  );
   assert.match(source, /"x-sitesealed-csrf": auth\.csrfToken/);
   assert.doesNotMatch(source, /x-sitesealed-deposit-access/);
   assert.doesNotMatch(source, /depositAccess/);
