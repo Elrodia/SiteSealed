@@ -513,7 +513,13 @@ export function createApp({
       }
 
       const result = await objectStore.putEncryptedOriginal(upload);
-      if (!grant.consumed) await grant.consume();
+      if (!grant.consumed) {
+        try {
+          await grant.consume();
+        } catch (error) {
+          console.error(`Upload grant consumption failed: ${error.message}`);
+        }
+      }
       return response.status(result.created ? 201 : 200).json({
         ok: true,
         created: result.created,
