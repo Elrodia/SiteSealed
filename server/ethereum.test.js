@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import { Transaction, Wallet, parseEther, parseUnits } from "ethers";
 import {
@@ -354,4 +355,79 @@ test("mainnet inspection verifies calldata, sender, receipt and finalized block"
   assert.equal(inspected.onChainBindingVerified, true);
   assert.equal(inspected.finalityVerified, true);
   assert.equal(inspected.verificationStatus, "TRANSACTION_INPUT_AND_SENDER_MATCH");
+});
+
+test("close() survives a WebSocket torn down mid-handshake (teardown-during-handshake)", async () => {
+  const wallet = new Wallet(`0x${"a".padStart(64, "0")}`);
+  const socket = new EventEmitter();
+
+  const provider = {
+    websocket: socket,
+    async getNetwork() {
+      return { chainId: 1n };
+    },
+    async getBlockNumber() {
+      return 1;
+    },
+    async destroy() {
+      // Mirror emitErrorAndClose: emit asynchronously, outside the promise chain.
+      await new Promise((resolve) => setImmediate(resolve));
+      socket.emit("error", new Error("WebSocket was closed before the connection was established"));
+    },
+  };
+
+  const client = createEthereumAnchorClient(safeConfig(wallet), { provider, wallet });
+
+  // Guard against any unhandled 'error' escaping to the process level.
+  const uncaughtErrors = [];
+  function onUncaught(err) {
+    uncaughtErrors.push(err);
+  }
+  process.on("uncaughtException", onUncaught);
+
+  try {
+    await assert.doesNotReject(() => client.close());
+    // Give the event loop a tick so any async emission fires before we assert.
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(uncaughtErrors, [], "no unhandled error must escape close()");
+  } finally {
+    process.removeListener("uncaughtException", onUncaught);
+  }
+});
+
+test("close() works cleanly when the provider has no websocket property (JsonRpcProvider shape)", async () => {
+  const wallet = new Wallet(`0x${"b".padStart(64, "0")}`);
+
+  const provider = {
+    // No websocket property — mirrors JsonRpcProvider.
+    async getNetwork() {
+      return { chainId: 1n };
+    },
+    async getBlockNumber() {
+      return 2;
+    },
+    async destroy() {},
+  };
+
+  const client = createEthereumAnchorClient(safeConfig(wallet), { provider, wallet });
+  await assert.doesNotReject(() => client.close());
+});
+
+test("close() does not propagate a destroy() rejection", async () => {
+  const wallet = new Wallet(`0x${"c".padStart(64, "0")}`);
+
+  const provider = {
+    async getNetwork() {
+      return { chainId: 1n };
+    },
+    async getBlockNumber() {
+      return 3;
+    },
+    async destroy() {
+      throw new Error("destroy failed");
+    },
+  };
+
+  const client = createEthereumAnchorClient(safeConfig(wallet), { provider, wallet });
+  await assert.doesNotReject(() => client.close());
 });

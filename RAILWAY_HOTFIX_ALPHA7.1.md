@@ -49,3 +49,20 @@ Le worker recherche le lot existant avant de sélectionner de nouveaux reçus :
 Une erreur SQL éventuelle est désormais préfixée par l'opération exacte, par
 exemple `MySQL signed anchor persistence failed`, afin d'identifier le stade
 sans ambiguïté.
+
+## Correctifs complémentaires (post-alpha.7.1)
+
+**Arrêt propre après un run réussi.** Un crash de WebSocket en cours de
+fermeture (`CONNECTING` → `destroy()`) ne masque plus une exécution dont le
+travail d'attestation a déjà été persisté avec succès. Un listener no-op est
+désormais attaché sur le socket *avant* l'appel à `destroy()`, ce qui absorbe
+l'événement `'error'` asynchrone que `ws` émet en dehors de toute chaîne de
+promesses. Le processus se termine avec le code 0 comme prévu.
+
+**Échec rapide sur identifiants invalides ou révoqués.** `healthCheck()`
+appelle désormais `getBlockNumber()` immédiatement après la construction du
+client Ethereum, à l'intérieur du bloc `try` existant. Comme `staticNetwork:
+true` court-circuite `getNetwork()`, cette sonde est la première qui effectue
+un vrai appel réseau. Une clé Infura révoquée ou un endpoint injoignable
+produit maintenant un `status: "error"` visible dans le statut Redis avant même
+le début du traitement des lots, au lieu d'un crash silencieux en `finally`.

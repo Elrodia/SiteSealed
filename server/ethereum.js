@@ -510,11 +510,15 @@ export function createEthereumAnchorClient(config, { provider, wallet } = {}) {
 
     async healthCheck() {
       await assertMainnet();
+      // staticNetwork short-circuits getNetwork(), so probe the wire directly.
+      // This turns silent credential failures into an explicit, early error.
+      const headNumber = await activeProvider.getBlockNumber();
       return {
         mode: "ethereum",
         status: "configured",
         network: "Ethereum mainnet",
         chainId: ETHEREUM_MAINNET_CHAIN_ID,
+        headNumber,
         configured: true,
         writesEnabled: true,
         anchorAddress: walletAddress,
@@ -524,7 +528,15 @@ export function createEthereumAnchorClient(config, { provider, wallet } = {}) {
     },
 
     async close() {
-      await activeProvider.destroy?.();
+      const socket = activeProvider.websocket;
+      // A ws instance torn down mid-handshake emits an async 'error' event
+      // that no promise chain can catch. Attach the sink BEFORE destroy().
+      socket?.on?.("error", () => {});
+      try {
+        await activeProvider.destroy?.();
+      } catch {
+        // Teardown must never fail an otherwise-verified run.
+      }
     },
   };
 }

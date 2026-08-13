@@ -97,7 +97,13 @@ async function verifyEthereumTransaction(chain) {
       `Ethereum transaction binding: PASS (block ${receipt.blockNumber}, finalized: ${finalized ? "YES" : "NO"})`,
     );
   } finally {
-    await provider.destroy();
+    const socket = provider.websocket;
+    socket?.on?.("error", () => {});
+    try {
+      await provider.destroy();
+    } catch {
+      // Teardown must never fail an otherwise-verified bundle check.
+    }
   }
 }
 
