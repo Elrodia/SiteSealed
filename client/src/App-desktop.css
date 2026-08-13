@@ -1541,28 +1541,40 @@ button {
 }
 
 .account-access__action {
-  width: 32px;
-  max-width: 100%;
-  overflow: hidden;
+  min-width: 80px;
   text-align: right;
+}
+
+.google-signin-control {
+  display: flex;
+  max-width: 260px;
+  align-items: flex-start;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.google-signin-control small {
+  color: #ffaaa2;
+  font-size: 0.68rem;
+  line-height: 1.4;
 }
 
 .google-signin-button {
   contain: layout paint;
-  display: grid;
-  width: 32px;
-  height: 32px;
-  place-items: center;
+  width: fit-content;
+  min-width: 210px;
+  max-width: 260px;
+  height: 44px;
+  max-height: 44px;
   overflow: hidden;
   isolation: isolate;
 }
 
 .google-signin-button > div,
 .google-signin-button iframe {
-  width: 32px !important;
-  max-width: 32px !important;
-  height: 32px !important;
-  max-height: 32px !important;
+  max-width: 260px !important;
+  max-height: 44px !important;
   overflow: hidden !important;
 }
 

@@ -249,17 +249,22 @@ test("the browser uses Google Identity Services and sends SiteSealed CSRF tokens
   );
   assert.match(source, /google\.accounts\.id\.renderButton/);
   assert.match(source, /ux_mode: "redirect"/);
-  assert.match(source, /type: "icon"/);
+  assert.match(source, /type: "standard"/);
   assert.match(source, /theme: "outline_dark"/);
-  assert.match(source, /size: "small"/);
+  assert.match(source, /size: "large"/);
   assert.doesNotMatch(source, /width: 240/);
+  assert.match(
+    source,
+    /auth\.status === "ready" && auth\.configured && !auth\.authenticated[\s\S]*?<GoogleSignInControl auth=\{auth\} \/>/,
+  );
+  assert.doesNotMatch(source, /"Sign in to seal"/);
   assert.match(
     desktopStyles,
     /\.account-access\s*\{[^}]*background: #0d2232;/s,
   );
   assert.match(
     desktopStyles,
-    /\.google-signin-button\s*\{[^}]*width: 32px;[^}]*height: 32px;[^}]*overflow: hidden;/s,
+    /\.google-signin-button\s*\{[^}]*min-width: 210px;[^}]*max-width: 260px;[^}]*height: 44px;[^}]*overflow: hidden;/s,
   );
   assert.doesNotMatch(desktopStyles, /img,\s*\nsvg\s*\{/);
   assert.match(source, /"x-sitesealed-csrf": auth\.csrfToken/);

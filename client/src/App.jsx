@@ -401,7 +401,7 @@ function recordIdFromPath() {
   }
 }
 
-function GoogleAccountAccess({ auth, onLogout }) {
+function GoogleSignInControl({ auth }) {
   const buttonRef = useRef(null);
   const [buttonError, setButtonError] = useState("");
 
@@ -448,11 +448,12 @@ function GoogleAccountAccess({ auth, onLogout }) {
         });
         buttonRef.current.replaceChildren();
         window.google.accounts.id.renderButton(buttonRef.current, {
-          type: "icon",
+          type: "standard",
           theme: "outline_dark",
-          size: "small",
-          shape: "square",
+          size: "large",
+          shape: "rectangular",
           text: "continue_with",
+          logo_alignment: "left",
           locale: "en",
         });
         setButtonError("");
@@ -488,6 +489,19 @@ function GoogleAccountAccess({ auth, onLogout }) {
   ]);
 
   return (
+    <div className="google-signin-control">
+      <div
+        ref={buttonRef}
+        className="google-signin-button"
+        aria-label="Continue with Google"
+      />
+      {buttonError && <small role="alert">{buttonError}</small>}
+    </div>
+  );
+}
+
+function GoogleAccountAccess({ auth, onLogout }) {
+  return (
     <div className="account-access" aria-live="polite">
       <div className="account-access__copy">
         <span>DEPOSIT ACCOUNT</span>
@@ -507,20 +521,15 @@ function GoogleAccountAccess({ auth, onLogout }) {
             ? `${auth.user?.email} · Upload grants and the daily allowance are bound to this account.`
             : "Google proves the account identity. SiteSealed stores its own server session and never receives access to Google APIs."}
         </p>
-        {(auth.error || buttonError) && (
-          <small role="alert">{auth.error || buttonError}</small>
-        )}
+        {auth.error && <small role="alert">{auth.error}</small>}
       </div>
-      <div className="account-access__action">
-        {auth.status === "ready" && auth.configured && !auth.authenticated && (
-          <div ref={buttonRef} className="google-signin-button" />
-        )}
-        {auth.authenticated && (
+      {auth.authenticated && (
+        <div className="account-access__action">
           <button className="text-action" type="button" onClick={onLogout}>
             Sign out
           </button>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -855,17 +864,26 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
         </label>
 
         <div className="seal-form__submit">
-          <button
-            className="button button--amber"
-            type="submit"
-            disabled={
-              !auth.authenticated ||
-              ["hashing", "encrypting", "authorizing", "uploading", "recording"].includes(status)
-            }
-          >
-            {progressLabel || (auth.authenticated ? "Hash, encrypt and record" : "Sign in to seal")}
-            {!progressLabel && <Icon name="arrow" size={17} />}
-          </button>
+          {auth.status === "ready" && auth.configured && !auth.authenticated ? (
+            <GoogleSignInControl auth={auth} />
+          ) : (
+            <button
+              className="button button--amber"
+              type="submit"
+              disabled={
+                !auth.authenticated ||
+                ["hashing", "encrypting", "authorizing", "uploading", "recording"].includes(status)
+              }
+            >
+              {progressLabel ||
+                (auth.authenticated
+                  ? "Hash, encrypt and record"
+                  : auth.status === "loading"
+                    ? "Checking account…"
+                    : "Google sign-in unavailable")}
+              {!progressLabel && auth.authenticated && <Icon name="arrow" size={17} />}
+            </button>
+          )}
           <p>Controlled alpha: Google account session, exact-object grant, per-account allowance, IP limit and a global Redis storage ceiling.</p>
         </div>
       </form>

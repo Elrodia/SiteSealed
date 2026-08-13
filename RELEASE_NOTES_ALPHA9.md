@@ -13,9 +13,9 @@ d'auteur du fichier.
 ## Authentification
 
 - bouton officiel Google Identity Services en mode redirection ;
-- bouton Google officiel réduit à son type `icon`, en taille `small`, borné à
-  32 px et assorti au thème sombre ; le libellé d'action reste dans le panneau
-  SiteSealed et aucun rendu tiers ne peut l'agrandir ;
+- avant authentification, le véritable bouton Google officiel occupe la place
+  de l'action principale du formulaire ; il est assorti au thème sombre et
+  strictement borné, puis remplacé par l'action de scellement après connexion ;
 - vérification serveur de l'ID token avec `google-auth-library` : signature,
   audience, émetteur, `sub` et e-mail vérifiée ;
 - double-submit CSRF sur le retour Google ;
