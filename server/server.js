@@ -36,9 +36,11 @@ import {
 import {
   ApiError,
   MAX_ENCRYPTED_ORIGINAL_BYTES,
+  RECORD_CLASS_LIVE_WEB,
   externalProofStatus,
   isValidRecordId,
   normalizeRecordId,
+  normalizeSubmissionId,
   scopeForRecord,
   stableStringify,
   validateSealRequest,
@@ -60,6 +62,13 @@ const indexFile = path.join(clientDist, "index.html");
 function positiveInteger(value, fallback) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function captureAccountReference(user) {
+  return createHash("sha256")
+    .update("SiteSealed capture account v1\0")
+    .update(String(user?.id ?? ""))
+    .digest("hex");
 }
 
 function safeBaseUrl(request) {
@@ -214,8 +223,6 @@ function bundleWithAudit(bundle, record, audit) {
   }
   return {
     ...bundle,
-    schemaVersion: "sitesealed.proof-bundle.v1.4-alpha.1",
-    bundleVersion: "1.4-alpha.1",
     operationalAudit: auditBoundary(record, audit),
   };
 }
@@ -555,9 +562,20 @@ export function createApp({
     response.status(200).json({
       ok: true,
       service: "sitesealed",
-      version: "1.4.0-alpha.10.1",
+      version: "1.5.0-alpha.1",
       sealing: {
-        workflow: "IMPORTED_FILE_CLIENT_ENCRYPTED_STORAGE_RECEIPT",
+        workflow: "CONTEXT_BOUND_WEB_CAPTURE_WITH_SEPARATE_IMPORTED_CLASS",
+        liveCapture: {
+          officialUiUsesCameraOnly: true,
+          freshServerChallenge: true,
+          browserGeolocationManifestBound: true,
+          accountBound: true,
+          hardwareDeviceAttestation: false,
+          browserGeolocationHardwareAttested: false,
+          physicalSensorOriginProven: false,
+          directApiClientExcluded: false,
+          offlineQueue: false,
+        },
         clientEncryptedObjectStorage: true,
         operationalAudit: "POSTGRESQL_APPEND_ONLY_HASH_CHAIN",
         distributedCoordination: true,
@@ -607,6 +625,42 @@ export function createApp({
       publicChainAnchor,
     });
   });
+
+  app.post(
+    "/api/capture/challenges",
+    createSealRateLimiter({
+      coordinator,
+      scope: "capture-challenge",
+      limit: sealRateLimit,
+    }),
+    requireAuthenticatedUser,
+    requireApplicationCsrf,
+    createSealRateLimiter({
+      coordinator,
+      scope: "capture-challenge-account",
+      limit: sealRateLimit,
+      identity: (request) => request.authUser?.id,
+    }),
+    async (request, response) => {
+      const fields = Object.keys(request.body ?? {});
+      if (fields.length !== 1 || fields[0] !== "submissionId") {
+        throw new ApiError(
+          400,
+          "INVALID_CAPTURE_CHALLENGE_REQUEST",
+          "A capture challenge request must contain only submissionId.",
+        );
+      }
+      const submissionId = normalizeSubmissionId(request.body.submissionId);
+      const issued = await coordinator.issueCaptureChallenge(submissionId, {
+        principalId: request.authUser.id,
+      });
+      return response.status(201).json({
+        ok: true,
+        status: "CAPTURE_CHALLENGE_ISSUED",
+        ...issued,
+      });
+    },
+  );
 
   app.post(
     "/api/storage/upload-grants",
@@ -863,11 +917,99 @@ export function createApp({
       }
 
       try {
-        await objectStore.promoteEncryptedOriginal(input.encryptedObject, input);
-        const result = await recordStore.create({
-          ...input,
+        let captureContext = null;
+        if (input.recordClass === RECORD_CLASS_LIVE_WEB) {
+          const captureBinding = {
+            submissionId: input.submissionId,
+            recordSha256: input.recordSha256,
+            manifestSha256: input.manifestSha256,
+            capturedAt: input.captureProof.capturedAt,
+            locationMeasuredAt: input.captureProof.locationMeasuredAt,
+            locationAccuracyMeters: input.captureProof.locationAccuracyMeters,
+            clockDeltaMs: input.captureProof.clockDeltaMs,
+            cameraFacingMode: input.captureProof.cameraFacingMode,
+          };
+          const captureClaim = await coordinator.claimCaptureChallenge(
+            input.captureProof.challenge,
+            captureBinding,
+            { principalId: request.authUser.id },
+          );
+          if (captureClaim.state === "in_progress") {
+            throw new ApiError(
+              409,
+              "CAPTURE_CHALLENGE_IN_PROGRESS",
+              "This capture challenge is already being bound to a receipt.",
+            );
+          }
+          if (captureClaim.state === "outside_window") {
+            throw new ApiError(
+              403,
+              "CAPTURE_OUTSIDE_CHALLENGE_WINDOW",
+              "The claimed capture time falls outside the fresh server challenge window.",
+            );
+          }
+          if (!["claimed", "completed"].includes(captureClaim.state)) {
+            throw new ApiError(
+              403,
+              "CAPTURE_CHALLENGE_REJECTED",
+              "The capture challenge is unknown, expired, account-mismatched or bound to another record.",
+            );
+          }
+          if (captureClaim.attestation.challengeId !== input.captureProof.challengeId) {
+            throw new ApiError(
+              403,
+              "CAPTURE_CHALLENGE_REJECTED",
+              "The capture challenge identifier does not match its server attestation.",
+            );
+          }
+          if (
+            captureClaim.state === "claimed" &&
+            !(await captureClaim.complete())
+          ) {
+            throw new ApiError(
+              409,
+              "CAPTURE_CHALLENGE_CLAIM_EXPIRED",
+              "The capture challenge expired before its record binding completed.",
+            );
+          }
+          captureContext = {
+            schemaVersion: "sitesealed.capture-context.v1.5-alpha.1",
+            workflow: "WEB_CAMERA_CONTEXT_BOUND_ALPHA",
+            challengeId: captureClaim.attestation.challengeId,
+            challengeIssuedAt: captureClaim.attestation.issuedAt,
+            challengeCaptureExpiresAt:
+              captureClaim.attestation.captureExpiresAt,
+            timeAuthority: captureClaim.attestation.timeAuthority,
+            capturedAt: input.captureProof.capturedAt,
+            clientClockDeltaMs: input.captureProof.clockDeltaMs,
+            cameraFacingMode: input.captureProof.cameraFacingMode,
+            location: {
+              coordinatesManifestBound: true,
+              measuredAt: input.captureProof.locationMeasuredAt,
+              accuracyMeters: input.captureProof.locationAccuracyMeters,
+              attestation: input.captureProof.locationAttestation,
+            },
+            deviceAttestation: input.captureProof.deviceAttestation,
+            timeAttestation: input.captureProof.timeAttestation,
+            account: {
+              provider: "GOOGLE",
+              accountReference: captureAccountReference(request.authUser),
+            },
+          };
+        }
+        const { captureProof: _captureSecret, ...recordInputBase } = input;
+        const recordInput = {
+          ...recordInputBase,
+          captureContext,
           storageProvider:
             objectStore.mode === "s3" ? "S3_PRIVATE_BUCKET" : "MEMORY",
+        };
+        await objectStore.promoteEncryptedOriginal(
+          recordInput.encryptedObject,
+          recordInput,
+        );
+        const result = await recordStore.create({
+          ...recordInput,
         });
         let auditResult;
         try {
@@ -891,7 +1033,10 @@ export function createApp({
             ),
           );
         await objectStore
-          .discardStagedEncryptedOriginal(input.encryptedObject, input)
+          .discardStagedEncryptedOriginal(
+            recordInput.encryptedObject,
+            recordInput,
+          )
           .catch((error) =>
             console.error(
               `Staged encrypted-original cleanup deferred: ${error.message}`,
@@ -1219,7 +1364,7 @@ export async function startServer() {
   });
   const server = app.listen(port, host, () => {
     console.log(
-      `SiteSealed v1.4-alpha.10.1 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${identityService.mode} identity, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
+      `SiteSealed v1.5-alpha.1 listening on ${host}:${port} with ${recordStore.mode} records, ${objectStore.mode} objects, ${auditStore.mode} audit, ${coordinator.mode} coordination, ${identityService.mode} identity, ${timestampService.mode} time and ${ethereumRail.mode} anchor rails.`,
     );
   });
 

@@ -16,7 +16,9 @@ import {
   generateSiteSealedEvidenceReport,
 } from "../client/src/evidence-report.js";
 import {
+  buildLiveCaptureManifest,
   buildManifest,
+  createCaptureProof,
   createEncryptedUploadHeaders,
   createRecoveryToken,
   createSealRequest,
@@ -24,6 +26,7 @@ import {
   encryptManifest,
   encryptOriginal,
   recalculateEvidenceDigest,
+  sha256CanonicalJson,
   sha256File,
   stableStringify,
   verifyPublicProofArtifacts,
@@ -151,6 +154,67 @@ test("the client encrypts the canonical manifest and keeps the key outside the A
     },
   );
   assert.equal(JSON.stringify(request).includes(recoveryToken.token), false);
+});
+
+test("the live web manifest binds a fresh challenge, browser context and honest limitations", async () => {
+  const file = new File(["fresh frame"], "SiteSealed_CAPTURE.jpg", {
+    type: "image/jpeg",
+    lastModified: Date.parse("2026-08-14T10:00:05.000Z"),
+  });
+  const capture = {
+    challenge: `123e4567-e89b-42d3-a456-426614174000.${"A".repeat(43)}`,
+    challengeId: "123e4567-e89b-42d3-a456-426614174000",
+    issuedAt: "2026-08-14T10:00:00.000Z",
+    captureExpiresAt: "2026-08-14T10:02:00.000Z",
+    capturedAt: "2026-08-14T10:00:05.000Z",
+    clockDeltaMs: 19,
+    cameraFacingMode: "environment",
+    width: 1920,
+    height: 1080,
+    location: {
+      latitude: -4.9686,
+      longitude: -39.0154,
+      accuracyMeters: 8.2,
+      altitudeMeters: null,
+      altitudeAccuracyMeters: null,
+      headingDegrees: null,
+      speedMetersPerSecond: null,
+      measuredAt: "2026-08-14T10:00:04.000Z",
+    },
+  };
+  const manifest = buildLiveCaptureManifest(file, {
+    projectReference: "QUIXADA-2026",
+    description: "Fresh browser capture",
+    capture,
+  });
+  const proof = createCaptureProof(capture);
+
+  assert.equal(manifest.recordClass, "LIVE_CAPTURE_WEB");
+  assert.equal(manifest.capture.location.latitude, -4.9686);
+  assert.equal(manifest.client.serverChallengeBound, true);
+  assert.equal(manifest.client.captureAttested, false);
+  assert.equal(manifest.client.deviceAttested, false);
+  assert.equal(manifest.client.locationAttested, false);
+  assert.equal(proof.challenge, capture.challenge);
+  assert.equal(proof.coordinatesManifestBound, true);
+  assert.match(await sha256CanonicalJson(manifest), /^[a-f0-9]{64}$/);
+
+  const request = createSealRequest({
+    recordSha256: await sha256File(file),
+    manifestSha256: await sha256CanonicalJson(manifest),
+    envelope: {
+      version: 1,
+      algorithm: "AES-256-GCM",
+      iv: Buffer.alloc(12).toString("base64"),
+      ciphertext: Buffer.alloc(32).toString("base64"),
+    },
+    encryptedObject: {},
+    submissionId: "123e4567-e89b-42d3-a456-426614174000",
+    recordClass: "LIVE_CAPTURE_WEB",
+    captureProof: proof,
+  });
+  assert.equal(request.recordClass, "LIVE_CAPTURE_WEB");
+  assert.equal(request.captureProof.deviceAttestation, "NOT_AVAILABLE_WEB_ALPHA");
 });
 
 test("the local cryptography fallback works outside a secure Web Crypto context", async () => {
@@ -341,6 +405,116 @@ test("the browser creates one Evidence Report containing the visible and exact o
   assert.equal(manifest.original.byteIdentityVerified, true);
 });
 
+test("a live-capture Evidence Report embeds and cross-checks its private canonical manifest", async () => {
+  const originalBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z0kYAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const capturedAt = "2026-08-14T10:00:05.000Z";
+  const originalFile = new File(
+    [originalBytes],
+    "SiteSealed_CAPTURE_2026-08-14T10-00-05Z.png",
+    { type: "image/png", lastModified: Date.parse(capturedAt) },
+  );
+  const capture = {
+    challenge: `123e4567-e89b-42d3-a456-426614174000.${"A".repeat(43)}`,
+    challengeId: "123e4567-e89b-42d3-a456-426614174000",
+    issuedAt: "2026-08-14T10:00:00.000Z",
+    captureExpiresAt: "2026-08-14T10:02:00.000Z",
+    capturedAt,
+    clockDeltaMs: 12,
+    cameraFacingMode: "environment",
+    width: 1920,
+    height: 1080,
+    location: {
+      latitude: -4.9686,
+      longitude: -39.0154,
+      accuracyMeters: 7.4,
+      altitudeMeters: null,
+      altitudeAccuracyMeters: null,
+      headingDegrees: null,
+      speedMetersPerSecond: null,
+      measuredAt: "2026-08-14T10:00:04.000Z",
+    },
+  };
+  const captureManifest = buildLiveCaptureManifest(originalFile, {
+    projectReference: "QUIXADA-2026",
+    description: "Context-bound browser capture",
+    capture,
+  });
+  const recordId = "SR-20260814-LIVECAPTURE";
+  const accountReference = "9".repeat(64);
+  const captureContext = {
+    schemaVersion: "sitesealed.capture-context.v1.5-alpha.1",
+    workflow: "WEB_CAMERA_CONTEXT_BOUND_ALPHA",
+    challengeId: capture.challengeId,
+    challengeIssuedAt: capture.issuedAt,
+    challengeCaptureExpiresAt: capture.captureExpiresAt,
+    timeAuthority: "SITESEALED_SERVER_CHALLENGE",
+    capturedAt,
+    clientClockDeltaMs: capture.clockDeltaMs,
+    cameraFacingMode: capture.cameraFacingMode,
+    location: {
+      coordinatesManifestBound: true,
+      measuredAt: capture.location.measuredAt,
+      accuracyMeters: capture.location.accuracyMeters,
+      attestation: "BROWSER_GEOLOCATION_NOT_HARDWARE_ATTESTED",
+    },
+    deviceAttestation: "NOT_AVAILABLE_WEB_ALPHA",
+    timeAttestation: "SERVER_CHALLENGE_WINDOW",
+    account: { provider: "GOOGLE", accountReference },
+  };
+  const verification = {
+    alphaComplete: false,
+    record: {
+      recordId,
+      recordClass: "LIVE_CAPTURE_WEB",
+      classification: "Context-bound web camera capture - alpha",
+      sha256: await sha256File(originalFile),
+      manifestSha256: await sha256CanonicalJson(captureManifest),
+      evidenceDigest: "2".repeat(64),
+      receivedAt: "2026-08-14T10:00:15.000Z",
+      captureContext,
+      qualifiedRail: { state: "NOT_ISSUED" },
+      chainRail: { state: "NOT_ANCHORED" },
+    },
+    scope: {
+      proves: "The original and canonical manifest match the recorded digests.",
+      attests: "The server bound the submitted context to a fresh challenge.",
+      doesNotProve: "No physical sensor, GNSS coordinate or unstaged scene is proven.",
+    },
+  };
+
+  const reportBytes = await generateSiteSealedEvidenceReport({
+    originalFile,
+    captureManifest,
+    verification,
+    proofBundle: { schemaVersion: "sitesealed.proof-bundle.v1.5-alpha.1" },
+    baseUrl: "https://app.sitesealed.com",
+    generatedAt: new Date("2026-08-14T10:05:00.000Z"),
+  });
+  const { document, attachments } = await extractPdfAttachments(reportBytes);
+  assert.equal(document.getPageCount(), 3);
+  const manifestAttachment = JSON.parse(
+    Buffer.from(
+      attachments.get(`SiteSealed_${recordId}_capture-manifest.json`),
+    ).toString("utf8"),
+  );
+  assert.deepEqual(manifestAttachment, captureManifest);
+
+  const tamperedManifest = structuredClone(captureManifest);
+  tamperedManifest.capture.location.latitude = 50.6451;
+  await assert.rejects(
+    generateSiteSealedEvidenceReport({
+      originalFile,
+      captureManifest: tamperedManifest,
+      verification,
+      proofBundle: {},
+    }),
+    /capture manifest does not match the recorded SHA-256/,
+  );
+});
+
 test("the Evidence Report refuses a different original", async () => {
   const recordedFile = new File(["recorded"], "recorded.txt", {
     type: "text/plain",
@@ -387,6 +561,8 @@ test("the browser uses Google Identity Services and sends SiteSealed CSRF tokens
   assert.match(source, /generateSiteSealedEvidenceReport/);
   assert.match(source, /Download SiteSealed Evidence Report/);
   assert.match(source, /onChange=\{selectComparisonFile\}/);
+  assert.match(source, /onChange=\{selectPrivateRecoveryKit\}/);
+  assert.match(source, /Choose recovery kit/);
   assert.match(
     source,
     /nextFile && status === "success" && result && !result\.specimen[\s\S]*?runVerification\(result\.record\.recordId, nextFile\)/,

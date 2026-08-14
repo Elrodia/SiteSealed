@@ -75,6 +75,45 @@ test("seal request validation rejects noncanonical or oversized envelopes", () =
   );
 });
 
+test("live web capture validation preserves an honest, bounded attestation class", () => {
+  const capturedAt = "2026-08-14T10:00:30.000Z";
+  const input = validateSealRequest(
+    validBody({
+      recordClass: "LIVE_CAPTURE_WEB",
+      captureProof: {
+        challenge: `123e4567-e89b-42d3-a456-426614174000.${"A".repeat(43)}`,
+        capturedAt,
+        locationMeasuredAt: capturedAt,
+        locationAccuracyMeters: 4.2,
+        clockDeltaMs: 18,
+        cameraFacingMode: "environment",
+        deviceAttestation: "NOT_AVAILABLE_WEB_ALPHA",
+        locationAttestation: "BROWSER_GEOLOCATION_NOT_HARDWARE_ATTESTED",
+        timeAttestation: "SERVER_CHALLENGE_WINDOW",
+        coordinatesManifestBound: true,
+      },
+    }),
+  );
+  assert.equal(input.recordClass, "LIVE_CAPTURE_WEB");
+  assert.equal(input.captureProof.capturedAt, capturedAt);
+  assert.equal(input.captureProof.challengeId, "123e4567-e89b-42d3-a456-426614174000");
+  const { challengeId: _challengeId, ...clientCaptureProof } = input.captureProof;
+
+  assert.throws(
+    () =>
+      validateSealRequest(
+        validBody({
+          recordClass: "LIVE_CAPTURE_WEB",
+          captureProof: {
+            ...clientCaptureProof,
+            deviceAttestation: "HARDWARE_ATTESTED",
+          },
+        }),
+      ),
+    /explicit non-hardware-attested capture scope/,
+  );
+});
+
 test("development receipt and exported bundle agree cryptographically", () => {
   const input = validateSealRequest(validBody());
   const record = createDevelopmentRecord(input, {

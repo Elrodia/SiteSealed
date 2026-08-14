@@ -101,6 +101,55 @@ if ttl < 1 then return 0 end
 redis.call('SET', KEYS[1], cjson.encode(entry), 'PX', ttl)
 return 1
 `;
+const CLAIM_CAPTURE_CHALLENGE_SCRIPT = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return {'REJECTED'} end
+local entry = cjson.decode(raw)
+if entry.secretDigest ~= ARGV[1] or entry.principalDigest ~= ARGV[2] or entry.submissionId ~= ARGV[3] then
+  return {'REJECTED'}
+end
+if entry.state == 'completed' then
+  if entry.bindingDigest ~= ARGV[4] then return {'REJECTED'} end
+  return {'COMPLETED', cjson.encode(entry.attestation)}
+end
+if entry.state == 'claimed' then return {'IN_PROGRESS'} end
+local capturedAtMs = tonumber(ARGV[6])
+if capturedAtMs < (tonumber(entry.issuedAtMs) - 60000) or capturedAtMs > (tonumber(entry.captureExpiresAtMs) + 60000) then
+  return {'OUTSIDE_WINDOW'}
+end
+entry.state = 'claimed'
+entry.bindingDigest = ARGV[4]
+entry.claimToken = ARGV[5]
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl < 1 then return {'REJECTED'} end
+redis.call('SET', KEYS[1], cjson.encode(entry), 'PX', ttl)
+return {'CLAIMED', cjson.encode(entry.attestation)}
+`;
+const COMPLETE_CAPTURE_CHALLENGE_SCRIPT = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return 0 end
+local entry = cjson.decode(raw)
+if entry.state ~= 'claimed' or entry.claimToken ~= ARGV[1] then return 0 end
+entry.state = 'completed'
+entry.claimToken = nil
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl < 1 then return 0 end
+redis.call('SET', KEYS[1], cjson.encode(entry), 'PX', ttl)
+return 1
+`;
+const RELEASE_CAPTURE_CHALLENGE_SCRIPT = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return 0 end
+local entry = cjson.decode(raw)
+if entry.state ~= 'claimed' or entry.claimToken ~= ARGV[1] then return 0 end
+entry.state = 'ready'
+entry.bindingDigest = nil
+entry.claimToken = nil
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl < 1 then return 0 end
+redis.call('SET', KEYS[1], cjson.encode(entry), 'PX', ttl)
+return 1
+`;
 
 function dependencyMode(environment) {
   const mode = String(environment.DATABASE_MODE ?? "optional")
@@ -150,6 +199,10 @@ function uploadGrantKey(grantId) {
   return `${KEY_PREFIX}:upload-grant:${grantId}`;
 }
 
+function captureChallengeKey(challengeId) {
+  return `${KEY_PREFIX}:capture-challenge:${challengeId}`;
+}
+
 function storageAdmissionKey() {
   return `${KEY_PREFIX}:storage-admission:global`;
 }
@@ -187,12 +240,34 @@ function uploadGrantSecretDigest(grantId, secret) {
     .digest("hex");
 }
 
+function captureChallengeSecretDigest(challengeId, secret) {
+  return createHash("sha256")
+    .update(`${KEY_PREFIX}:capture-challenge-secret:${challengeId}\0`)
+    .update(secret)
+    .digest("hex");
+}
+
+function captureBindingDigest(binding) {
+  return createHash("sha256")
+    .update(`${KEY_PREFIX}:capture-binding\0`)
+    .update(JSON.stringify(binding))
+    .digest("hex");
+}
+
 function parseUploadGrant(value) {
   const token = String(value ?? "").trim();
   const match = token.match(
     /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.([A-Za-z0-9_-]{43})$/,
   );
   return match ? { grantId: match[1], secret: match[2] } : null;
+}
+
+function parseCaptureChallenge(value) {
+  const token = String(value ?? "").trim();
+  const match = token.match(
+    /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.([A-Za-z0-9_-]{43})$/,
+  );
+  return match ? { challengeId: match[1], secret: match[2] } : null;
 }
 
 function parseSessionToken(value) {
@@ -337,6 +412,127 @@ export function createRedisCoordinator(client, options = {}) {
         }
       }
       throw new Error("Could not allocate a unique upload grant identifier.");
+    },
+
+    async issueCaptureChallenge(
+      submissionId,
+      {
+        principalId: ownerId,
+        captureWindowMs = 2 * 60 * 1000,
+        ttlMs = 15 * 60 * 1000,
+      } = {},
+    ) {
+      const ownerPrincipalId = normalizedPrincipalId(ownerId);
+      if (!ownerPrincipalId) {
+        throw new Error("Capture challenges require an authenticated principal.");
+      }
+      const normalizedCaptureWindowMs = positiveInteger(
+        captureWindowMs,
+        2 * 60 * 1000,
+      );
+      const normalizedTtlMs = Math.max(
+        normalizedCaptureWindowMs + 60_000,
+        positiveInteger(ttlMs, 15 * 60 * 1000),
+      );
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const challengeId = randomUUID();
+        const secret = randomBytes(32).toString("base64url");
+        const issuedAtMs = now();
+        const captureExpiresAtMs = issuedAtMs + normalizedCaptureWindowMs;
+        const attestation = {
+          challengeId,
+          submissionId,
+          issuedAt: new Date(issuedAtMs).toISOString(),
+          captureExpiresAt: new Date(captureExpiresAtMs).toISOString(),
+          timeAuthority: "SITESEALED_SERVER_CHALLENGE",
+        };
+        const entry = {
+          state: "ready",
+          secretDigest: captureChallengeSecretDigest(challengeId, secret),
+          principalDigest: principalDigest(ownerPrincipalId),
+          submissionId,
+          issuedAtMs,
+          captureExpiresAtMs,
+          attestation,
+        };
+        const stored = await client.set(
+          captureChallengeKey(challengeId),
+          JSON.stringify(entry),
+          { NX: true, PX: normalizedTtlMs },
+        );
+        if (stored === "OK") {
+          return {
+            challenge: `${challengeId}.${secret}`,
+            ...attestation,
+            claimExpiresAt: new Date(issuedAtMs + normalizedTtlMs).toISOString(),
+          };
+        }
+      }
+      throw new Error("Could not allocate a unique capture challenge identifier.");
+    },
+
+    async claimCaptureChallenge(
+      challenge,
+      binding,
+      { principalId: ownerId } = {},
+    ) {
+      const parsed = parseCaptureChallenge(challenge);
+      const ownerPrincipalId = normalizedPrincipalId(ownerId);
+      if (!parsed || !ownerPrincipalId) return { state: "rejected" };
+      const capturedAtMs = Date.parse(binding?.capturedAt);
+      if (!Number.isFinite(capturedAtMs)) return { state: "rejected" };
+      const claimToken = randomUUID();
+      const result = await client.eval(CLAIM_CAPTURE_CHALLENGE_SCRIPT, {
+        keys: [captureChallengeKey(parsed.challengeId)],
+        arguments: [
+          captureChallengeSecretDigest(parsed.challengeId, parsed.secret),
+          principalDigest(ownerPrincipalId),
+          String(binding.submissionId),
+          captureBindingDigest(binding),
+          claimToken,
+          String(capturedAtMs),
+        ],
+      });
+      const state = String(result?.[0] ?? "REJECTED");
+      if (state === "REJECTED") return { state: "rejected" };
+      if (state === "IN_PROGRESS") return { state: "in_progress" };
+      if (state === "OUTSIDE_WINDOW") return { state: "outside_window" };
+      const attestation = JSON.parse(String(result?.[1] ?? "null"));
+      if (state === "COMPLETED") {
+        return { state: "completed", attestation };
+      }
+      if (state !== "CLAIMED") {
+        throw new Error(`Unexpected Redis capture challenge state: ${state}.`);
+      }
+      let settled = false;
+      return {
+        state: "claimed",
+        attestation,
+        async complete() {
+          if (settled) return false;
+          const completed = await client.eval(
+            COMPLETE_CAPTURE_CHALLENGE_SCRIPT,
+            {
+              keys: [captureChallengeKey(parsed.challengeId)],
+              arguments: [claimToken],
+            },
+          );
+          if (Number(completed) === 1) settled = true;
+          return Number(completed) === 1;
+        },
+        async release() {
+          if (settled) return false;
+          const released = await client.eval(
+            RELEASE_CAPTURE_CHALLENGE_SCRIPT,
+            {
+              keys: [captureChallengeKey(parsed.challengeId)],
+              arguments: [claimToken],
+            },
+          );
+          if (Number(released) === 1) settled = true;
+          return Number(released) === 1;
+        },
+      };
     },
 
     async claimUploadGrant(
@@ -576,6 +772,7 @@ export function createRedisCoordinator(client, options = {}) {
         rateLimiting: true,
         accountSessions: true,
         uploadGrants: true,
+        captureChallenges: true,
         boundedStorageAdmission: true,
         verificationCache: true,
         runtimeRailStatus: true,
@@ -595,6 +792,7 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
   const locks = new Map();
   const railStatuses = new Map();
   const uploadGrants = new Map();
+  const captureChallenges = new Map();
   const authSessions = new Map();
   const userStorageAdmissions = new Map();
   let storageAdmission = null;
@@ -614,6 +812,9 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
     }
     for (const [key, entry] of uploadGrants) {
       if (entry.expiresAt <= timestamp) uploadGrants.delete(key);
+    }
+    for (const [key, entry] of captureChallenges) {
+      if (entry.expiresAt <= timestamp) captureChallenges.delete(key);
     }
     for (const [key, entry] of authSessions) {
       if (entry.expiresAtTimestamp <= timestamp) authSessions.delete(key);
@@ -674,6 +875,128 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
       return {
         grant: `${grantId}.${secret}`,
         expiresAt: new Date(timestamp + normalizedTtlMs).toISOString(),
+      };
+    },
+
+    async issueCaptureChallenge(
+      submissionId,
+      {
+        principalId: ownerId,
+        captureWindowMs = 2 * 60 * 1000,
+        ttlMs = 15 * 60 * 1000,
+      } = {},
+    ) {
+      const timestamp = now();
+      removeExpired(timestamp);
+      const ownerPrincipalId = normalizedPrincipalId(ownerId);
+      if (!ownerPrincipalId) {
+        throw new Error("Capture challenges require an authenticated principal.");
+      }
+      const normalizedCaptureWindowMs = positiveInteger(
+        captureWindowMs,
+        2 * 60 * 1000,
+      );
+      const normalizedTtlMs = Math.max(
+        normalizedCaptureWindowMs + 60_000,
+        positiveInteger(ttlMs, 15 * 60 * 1000),
+      );
+      const challengeId = randomUUID();
+      const secret = randomBytes(32).toString("base64url");
+      const captureExpiresAtMs = timestamp + normalizedCaptureWindowMs;
+      const attestation = {
+        challengeId,
+        submissionId,
+        issuedAt: new Date(timestamp).toISOString(),
+        captureExpiresAt: new Date(captureExpiresAtMs).toISOString(),
+        timeAuthority: "SITESEALED_SERVER_CHALLENGE",
+      };
+      captureChallenges.set(captureChallengeKey(challengeId), {
+        state: "ready",
+        secretDigest: captureChallengeSecretDigest(challengeId, secret),
+        principalDigest: principalDigest(ownerPrincipalId),
+        submissionId,
+        issuedAtMs: timestamp,
+        captureExpiresAtMs,
+        attestation,
+        expiresAt: timestamp + normalizedTtlMs,
+      });
+      return {
+        challenge: `${challengeId}.${secret}`,
+        ...attestation,
+        claimExpiresAt: new Date(timestamp + normalizedTtlMs).toISOString(),
+      };
+    },
+
+    async claimCaptureChallenge(
+      challenge,
+      binding,
+      { principalId: ownerId } = {},
+    ) {
+      const timestamp = now();
+      removeExpired(timestamp);
+      const parsed = parseCaptureChallenge(challenge);
+      const ownerPrincipalId = normalizedPrincipalId(ownerId);
+      if (!parsed || !ownerPrincipalId) return { state: "rejected" };
+      const key = captureChallengeKey(parsed.challengeId);
+      const entry = captureChallenges.get(key);
+      const suppliedSecretDigest = captureChallengeSecretDigest(
+        parsed.challengeId,
+        parsed.secret,
+      );
+      const bindingDigest = captureBindingDigest(binding);
+      if (
+        !entry ||
+        !safeHexEqual(entry.secretDigest, suppliedSecretDigest) ||
+        !safeHexEqual(entry.principalDigest, principalDigest(ownerPrincipalId)) ||
+        entry.submissionId !== binding?.submissionId
+      ) {
+        return { state: "rejected" };
+      }
+      if (entry.state === "completed") {
+        return safeHexEqual(entry.bindingDigest, bindingDigest)
+          ? { state: "completed", attestation: structuredClone(entry.attestation) }
+          : { state: "rejected" };
+      }
+      if (entry.state === "claimed") return { state: "in_progress" };
+      const capturedAtMs = Date.parse(binding?.capturedAt);
+      if (
+        !Number.isFinite(capturedAtMs) ||
+        capturedAtMs < entry.issuedAtMs - 60_000 ||
+        capturedAtMs > entry.captureExpiresAtMs + 60_000
+      ) {
+        return { state: "outside_window" };
+      }
+      const claimToken = randomUUID();
+      entry.state = "claimed";
+      entry.bindingDigest = bindingDigest;
+      entry.claimToken = claimToken;
+      let settled = false;
+      return {
+        state: "claimed",
+        attestation: structuredClone(entry.attestation),
+        async complete() {
+          if (settled) return false;
+          const current = captureChallenges.get(key);
+          if (current?.state !== "claimed" || current.claimToken !== claimToken) {
+            return false;
+          }
+          current.state = "completed";
+          delete current.claimToken;
+          settled = true;
+          return true;
+        },
+        async release() {
+          if (settled) return false;
+          const current = captureChallenges.get(key);
+          if (current?.state !== "claimed" || current.claimToken !== claimToken) {
+            return false;
+          }
+          current.state = "ready";
+          delete current.bindingDigest;
+          delete current.claimToken;
+          settled = true;
+          return true;
+        },
       };
     },
 
@@ -933,6 +1256,7 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
         rateLimiting: true,
         accountSessions: true,
         uploadGrants: true,
+        captureChallenges: true,
         boundedStorageAdmission: true,
         verificationCache: true,
         runtimeRailStatus: true,

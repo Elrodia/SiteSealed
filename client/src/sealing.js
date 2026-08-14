@@ -73,6 +73,10 @@ async function sha256Bytes(bytes) {
   return bytesToHex(nobleSha256(new Uint8Array(bytes)));
 }
 
+export async function sha256CanonicalJson(value) {
+  return sha256Bytes(new TextEncoder().encode(stableStringify(value)));
+}
+
 export async function recalculateEvidenceDigest(recordSha256, manifestSha256) {
   return sha256Bytes(
     concatBytes(
@@ -143,8 +147,10 @@ export async function verifyPublicProofArtifacts(record) {
     }
     const merklePass = leafMatches && calculatedRoot === rail.merkleRoot;
     const expectedInput = `0x53534c4401${rail.merkleRoot}`;
-    const currentAlpha =
-      record?.receipt?.schemaVersion === "sitesealed.receipt.v1.4-alpha.1";
+    const currentAlpha = [
+      "sitesealed.receipt.v1.4-alpha.1",
+      "sitesealed.receipt.v1.5-alpha.1",
+    ].includes(record?.receipt?.schemaVersion);
     const transactionBinding = rail.transactionInput
       ? Number(rail.chainId) === 1 &&
         String(rail.transactionInput).toLowerCase() === expectedInput
@@ -171,7 +177,7 @@ export async function sha256File(file) {
   if (!(file instanceof Blob)) throw new TypeError("A browser File or Blob is required.");
   if (file.size <= 0) throw new Error("The selected file is empty.");
   if (file.size > MAX_FILE_BYTES) {
-    throw new Error("This v1.4 alpha workflow accepts files up to 25 MB.");
+    throw new Error("This alpha workflow accepts files up to 25 MB.");
   }
   return sha256Bytes(await file.arrayBuffer());
 }
@@ -202,6 +208,117 @@ export function buildManifest(file, { projectReference, description }) {
       deviceAttested: false,
       locationAttested: false,
     },
+  };
+}
+
+export function buildLiveCaptureManifest(
+  file,
+  { projectReference, description, capture },
+) {
+  if (!(file instanceof Blob) || !capture?.challenge || !capture?.location) {
+    throw new Error("A fresh camera capture, server challenge and location fix are required.");
+  }
+  const latitude = Number(capture.location.latitude);
+  const longitude = Number(capture.location.longitude);
+  const accuracyMeters = Number(capture.location.accuracyMeters);
+  if (
+    !Number.isFinite(latitude) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    !Number.isFinite(longitude) ||
+    longitude < -180 ||
+    longitude > 180 ||
+    !Number.isFinite(accuracyMeters) ||
+    accuracyMeters < 0
+  ) {
+    throw new Error("The browser did not return a usable geolocation fix.");
+  }
+  return {
+    schemaVersion: "sitesealed.capture-manifest.v1.5-alpha.1",
+    recordClass: "LIVE_CAPTURE_WEB",
+    privacy: {
+      plaintextOriginalTransferred: false,
+      encryptedOriginalStored: true,
+      encryptionKeyTransferred: false,
+      preciseCoordinatesStoredInsideEncryptedManifest: true,
+    },
+    file: {
+      name: file.name,
+      size: file.size,
+      mediaType: file.type || "image/jpeg",
+    },
+    context: {
+      projectReference: projectReference.trim(),
+      description: description.trim(),
+    },
+    capture: {
+      workflow: "WEB_CAMERA_CONTEXT_BOUND_ALPHA",
+      capturedAtDevice: capture.capturedAt,
+      camera: {
+        source: "MEDIADEVICES_GETUSERMEDIA",
+        facingMode: capture.cameraFacingMode,
+        width: capture.width,
+        height: capture.height,
+      },
+      challenge: {
+        challengeId: capture.challengeId,
+        issuedAt: capture.issuedAt,
+        captureExpiresAt: capture.captureExpiresAt,
+        timeAuthority: "SITESEALED_SERVER_CHALLENGE",
+      },
+      time: {
+        deviceClockValue: capture.capturedAt,
+        serverClockDeltaAtChallengeReceiptMs: capture.clockDeltaMs,
+        attestation: "SERVER_CHALLENGE_WINDOW",
+      },
+      location: {
+        latitude,
+        longitude,
+        accuracyMeters,
+        altitudeMeters: capture.location.altitudeMeters,
+        altitudeAccuracyMeters: capture.location.altitudeAccuracyMeters,
+        headingDegrees: capture.location.headingDegrees,
+        speedMetersPerSecond: capture.location.speedMetersPerSecond,
+        measuredAtDevice: capture.location.measuredAt,
+        source: "W3C_GEOLOCATION",
+        attestation: "BROWSER_GEOLOCATION_NOT_HARDWARE_ATTESTED",
+      },
+      device: {
+        attestation: "NOT_AVAILABLE_WEB_ALPHA",
+        limitation:
+          "The browser cannot provide hardware-backed camera or device attestation.",
+      },
+      account: {
+        binding: "SERVER_VERIFIED_GOOGLE_SESSION_PSEUDONYMOUS_REFERENCE",
+      },
+    },
+    client: {
+      workflow: "WEB_LIVE_CAPTURE_V1",
+      manifestCreatedAt: new Date().toISOString(),
+      serverChallengeBound: true,
+      accountSessionBound: true,
+      captureAttested: false,
+      deviceAttested: false,
+      locationAttested: false,
+    },
+  };
+}
+
+export function createCaptureProof(capture) {
+  if (!capture?.challenge || !capture?.location) {
+    throw new Error("The context-bound capture proof is incomplete.");
+  }
+  return {
+    challenge: capture.challenge,
+    capturedAt: capture.capturedAt,
+    locationMeasuredAt: capture.location.measuredAt,
+    locationAccuracyMeters: capture.location.accuracyMeters,
+    clockDeltaMs: capture.clockDeltaMs,
+    cameraFacingMode: capture.cameraFacingMode,
+    deviceAttestation: "NOT_AVAILABLE_WEB_ALPHA",
+    locationAttestation: "BROWSER_GEOLOCATION_NOT_HARDWARE_ATTESTED",
+    timeAttestation: "SERVER_CHALLENGE_WINDOW",
+    coordinatesManifestBound: true,
   };
 }
 
@@ -247,7 +364,7 @@ export async function encryptManifest(manifest) {
 export async function encryptOriginal(file, recoveryKey) {
   if (!(file instanceof Blob)) throw new TypeError("A browser File or Blob is required.");
   if (file.size <= 0 || file.size > MAX_FILE_BYTES) {
-    throw new Error("This v1.4 alpha workflow accepts files from 1 byte up to 25 MB.");
+    throw new Error("This alpha workflow accepts files from 1 byte up to 25 MB.");
   }
   const rawKey = base64ToBytes(recoveryKey);
   if (rawKey.length !== 32) throw new Error("The sealing recovery key is invalid.");
@@ -321,16 +438,20 @@ export function createSealRequest({
   envelope,
   encryptedObject,
   submissionId = createRandomUuid(),
+  recordClass = "IMPORTED_FILE",
+  captureProof = null,
 }) {
-  return {
+  const request = {
     submissionId,
     protocolVersion: PROTOCOL_VERSION,
-    recordClass: "IMPORTED_FILE",
+    recordClass,
     recordSha256,
     manifestSha256,
     encryptedManifest: envelope,
     encryptedObject,
   };
+  if (recordClass === "LIVE_CAPTURE_WEB") request.captureProof = captureProof;
+  return request;
 }
 
 export function createPrivateRecoveryKit({

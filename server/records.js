@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 export const RECORD_CLASS_IMPORTED = "IMPORTED_FILE";
+export const RECORD_CLASS_LIVE_WEB = "LIVE_CAPTURE_WEB";
 export const PROOF_LEVEL_DEVELOPMENT = "DEVELOPMENT_RECEIPT";
 export const PROOF_LEVEL_DUAL_RAIL_ALPHA = "DUAL_RAIL_ALPHA_RECEIPT";
 export const SEAL_PROTOCOL_VERSION = "1.2";
@@ -20,6 +21,7 @@ const TOP_LEVEL_FIELDS = new Set([
   "manifestSha256",
   "encryptedManifest",
   "encryptedObject",
+  "captureProof",
 ]);
 const ENVELOPE_FIELDS = new Set([
   "version",
@@ -38,6 +40,20 @@ const ENCRYPTED_OBJECT_FIELDS = new Set([
   "plaintextBytes",
   "recoveryTokenSha256",
 ]);
+const CAPTURE_PROOF_FIELDS = new Set([
+  "challenge",
+  "capturedAt",
+  "locationMeasuredAt",
+  "locationAccuracyMeters",
+  "clockDeltaMs",
+  "cameraFacingMode",
+  "deviceAttestation",
+  "locationAttestation",
+  "timeAttestation",
+  "coordinatesManifestBound",
+]);
+const CAPTURE_CHALLENGE_PATTERN =
+  /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.([A-Za-z0-9_-]{43})$/;
 
 export class ApiError extends Error {
   constructor(status, code, message) {
@@ -235,6 +251,104 @@ export function validateEncryptedObjectDescriptor(value, submissionId) {
   };
 }
 
+function normalizeIsoTimestamp(value, fieldName) {
+  const parsed = new Date(String(value ?? ""));
+  if (!Number.isFinite(parsed.valueOf())) {
+    throw new ApiError(400, "INVALID_CAPTURE_PROOF", `${fieldName} must be an ISO 8601 timestamp.`);
+  }
+  return parsed.toISOString();
+}
+
+function validateCaptureProof(value) {
+  assertObject(
+    value,
+    "INVALID_CAPTURE_PROOF",
+    "A context-bound web capture requires captureProof.",
+  );
+  rejectUnknownFields(value, CAPTURE_PROOF_FIELDS, "captureProof");
+  const challenge = String(value.challenge ?? "").trim();
+  const challengeMatch = challenge.match(CAPTURE_CHALLENGE_PATTERN);
+  if (!challengeMatch) {
+    throw new ApiError(
+      400,
+      "INVALID_CAPTURE_PROOF",
+      "captureProof.challenge must be a server-issued capture challenge.",
+    );
+  }
+  const capturedAt = normalizeIsoTimestamp(
+    value.capturedAt,
+    "captureProof.capturedAt",
+  );
+  const locationMeasuredAt = normalizeIsoTimestamp(
+    value.locationMeasuredAt,
+    "captureProof.locationMeasuredAt",
+  );
+  if (
+    Math.abs(Date.parse(locationMeasuredAt) - Date.parse(capturedAt)) >
+    2 * 60 * 1000
+  ) {
+    throw new ApiError(
+      400,
+      "INVALID_CAPTURE_PROOF",
+      "The browser location fix must be measured within two minutes of capture.",
+    );
+  }
+  const locationAccuracyMeters = Number(value.locationAccuracyMeters);
+  if (
+    !Number.isFinite(locationAccuracyMeters) ||
+    locationAccuracyMeters < 0 ||
+    locationAccuracyMeters > 100_000
+  ) {
+    throw new ApiError(
+      400,
+      "INVALID_CAPTURE_PROOF",
+      "captureProof.locationAccuracyMeters is outside the accepted range.",
+    );
+  }
+  const clockDeltaMs = Number(value.clockDeltaMs);
+  if (!Number.isInteger(clockDeltaMs) || Math.abs(clockDeltaMs) > 86_400_000) {
+    throw new ApiError(
+      400,
+      "INVALID_CAPTURE_PROOF",
+      "captureProof.clockDeltaMs must be an integer within one day.",
+    );
+  }
+  const cameraFacingMode = String(value.cameraFacingMode ?? "unknown");
+  if (!["environment", "user", "unknown"].includes(cameraFacingMode)) {
+    throw new ApiError(
+      400,
+      "INVALID_CAPTURE_PROOF",
+      "captureProof.cameraFacingMode is unsupported.",
+    );
+  }
+  if (
+    value.deviceAttestation !== "NOT_AVAILABLE_WEB_ALPHA" ||
+    value.locationAttestation !==
+      "BROWSER_GEOLOCATION_NOT_HARDWARE_ATTESTED" ||
+    value.timeAttestation !== "SERVER_CHALLENGE_WINDOW" ||
+    value.coordinatesManifestBound !== true
+  ) {
+    throw new ApiError(
+      400,
+      "CAPTURE_SCOPE_OVERCLAIMED",
+      "The web alpha must retain its explicit non-hardware-attested capture scope.",
+    );
+  }
+  return {
+    challenge,
+    challengeId: challengeMatch[1],
+    capturedAt,
+    locationMeasuredAt,
+    locationAccuracyMeters,
+    clockDeltaMs,
+    cameraFacingMode,
+    deviceAttestation: "NOT_AVAILABLE_WEB_ALPHA",
+    locationAttestation: "BROWSER_GEOLOCATION_NOT_HARDWARE_ATTESTED",
+    timeAttestation: "SERVER_CHALLENGE_WINDOW",
+    coordinatesManifestBound: true,
+  };
+}
+
 export function validateSealRequest(body) {
   assertObject(body, "INVALID_SEAL_REQUEST", "The sealing request must be a JSON object.");
   rejectUnknownFields(body, TOP_LEVEL_FIELDS, "The sealing request");
@@ -249,13 +363,27 @@ export function validateSealRequest(body) {
     );
   }
 
-  if (body.recordClass !== RECORD_CLASS_IMPORTED) {
+  if (
+    body.recordClass !== RECORD_CLASS_IMPORTED &&
+    body.recordClass !== RECORD_CLASS_LIVE_WEB
+  ) {
     throw new ApiError(
       400,
       "INVALID_RECORD_CLASS",
-      "The v1.4 alpha web workflow accepts only explicitly labelled imported files.",
+      "recordClass must be IMPORTED_FILE or LIVE_CAPTURE_WEB.",
     );
   }
+  if (body.recordClass === RECORD_CLASS_IMPORTED && body.captureProof != null) {
+    throw new ApiError(
+      400,
+      "INVALID_CAPTURE_PROOF",
+      "Imported files cannot carry a live-capture challenge.",
+    );
+  }
+  const captureProof =
+    body.recordClass === RECORD_CLASS_LIVE_WEB
+      ? validateCaptureProof(body.captureProof)
+      : null;
 
   assertObject(
     body.encryptedManifest,
@@ -298,7 +426,7 @@ export function validateSealRequest(body) {
   return {
     submissionId,
     protocolVersion: SEAL_PROTOCOL_VERSION,
-    recordClass: RECORD_CLASS_IMPORTED,
+    recordClass: body.recordClass,
     recordSha256: normalizeDigest(body.recordSha256, "recordSha256"),
     manifestSha256: normalizeDigest(body.manifestSha256, "manifestSha256"),
     encryptedManifest: {
@@ -311,6 +439,7 @@ export function validateSealRequest(body) {
       body.encryptedObject,
       submissionId,
     ),
+    captureProof,
   };
 }
 
@@ -341,6 +470,7 @@ export function createReceiptPayload({
   recordSha256,
   manifestSha256,
   encryptedObject,
+  captureContext = null,
   receivedAt,
   receiptVersion = "1.4-alpha.1",
   proofLevel = PROOF_LEVEL_DUAL_RAIL_ALPHA,
@@ -349,10 +479,10 @@ export function createReceiptPayload({
     recordSha256,
     manifestSha256,
   });
-  const alphaReceipt = receiptVersion === "1.4-alpha.1";
+  const alphaReceipt = ["1.4-alpha.1", "1.5-alpha.1"].includes(receiptVersion);
   const receipt = {
     schemaVersion: alphaReceipt
-      ? "sitesealed.receipt.v1.4-alpha.1"
+      ? `sitesealed.receipt.v${receiptVersion}`
       : encryptedObject
         ? "sitesealed.receipt.v1.2"
         : "sitesealed.receipt.v1",
@@ -364,6 +494,7 @@ export function createReceiptPayload({
     receivedAt,
   };
   if (alphaReceipt) receipt.evidenceDigest = evidenceDigest;
+  if (captureContext) receipt.captureContext = captureContext;
   if (encryptedObject) {
     receipt.encryptedOriginal = {
       state: "STORED_ENCRYPTED",
@@ -380,10 +511,11 @@ export function createReceiptPayload({
 export function createDevelopmentRecord(input, options = {}) {
   const receivedAt = (options.receivedAt ?? new Date()).toISOString();
   const recordId = options.recordId ?? createRecordId(new Date(receivedAt));
-  const receiptVersion = options.receiptVersion ?? "1.4-alpha.1";
+  const receiptVersion = options.receiptVersion ?? "1.5-alpha.1";
+  const alphaReceipt = ["1.4-alpha.1", "1.5-alpha.1"].includes(receiptVersion);
   const proofLevel =
     options.proofLevel ??
-    (receiptVersion === "1.4-alpha.1"
+    (alphaReceipt
       ? PROOF_LEVEL_DUAL_RAIL_ALPHA
       : PROOF_LEVEL_DEVELOPMENT);
   const receipt = createReceiptPayload({
@@ -392,30 +524,40 @@ export function createDevelopmentRecord(input, options = {}) {
     recordSha256: input.recordSha256,
     manifestSha256: input.manifestSha256,
     encryptedObject: input.encryptedObject,
+    captureContext: input.captureContext ?? null,
     receivedAt,
     receiptVersion,
     proofLevel,
   });
 
   const encryptedObject = input.encryptedObject ?? null;
+  const liveCapture = input.recordClass === RECORD_CLASS_LIVE_WEB;
+  const captureContext = liveCapture ? input.captureContext ?? null : null;
 
   return {
     recordId,
     specimen: false,
     recordClass: input.recordClass,
     proofLevel,
-    classification: "Imported file - web sealing workflow",
+    classification: liveCapture
+      ? "Context-bound web camera capture - alpha"
+      : "Imported file - integrity-only workflow",
     project: "Encrypted in the client-held manifest",
     description:
       "The readable manifest and plaintext original remain under client control.",
     file: encryptedObject
       ? "Client-encrypted original stored in private object storage"
       : "Original retained by the client",
-    captureMode: "Browser import - not a live in-app capture",
-    capturedAt: null,
+    captureMode: liveCapture
+      ? "In-app browser camera - fresh server challenge"
+      : "Browser import - not a live in-app capture",
+    capturedAt: captureContext?.capturedAt ?? null,
     qualifiedAt: null,
     receivedAt,
-    position: "Not collected in the v1.4 web import workflow",
+    position: liveCapture
+      ? "Coordinates are bound inside the client-encrypted capture manifest"
+      : "Not collected in the imported-file workflow",
+    captureContext,
     sha256: input.recordSha256,
     manifestSha256: input.manifestSha256,
     evidenceDigest: createEvidenceDigest({
@@ -645,6 +787,20 @@ export function scopeForRecord(record) {
         ? " An Ethereum mainnet anchor exists but has not reached SiteSealed's finality state."
         : " No Ethereum mainnet anchor is attached.";
 
+  if (record.recordClass === RECORD_CLASS_LIVE_WEB) {
+    return {
+      proves:
+        "If the locally held capture and canonical manifest recalculate to the recorded SHA-256 digests, their exact byte sequences match this receipt." +
+        encryptedStorageStatement +
+        timestampStatement +
+        chainStatement,
+      attests:
+        "The SiteSealed server attests that a Google-authenticated session obtained a fresh, submission-bound challenge and submitted the claimed context inside its allowed window. When the client-held manifest is supplied and its SHA-256 matches, it binds the browser camera workflow, browser-reported geolocation, accuracy and clock estimate to this receipt. These are server-bound client claims, not independently proven physical facts.",
+      doesNotProve:
+        "This web alpha does not prove that the image pixels came from a physical sensor at the claimed time or coordinates. It has no hardware-backed device or GNSS attestation and cannot exclude an API client, compromised browser, virtual camera, photographed screen, replayed image or staged scene. It does not prove who or what is depicted or that browser-reported coordinates are genuine. An Evidency sandbox token is test-only and must never be described as a qualified eIDAS timestamp.",
+    };
+  }
+
   return {
     proves:
       "If a locally held file recalculates to the recorded SHA-256 digest, its byte sequence matches this receipt." +
@@ -661,8 +817,14 @@ export function scopeForRecord(record) {
 export function createProofBundle(record, encryptedManifest = null) {
   const proofStatus = externalProofStatus(record);
   return {
-    schemaVersion: "sitesealed.proof-bundle.v1.4-alpha.1",
-    bundleVersion: "1.4-alpha.1",
+    schemaVersion:
+      record.receipt?.schemaVersion === "sitesealed.receipt.v1.5-alpha.1"
+        ? "sitesealed.proof-bundle.v1.5-alpha.1"
+        : "sitesealed.proof-bundle.v1.4-alpha.1",
+    bundleVersion:
+      record.receipt?.schemaVersion === "sitesealed.receipt.v1.5-alpha.1"
+        ? "1.5-alpha.1"
+        : "1.4-alpha.1",
     generatedAt: new Date().toISOString(),
     record: {
       recordId: record.recordId,
@@ -672,6 +834,7 @@ export function createProofBundle(record, encryptedManifest = null) {
       manifestSha256: record.manifestSha256,
       evidenceDigest: record.evidenceDigest,
       receivedAt: record.receivedAt,
+      captureContext: record.captureContext ?? null,
     },
     receipt: record.receipt,
     receiptSha256: record.receiptSha256,

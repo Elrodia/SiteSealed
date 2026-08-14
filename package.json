@@ -1,6 +1,6 @@
 {
   "name": "sitesealed",
-  "version": "1.4.0-alpha.10.1",
+  "version": "1.5.0-alpha.1",
   "description": "SiteSealed - a neutral proof layer for construction records.",
   "private": true,
   "type": "module",
@@ -20,6 +20,7 @@
     "rails:run": "npm run rails:run --workspace server",
     "verify:bundle": "node scripts/verify-bundle.mjs",
     "verify:timestamp": "node scripts/verify-timestamp.mjs",
+    "verify:dual-rail-freeze": "node scripts/verify-dual-rail-freeze.mjs",
     "start": "npm run start --workspace server",
     "test": "npm run build && npm run test --workspace server",
     "check": "npm run test"

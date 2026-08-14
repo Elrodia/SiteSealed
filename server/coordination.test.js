@@ -301,6 +301,111 @@ test("authenticated sessions are opaque, isolated and expiring", async () => {
   assert.equal(await coordinator.getAuthSession(second.token), null);
 });
 
+test("capture challenges bind one fresh camera event to one account and submission", async () => {
+  let timestamp = Date.parse("2026-08-14T10:00:00.000Z");
+  const coordinator = createMemoryCoordinator({ now: () => timestamp });
+  const submissionId = "323e4567-e89b-42d3-a456-426614174000";
+  const issued = await coordinator.issueCaptureChallenge(submissionId, {
+    principalId: PRINCIPAL_A,
+    captureWindowMs: 120_000,
+    ttlMs: 900_000,
+  });
+  assert.match(issued.challenge, /^[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/);
+  assert.equal(issued.timeAuthority, "SITESEALED_SERVER_CHALLENGE");
+
+  const binding = {
+    submissionId,
+    recordSha256: "d".repeat(64),
+    manifestSha256: "e".repeat(64),
+    capturedAt: "2026-08-14T10:00:30.000Z",
+  };
+  const claim = await coordinator.claimCaptureChallenge(
+    issued.challenge,
+    binding,
+    { principalId: PRINCIPAL_A },
+  );
+  assert.equal(claim.state, "claimed");
+  assert.equal(claim.attestation.challengeId, issued.challengeId);
+  assert.equal(
+    (
+      await coordinator.claimCaptureChallenge(issued.challenge, binding, {
+        principalId: PRINCIPAL_A,
+      })
+    ).state,
+    "in_progress",
+  );
+  assert.equal(await claim.release(), true);
+
+  const retry = await coordinator.claimCaptureChallenge(
+    issued.challenge,
+    binding,
+    { principalId: PRINCIPAL_A },
+  );
+  assert.equal(retry.state, "claimed");
+  assert.equal(await retry.complete(), true);
+  assert.equal(
+    (
+      await coordinator.claimCaptureChallenge(issued.challenge, binding, {
+        principalId: PRINCIPAL_A,
+      })
+    ).state,
+    "completed",
+  );
+  assert.equal(
+    (
+      await coordinator.claimCaptureChallenge(
+        issued.challenge,
+        { ...binding, recordSha256: "f".repeat(64) },
+        { principalId: PRINCIPAL_A },
+      )
+    ).state,
+    "rejected",
+  );
+  assert.equal(
+    (
+      await coordinator.claimCaptureChallenge(issued.challenge, binding, {
+        principalId: PRINCIPAL_B,
+      })
+    ).state,
+    "rejected",
+  );
+});
+
+test("capture challenge rejects a claimed capture time outside its fresh window", async () => {
+  let timestamp = Date.parse("2026-08-14T10:00:00.000Z");
+  const coordinator = createMemoryCoordinator({ now: () => timestamp });
+  const submissionId = "423e4567-e89b-42d3-a456-426614174000";
+  const issued = await coordinator.issueCaptureChallenge(submissionId, {
+    principalId: PRINCIPAL_A,
+    captureWindowMs: 120_000,
+    ttlMs: 900_000,
+  });
+  const outside = await coordinator.claimCaptureChallenge(
+    issued.challenge,
+    {
+      submissionId,
+      recordSha256: "d".repeat(64),
+      manifestSha256: "e".repeat(64),
+      capturedAt: "2026-08-14T10:04:00.000Z",
+    },
+    { principalId: PRINCIPAL_A },
+  );
+  assert.equal(outside.state, "outside_window");
+
+  timestamp += 900_001;
+  const expired = await coordinator.claimCaptureChallenge(
+    issued.challenge,
+    {
+      submissionId,
+      recordSha256: "d".repeat(64),
+      manifestSha256: "e".repeat(64),
+      capturedAt: "2026-08-14T10:01:00.000Z",
+    },
+    { principalId: PRINCIPAL_A },
+  );
+  assert.equal(expired.state, "rejected");
+});
+
 test("the authenticated user budget is enforced independently", async () => {
   const coordinator = createMemoryCoordinator();
   const binding = uploadBinding();

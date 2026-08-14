@@ -1545,6 +1545,65 @@ button {
   text-align: right;
 }
 
+.capture-mode {
+  display: grid;
+  padding: 14px 32px;
+  border-bottom: 1px solid var(--line);
+  background: #091b28;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.capture-mode button {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 15px;
+  border: 1px solid #345064;
+  border-radius: 4px;
+  background: #0d2232;
+  color: #9fb2c0;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.capture-mode button:hover,
+.capture-mode button:focus-visible {
+  border-color: var(--amber-500);
+  outline: none;
+  background: #122c3f;
+  color: var(--ink);
+}
+
+.capture-mode button.capture-mode__active {
+  border-color: var(--amber-500);
+  background: #2a2114;
+  color: var(--ink);
+  box-shadow: inset 3px 0 0 var(--amber-500);
+}
+
+.capture-mode button > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.capture-mode strong {
+  font-family: var(--font-condensed);
+  font-size: 0.88rem;
+}
+
+.capture-mode small {
+  overflow: hidden;
+  color: #7f99aa;
+  font-family: var(--font-mono);
+  font-size: 0.51rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .google-signin-control {
   display: flex;
   width: 400px;
@@ -1686,8 +1745,8 @@ button {
   align-items: center;
   justify-content: center;
   padding: 26px;
-  border: 1px dashed #9cacb7;
-  background: #f8faf9;
+  border: 1px dashed #345064;
+  background: #0b2130;
   cursor: pointer;
   text-align: center;
   flex-direction: column;
@@ -1697,7 +1756,7 @@ button {
 .file-picker > input:focus-visible + label,
 .file-picker > label:hover {
   border-color: var(--amber-500);
-  background: var(--amber-100);
+  background: #122c3f;
   transform: translateY(-2px);
 }
 
@@ -1716,7 +1775,7 @@ button {
   display: block;
   max-width: 100%;
   overflow: hidden;
-  color: var(--navy-900);
+  color: var(--ink);
   font-family: var(--font-condensed);
   font-size: 1.05rem;
   text-overflow: ellipsis;
@@ -1725,7 +1784,7 @@ button {
 
 .file-picker > label small {
   margin-top: 7px;
-  color: var(--muted);
+  color: #91a8b8;
   font-size: 0.74rem;
 }
 
@@ -1735,6 +1794,126 @@ button {
   font-family: var(--font-mono);
   font-size: 0.54rem;
   text-align: center;
+}
+
+.live-camera {
+  min-width: 0;
+}
+
+.live-camera__video,
+.live-camera__empty {
+  display: flex;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  min-height: 174px;
+  max-height: 300px;
+  border: 1px solid #345064;
+  background: #06131d;
+  object-fit: cover;
+}
+
+.live-camera__empty {
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: var(--ink);
+  text-align: center;
+  flex-direction: column;
+}
+
+.live-camera__empty > span {
+  display: grid;
+  width: 58px;
+  height: 58px;
+  margin-bottom: 12px;
+  place-items: center;
+  border: 1px solid #29465b;
+  border-radius: 50%;
+  background: #0d2940;
+  color: var(--amber-500);
+}
+
+.live-camera__empty strong {
+  font-family: var(--font-condensed);
+  font-size: 1rem;
+}
+
+.live-camera__empty small {
+  margin-top: 5px;
+  color: #7f99aa;
+  font-size: 0.67rem;
+}
+
+.live-camera__actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.live-camera__actions .button {
+  width: 100%;
+}
+
+.live-camera__attestation {
+  display: grid;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--green-600);
+  background: #0b2a2c;
+  gap: 2px;
+}
+
+.live-camera__attestation span {
+  color: var(--green-600);
+  font-family: var(--font-mono);
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.live-camera__attestation strong {
+  color: var(--ink);
+  font-size: 0.76rem;
+}
+
+.live-camera__attestation small,
+.live-camera > p {
+  color: #8aa2b1;
+  font-family: var(--font-mono);
+  font-size: 0.52rem;
+}
+
+.live-camera > p {
+  margin: 9px 0 0;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.capture-scope-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 27px;
+  padding: 16px 18px;
+  border: 1px solid #2b6c63;
+  background: #0b2a2c;
+  color: #a9c9c2;
+}
+
+.capture-scope-note .icon {
+  flex: 0 0 auto;
+  color: var(--green-600);
+}
+
+.capture-scope-note p {
+  margin: 0;
+  font-size: 0.76rem;
+  line-height: 1.55;
+}
+
+.capture-scope-note strong {
+  display: block;
+  color: var(--ink);
 }
 
 .seal-form__context {
@@ -2548,6 +2727,25 @@ button {
   font-size: 0.5rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.local-file-check--manifest {
+  grid-template-columns: 1fr auto;
+}
+
+.local-file-check--manifest > small {
+  grid-column: 1 / -1;
+  font-family: var(--font-mono);
+  font-size: 0.5rem;
+  line-height: 1.45;
+}
+
+.local-kit-status--success {
+  color: #76d5ac;
+}
+
+.local-kit-status--error {
+  color: #ff8b82;
 }
 
 .verify-form .local-file-check > input:focus-visible + label,

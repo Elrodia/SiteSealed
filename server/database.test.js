@@ -83,6 +83,56 @@ test("database rows map an unqualified real receipt without inventing rails", ()
   assert.equal(record.chainRail.state, "NOT_ANCHORED");
 });
 
+test("database rows preserve the additive live-capture context", () => {
+  const captureContext = {
+    schemaVersion: "sitesealed.capture-context.v1.5-alpha.1",
+    workflow: "WEB_CAMERA_CONTEXT_BOUND_ALPHA",
+    challengeId: "123e4567-e89b-42d3-a456-426614174000",
+    challengeIssuedAt: "2026-08-14T10:00:00.000Z",
+    challengeCaptureExpiresAt: "2026-08-14T10:02:00.000Z",
+    timeAuthority: "SITESEALED_SERVER_CHALLENGE",
+    capturedAt: "2026-08-14T10:00:05.000Z",
+    clientClockDeltaMs: 9,
+    cameraFacingMode: "environment",
+    location: {
+      coordinatesManifestBound: true,
+      measuredAt: "2026-08-14T10:00:04.000Z",
+      accuracyMeters: 8.2,
+      attestation: "BROWSER_GEOLOCATION_NOT_HARDWARE_ATTESTED",
+    },
+    deviceAttestation: "NOT_AVAILABLE_WEB_ALPHA",
+    timeAttestation: "SERVER_CHALLENGE_WINDOW",
+    account: { provider: "GOOGLE", accountReference: "9".repeat(64) },
+  };
+  const record = mapRecordRow({
+    record_id: "SR-20260814-CONTEXTBOUNDROW",
+    record_sha256: "a".repeat(64),
+    manifest_sha256: "b".repeat(64),
+    manifest_encryption: "AES-256-GCM / client-held key",
+    record_class: "LIVE_CAPTURE_WEB",
+    proof_level: "DUAL_RAIL_ALPHA_RECEIPT",
+    receipt_sha256: "c".repeat(64),
+    receipt_version: "1.5-alpha.1",
+    capture_context: JSON.stringify(captureContext),
+    storage_provider: "S3_PRIVATE_BUCKET",
+    storage_object_key: encryptedObject().objectKey,
+    storage_cipher_sha256: storageCipherSha256,
+    storage_cipher_iv: encryptedObject().iv,
+    storage_cipher_bytes: 32,
+    storage_plaintext_bytes: 16,
+    storage_recovery_token_sha256: "e".repeat(64),
+    storage_status: "STORED_ENCRYPTED",
+    is_specimen: 0,
+    created_at: new Date("2026-08-14T10:00:15.000Z"),
+  });
+
+  assert.equal(record.recordClass, "LIVE_CAPTURE_WEB");
+  assert.equal(record.capturedAt, captureContext.capturedAt);
+  assert.deepEqual(record.captureContext, captureContext);
+  assert.deepEqual(record.receipt.captureContext, captureContext);
+  assert.equal(record.receipt.schemaVersion, "sitesealed.receipt.v1.5-alpha.1");
+});
+
 test("record lookup is parameterized and uses optional proof joins", async () => {
   let capturedSql = "";
   let capturedParameters = [];
@@ -551,6 +601,7 @@ test("MySQL receipt creation stores digests, encrypted manifest and private S3 r
   assert.equal(insert.parameters.includes(input.recordSha256), true);
   assert.equal(insert.parameters.some((value) => Buffer.isBuffer(value)), true);
   assert.equal(insert.parameters.some((value) => value === "DUAL_RAIL_ALPHA_RECEIPT"), true);
+  assert.equal(insert.parameters.includes("1.5-alpha.1"), true);
   assert.equal(insert.parameters.includes(encryptedObject().objectKey), true);
   assert.equal(insert.parameters.includes(storageCipherSha256), true);
   assert.equal(insert.parameters.includes("STORED_ENCRYPTED"), true);

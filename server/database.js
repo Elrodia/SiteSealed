@@ -62,6 +62,7 @@ const schemaStatements = [
     proof_level VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'DUAL_RAIL',
     receipt_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
     client_protocol VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    capture_context JSON NULL,
     storage_provider VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
     storage_object_key VARCHAR(256) CHARACTER SET ascii COLLATE ascii_bin NULL,
     storage_cipher_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
@@ -400,6 +401,17 @@ const migrations = [
       }
     },
   },
+  {
+    id: "006_context_bound_web_capture",
+    async up(connection) {
+      await ensureColumn(
+        connection,
+        "sealed_records",
+        "capture_context",
+        "JSON NULL AFTER client_protocol",
+      );
+    },
+  },
 ];
 
 function databaseMode(environment) {
@@ -674,13 +686,19 @@ function encryptedObjectFromRow(row) {
 
 function assertIdempotentInputMatches(row, input) {
   const storedObject = encryptedObjectFromRow(row);
+  const storedCaptureContext = row.capture_context
+    ? parseJsonColumn(row.capture_context)
+    : null;
   const matches =
+    row.record_class === input.recordClass &&
     row.record_sha256 === input.recordSha256 &&
     row.manifest_sha256 === input.manifestSha256 &&
     storedObject?.ciphertextSha256 === input.encryptedObject.ciphertextSha256 &&
     storedObject?.objectKey === input.encryptedObject.objectKey &&
     storedObject?.recoveryTokenSha256 ===
-      input.encryptedObject.recoveryTokenSha256;
+      input.encryptedObject.recoveryTokenSha256 &&
+    stableStringify(storedCaptureContext) ===
+      stableStringify(input.captureContext ?? null);
   if (!matches) {
     throw new ApiError(
       409,
@@ -700,6 +718,9 @@ export function mapRecordRow(row) {
         recordSha256: row.record_sha256,
         manifestSha256: row.manifest_sha256,
         encryptedObject,
+        captureContext: row.capture_context
+          ? parseJsonColumn(row.capture_context)
+          : null,
       },
       {
         recordId: row.record_id,
@@ -838,6 +859,7 @@ const recordSelect = `SELECT
   records.receipt_sha256,
   records.receipt_version,
   records.client_protocol,
+  records.capture_context,
   records.storage_provider,
   records.storage_object_key,
   records.storage_cipher_sha256,
@@ -1011,13 +1033,13 @@ export function createMysqlRecordStore(pool) {
               record_id, submission_id, record_sha256, manifest_sha256,
               encrypted_manifest, manifest_encryption, specimen_payload,
               record_class, proof_level, receipt_sha256, receipt_version,
-              client_protocol,
+              client_protocol, capture_context,
               storage_provider, storage_object_key, storage_cipher_sha256,
               storage_cipher_iv, storage_cipher_bytes, storage_plaintext_bytes,
               storage_recovery_token_sha256, storage_status,
               record_status, is_specimen, created_at, updated_at
             ) VALUES (
-              ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?,
+              ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?,
               ?, ?, ?, ?, ?, ?, ?, ?,
               ?, 0, ?, ?
             )`,
@@ -1031,8 +1053,11 @@ export function createMysqlRecordStore(pool) {
               record.recordClass,
               record.proofLevel,
               record.receiptSha256,
-              "1.4-alpha.1",
+              "1.5-alpha.1",
               input.protocolVersion,
+              input.captureContext
+                ? JSON.stringify(input.captureContext)
+                : null,
               input.storageProvider ?? "S3",
               input.encryptedObject.objectKey,
               input.encryptedObject.ciphertextSha256,

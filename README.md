@@ -1,180 +1,186 @@
-# SiteSealed Genesis v1.4-alpha.10.1 — Evidence Report canonique
+# SiteSealed Genesis v1.5.0-alpha.1 — Context-bound capture
 
-SiteSealed crée des enregistrements d'intégrité SHA-256, conserve uniquement un
-original chiffré côté client sur le serveur et produit un seul artefact humain :
-le **SiteSealed Evidence Report PDF**. Ce rapport affiche l'original et incorpore
-également sa séquence d'octets exacte, après comparaison avec l'empreinte
-enregistrée. Deux rails externes asynchrones complètent la preuve :
+SiteSealed crée des enregistrements d'intégrité et un seul artefact humain
+canonique : le **SiteSealed Evidence Report PDF**. Le rapport affiche l'original,
+l'incorpore byte-for-byte comme fichier source associé, décrit la portée exacte
+de la preuve et rassemble les artefacts des deux rails externes.
 
-- un jeton RFC 3161 **Evidency Sandbox**, vérifié cryptographiquement mais sans
-  effet qualifié eIDAS ;
-- une racine Merkle écrite sur **Ethereum Mainnet (chain ID 1)** par le worker
-  horaire, avec une transaction au maximum par exécution.
+Cette version avance vers le whitepaper sans transformer une capacité web en
+promesse excessive. Elle introduit une classe de capture web liée à un compte,
+à un défi serveur frais, à une fenêtre temporelle et à une géolocalisation
+rapportée par le navigateur. Elle conserve l'import de fichiers préexistants
+comme classe distincte et explicitement moins probante.
 
-L'alpha.10.1 conserve l'admission par **Continue with Google** introduite en
-alpha.9. Il n'existe aucune variable
-`UPLOAD_ADMISSION_SECRET`, de champ « Deposit access » ni d'en-tête contenant
-un mot de passe opérateur.
+## Frontière probatoire essentielle
+
+Le navigateur peut imposer l'usage de `getUserMedia` dans l'interface officielle,
+mais il ne fournit pas à SiteSealed une attestation matérielle du capteur. Un
+client hostile peut appeler l'API autrement, simuler une caméra ou soumettre des
+coordonnées falsifiées. Par conséquent :
+
+- SiteSealed **prouve** l'identité byte-for-byte de l'original et du manifeste
+  avec leurs empreintes enregistrées ;
+- le serveur **atteste** qu'une session Google a obtenu un défi frais et a lié
+  les déclarations de contexte à une soumission dans la fenêtre admise ;
+- SiteSealed **ne prouve pas** que les pixels viennent d'un capteur physique, que
+  la scène n'est pas rejouée ou mise en scène, ni que la position du navigateur
+  correspond à une position GNSS authentifiée.
+
+Une photo de février 2024 ne devient donc jamais cryptographiquement « prise
+aujourd'hui » du seul fait de son upload. Dans la classe importée, sa date, son
+lieu et son auteur restent expressément non vérifiés. Dans la classe web live,
+le rapport montre les déclarations liées au défi, tout en affichant l'absence
+d'attestation matérielle. La cible complète du whitepaper — caméra native,
+attestation appareil, GNSS et horloge attestée, file hors ligne — reste une étape
+native ultérieure.
+
+## Deux classes qui ne se confondent jamais
+
+| Classe | Entrée | Contexte lié | Ce qui reste non prouvé |
+| --- | --- | --- | --- |
+| `LIVE_CAPTURE_WEB` | Image produite par la caméra intégrée à l'interface | Session Google pseudonymisée, défi serveur à usage unique, fenêtre de 2 minutes, horloge du navigateur, position W3C et précision | Capteur physique, intégrité du navigateur, GNSS matériel, scène non rejouée ou non mise en scène |
+| `IMPORTED_FILE` | Photo, PDF ou autre fichier préexistant | Heure de réception serveur et empreintes cryptographiques | Heure et lieu de capture, auteur, origine matérielle, véracité du contenu |
+
+Les métadonnées EXIF et la valeur locale `lastModified` ne sont jamais traitées
+comme une preuve de temps ou de lieu.
+
+## Flux `LIVE_CAPTURE_WEB`
+
+1. L'utilisateur continue avec Google ; SiteSealed crée une session opaque dans
+   Redis et ne conserve aucun jeton Google.
+2. L'interface ouvre la caméra avec `navigator.mediaDevices.getUserMedia`.
+3. Au clic de capture, `POST /api/capture/challenges` émet un secret aléatoire
+   lié au compte et au `submissionId`. La fenêtre de capture est de 2 minutes et
+   le claim Redis expire après 15 minutes.
+4. Le navigateur demande une position W3C, capture une frame JPEG et construit
+   un manifeste canonique contenant caméra, heure, défi, coordonnées et
+   précision. Les coordonnées précises restent dans ce manifeste chiffré.
+5. L'original et le manifeste sont hachés localement. Le manifeste et l'original
+   sont chiffrés en AES-256-GCM avant tout envoi ; la clé ne quitte pas le client.
+6. Le dépôt S3 exige toujours la session Google, le CSRF, le grant exact à usage
+   unique, les quotas Redis et la limite par IP/compte.
+7. La création du reçu réclame atomiquement le défi et vérifie compte,
+   soumission, empreintes, temps déclaré et contexte. Le secret du défi n'est
+   jamais persistant dans le reçu public.
+8. Le PDF est généré localement avec l'original exact et le manifeste privé. Le
+   générateur recalcule les deux empreintes et recoupe les champs du manifeste
+   avec le contexte attesté par le serveur avant de produire le rapport.
 
 ## Un seul artefact canonique
 
-Il n'existe plus de « reçu PDF public » séparé. Le serveur, qui ne possède que
-le ciphertext, refuse de fabriquer un PDF incomplet. Le rapport est généré dans
-le navigateur lors de sa création ou depuis le vérificateur, uniquement après
-sélection du fichier original et égalité de son SHA-256 avec le registre.
+Il n'existe aucune variante publique/privée du rapport. Le serveur, qui ne
+possède que du ciphertext, ne fabrique pas de PDF incomplet. Le navigateur crée
+le rapport uniquement avec l'original exact détenu localement.
 
-Le même PDF contient :
+Le PDF contient :
 
-- une représentation visible de l'original sur sa première page ;
-- l'original complet et inchangé comme fichier source associé au PDF ;
-- l'identifiant du record, les empreintes et la portée probatoire honnête ;
-- le bundle de preuve JSON, le manifeste machine du rapport et, s'il existe,
-  le jeton RFC 3161 `.tsr` comme pièces jointes incorporées ;
-- l'état courant d'Evidency Sandbox et d'Ethereum Mainnet au moment de l'export.
+- une représentation visible de l'original en page 1 ;
+- l'original complet et inchangé comme pièce source incorporée ;
+- l'identifiant, les empreintes et le bundle de preuve JSON ;
+- le manifeste machine du rapport ;
+- pour une capture live, le manifeste canonique et une page de contexte dédiée ;
+- le jeton RFC 3161 `.tsr` lorsqu'il existe ;
+- l'état courant d'Evidency Sandbox et d'Ethereum Mainnet au moment de l'export ;
+- trois rubriques séparées : prouvé, attesté/déclaré et non prouvé.
 
-Le rapport est donc confidentiel exactement dans la mesure où l'original l'est :
-quiconque reçoit le PDF peut voir et extraire le fichier original. Il n'existe
-aucune variante publique/privée du rapport. Le kit de récupération AES reste un
-secret séparé d'exploitation et n'est pas un second rapport de preuve.
+Le rapport est confidentiel exactement dans la mesure où l'original l'est :
+quiconque reçoit le PDF peut voir et extraire le fichier original. Le kit de
+récupération AES reste secret et séparé. Pour régénérer plus tard le rapport
+d'une capture live, le vérificateur demande l'original et ce kit ; ils sont lus
+uniquement dans le navigateur.
 
-## Frontière de sécurité de l'alpha.10.1
+## Dual rail : gel de non-régression
 
-Google Identity Services authentifie le compte avec un ID token OpenID Connect.
-Le serveur vérifie sa signature, son audience, son émetteur et l'adresse e-mail
-vérifiée, puis crée sa propre session opaque dans Redis :
+Le dual rail fonctionnel de `1.4.0-alpha.10.1` est volontairement inchangé :
 
-- cookie de session `HttpOnly`, `Secure` en HTTPS, `SameSite=Lax` et limité au
-  chemin `/` ;
-- jeton CSRF propre à SiteSealed pour toutes les mutations JSON ;
-- contrôle « double submit cookie » sur le retour Google ;
-- aucune conservation de l'ID token, d'un access token ou d'un refresh token ;
-- aucun accès aux API Google ; seuls `openid`, `email` et `profile` sont utilisés ;
-- le `sub` Google brut n'est pas exposé : un identifiant local SHA-256 séparé
-  par domaine lie la session, les grants et le quota.
+- Rail A : jeton RFC 3161 Evidency **Sandbox**, validation CMS, `ESSCertIDv2` et
+  chaîne vers la racine Sandbox épinglée ; ce jeton reste test-only et non
+  qualifié eIDAS.
+- Rail B : lot Merkle et transaction EIP-1559 auto-adressée sur **Ethereum
+  Mainnet (chain ID 1)**, avec vérification de l'adresse, du calldata, du reçu,
+  des confirmations et de la finalité.
 
-Le compte autorise uniquement la **création** d'un dépôt. Il ne prouve pas
-l'auteur du fichier et n'est pas ajouté au rapport. La consultation, le bundle
-brut, le jeton RFC 3161 et le vérificateur restent accessibles sans compte. La
-génération du rapport exige toujours l'original exact détenu localement.
+Les fichiers suivants restent byte-for-byte identiques à la version déployée :
 
-Si `GOOGLE_OAUTH_CLIENT_ID` manque ou est invalide, le serveur reste en ligne et
-la vérification publique continue de fonctionner. L'interface indique que la
-connexion Google n'est pas configurée et bloque seulement la création de records.
+- `.env.example`
+- `server/evidency.js`
+- `server/ethereum.js`
+- `server/rails-worker.js`
+- `railway.json`
+- `railway.rails.json`
 
-### Admission d'un objet chiffré
+Le contrôle peut être rejoué avec :
 
-Une limite par IP n'est pas une autorisation. L'alpha.10.1 cumule les barrières
-suivantes :
+```bash
+npm run verify:dual-rail-freeze
+```
 
-1. `POST /api/storage/upload-grants` exige une session Google valide et un
-   jeton CSRF SiteSealed ;
-2. Redis émet un grant aléatoire de 15 minutes lié au compte, au
-   `submissionId`, aux empreintes, à l'IV et aux tailles exactes ;
-3. le `PUT /api/storage/uploads/:submissionId` réclame atomiquement ce grant
-   **avant** qu'Express ne lise jusqu'à 25 Mio de corps ;
-4. un grant autorise un seul objet, ne peut pas être transféré à un autre
-   compte et ne déclenche qu'une seule écriture S3, même en concurrence ;
-5. les octets sont réservés atomiquement dans un plafond Redis par compte
-   (256 Mio/24 h par défaut) et un plafond global (2 048 Mio/24 h par défaut) ;
-6. les limites de 20/h par IP **et** par compte restent des défenses
-   supplémentaires.
+## Railway : aucune nouvelle variable et aucune valeur à remplacer
 
-Le ciphertext arrive sous `staging/v1.2/`. La création du reçu exige le même
-grant complété, promeut l'objet vérifié sous `sealed/v1.2/`, persiste le reçu,
-puis supprime le staging. Une panne S3 libère le claim pour une reprise exacte
-sans débiter une deuxième fois le quota.
+Cette version ne nécessite **aucune nouvelle variable Railway**. Conserver telles
+quelles toutes les variables et valeurs déjà opérationnelles du service web et
+du service `SiteSealed Rails`, notamment :
 
-Les Buckets Railway ne fournissant pas de règle Lifecycle utilisable par cette
-application, le worker horaire supprime uniquement les objets `staging/`
-orphelins et non finalisés âgés de plus de 24 heures. Il ne touche jamais à
-`sealed/`.
+- les identifiants Evidency Sandbox et leur endpoint ;
+- l'endpoint RPC Ethereum Mainnet, la clé du portefeuille, l'adresse attendue,
+  les plafonds de gas/frais, les confirmations et le mode actuellement validé ;
+- les références MySQL, PostgreSQL, Redis et S3 ;
+- la cadence cron horaire actuelle ;
+- `GOOGLE_OAUTH_CLIENT_ID` pour Google Identity Services.
 
-## Ce qui fonctionne réellement
+Ne pas ajouter `ETHEREUM_TARGET_RECORD_ID`. Ne pas réintroduire
+`UPLOAD_ADMISSION_SECRET`. Ne pas renommer le client Google en
+`GOOGLE_CLIENT_ID` et ne pas ajouter `GOOGLE_CLIENT_SECRET` : ce flux Google
+Identity Services vérifie l'ID token et n'appelle aucune API Google.
 
-- SHA-256 du fichier dans le navigateur ;
-- AES-256-GCM du manifeste et de l'original avant tout envoi ;
-- session de compte Google vérifiée, opaque et stockée côté serveur dans Redis ;
-- grant exact, à usage unique, lié au compte et réclamé avant lecture du corps ;
-- quotas Redis global et par compte, limites par IP et par compte ;
-- stockage du seul ciphertext dans un Bucket S3 privé ;
-- registre MySQL, audit PostgreSQL append-only hash-chaîné et coordination Redis ;
-- requête digest-only vers Evidency Sandbox ;
-- validation RFC 3161/CMS indépendante : empreinte, signature, `ESSCertIDv2`,
-  profil TSU et chemin X.509 vers la racine Sandbox épinglée ;
-- arbre Merkle avec séparation de domaine et preuve d'inclusion individuelle ;
-- transaction EIP-1559 auto-adressée dont le calldata contient `SSLD`, la
-  version 1 et la racine Merkle ;
-- contrôles du chain ID, de l'adresse attendue, du gas, du solde et des plafonds
-  de frais avant signature ;
-- persistance de la transaction signée avant diffusion, reprise idempotente et
-  contrôle on-chain jusqu'à `FINALIZED` ;
-- bundle JSON et jeton `.tsr` accessibles aux vérificateurs ;
-- Evidence Report PDF construit côté navigateur avec aperçu visible, original
-  exact, bundle, manifeste du rapport et jeton `.tsr` incorporés ;
-- lien Etherscan et vérificateur public ;
-- nettoyage borné des staging orphelins par le worker Railway horaire.
+## Stockage et admission
 
-Le serveur ne reçoit jamais l'original lisible, le manifeste lisible ou la clé
-AES. Evidency reçoit uniquement l'evidence digest. Ethereum reçoit uniquement
-une racine de lot. Google ne reçoit pas le fichier ni son empreinte.
+Une limite par IP n'est pas une autorisation. Le dépôt chiffré conserve les
+barrières existantes :
 
-## Machine d'état honnête
+1. session Google et CSRF pour émettre un grant ;
+2. grant Redis aléatoire de 15 minutes lié au compte et à l'objet exact ;
+3. claim atomique avant lecture du corps `PUT` ;
+4. une seule écriture pour un seul ciphertext ;
+5. plafond Redis par compte et plafond global en octets ;
+6. limites par IP et par compte ;
+7. staging S3 puis promotion sous `sealed/` seulement après création du reçu ;
+8. nettoyage horaire borné des staging orphelins de plus de 24 heures, sans
+   jamais toucher aux objets finalisés.
+
+## Persistance et compatibilité
+
+- Le protocole privé de dépôt reste `1.2`.
+- Les nouveaux reçus utilisent `sitesealed.receipt.v1.5-alpha.1`.
+- Les nouveaux bundles utilisent `sitesealed.proof-bundle.v1.5-alpha.1`.
+- Les reçus et schémas `v1.4-alpha.1` restent lisibles et servis.
+- La migration MySQL additive `006_context_bound_web_capture` ajoute
+  `capture_context JSON NULL` ; les anciens records restent valides.
+- PostgreSQL reste un audit applicatif interne et ne devient pas un troisième
+  rail probatoire.
+
+## État honnête des rails
 
 | État | Evidency | Ethereum | `sealed` |
 | --- | --- | --- | --- |
 | `EXTERNAL_PROOFS_PENDING` | absent | absent | `false` |
-| `SANDBOX_TIMESTAMP_ISSUED_ANCHOR_PENDING` | test sandbox | absent | `false` |
+| `SANDBOX_TIMESTAMP_ISSUED_ANCHOR_PENDING` | test Sandbox | absent | `false` |
 | `MAINNET_ANCHORED_QTSP_PENDING` | non qualifié/absent | finalisé | `false` |
-| `ALPHA_DUAL_RAIL_COMPLETE` | test sandbox | finalisé | `false` |
-| `DUAL_RAIL_COMPLETE` | qualifié + signature validée | finalisé | `true` |
+| `ALPHA_DUAL_RAIL_COMPLETE` | test Sandbox validé | finalisé | `false` |
+| `DUAL_RAIL_COMPLETE` | qualifié + validé | finalisé | `true` |
 
-L'alpha.10.1 ne peut pas atteindre la dernière ligne. Le mot `sealed` reste
-désactivé, car le Sandbox Evidency n'est pas un horodatage qualifié.
+Cette alpha ne peut pas atteindre la dernière ligne. Le mot `sealed` reste
+désactivé tant que le rail temps n'est pas un horodatage qualifié de production.
 
-| Indicateur Evidency | Signification |
-| --- | --- |
-| `OFF` | worker désactivé ou état récent absent |
-| `DRY RUN` | sélection sans appel externe |
-| `READY` | configuration chargée, aucun jeton validé récent |
-| `ON` | jeton sandbox reçu, vérifié et enregistré |
-| `ERROR` | dernière exécution en échec |
-
-| Indicateur Ethereum | Signification |
-| --- | --- |
-| `OFF` | worker Mainnet désactivé ou état récent absent |
-| `DRY RUN` | contrôles RPC/coût réussis, aucune signature |
-| `READY` | configuration chargée, aucune finalisation prouvée |
-| `SUBMITTED` | transaction exacte diffusée |
-| `CONFIRMED` | confirmations atteintes, finalité encore en attente |
-| `FINALIZED` | sender, destinataire, calldata, receipt et bloc finalisé vérifiés |
-| `ERROR` | exécution arrêtée sans signer une autre transaction |
-
-## Responsabilités
-
-| Composant | Rôle | Original lisible |
-| --- | --- | --- |
-| MySQL | Reçus, preuves externes et lots Merkle | Non |
-| Bucket S3 | Ciphertexts AES-256-GCM | Non |
-| PostgreSQL | Audit applicatif interne hash-chaîné | Non |
-| Redis | Sessions, grants, quotas, limites, verrous, cache et état des rails | Non |
-| Google Identity Services | Authentification du compte de dépôt | Non |
-| Evidency Sandbox | Jeton RFC 3161 de test | Non, digest seulement |
-| Ethereum Mainnet | Racine Merkle publique | Non, racine seulement |
-
-Le protocole privé de dépôt reste `1.2` et le schéma public reste
-`1.4-alpha.1` afin de préserver la compatibilité des preuves et kits existants.
-L'alpha.10.1 ne modifie pas le schéma MySQL.
-
-## Développement et tests
+## Développement et vérification
 
 ```bash
 npm ci
 npm test
+npm run verify:dual-rail-freeze
 ```
 
-Sans Google configuré, le développement local permet toujours la consultation
-et la vérification. Pour tester la création de record, créer un client OAuth Web
-Google autorisant l'origine locale et définir dans `.env` :
+Pour un développement local avec création de records :
 
 ```text
 PUBLIC_BASE_URL=http://localhost:5173
@@ -182,150 +188,29 @@ GOOGLE_OAUTH_CLIENT_ID=<client Web>.apps.googleusercontent.com
 AUTH_SESSION_TTL_HOURS=168
 ```
 
-Le reverse proxy de développement doit acheminer `/api` vers le serveur. Aucun
-Google client secret n'est utilisé.
-
-Pour vérifier un bundle hors du site :
+Pour vérifier les artefacts hors du site :
 
 ```bash
 npm run verify:bundle -- ./proof-bundle.json ./original.pdf ./encrypted-original.ssenc
+npm run verify:timestamp -- --token ./timestamp.tsr --digest <evidenceDigest>
 ```
 
-Pour vérifier le jeton RFC 3161 indépendamment :
-
-```bash
-npm run verify:timestamp -- \
-  --token ./SiteSealed_record_Evidency_SANDBOX.tsr \
-  --digest <evidenceDigest-du-bundle>
-```
-
-## Configuration Google Cloud
-
-Dans le projet Google Cloud qui doit porter la connexion :
-
-1. ouvrir **Google Auth Platform** et configurer Branding/Audience pour
-   l'application ;
-2. dans **Clients**, créer un **OAuth client ID** de type **Web application** ;
-3. ajouter l'origine JavaScript autorisée exacte :
-   `https://app.sitesealed.com` ;
-4. ajouter l'URI de redirection autorisée exacte :
-   `https://app.sitesealed.com/api/auth/google/callback` ;
-5. copier uniquement le **Client ID** dans Railway sous
-   `GOOGLE_OAUTH_CLIENT_ID`.
-
-Ne crée pas et ne copie pas de Google client secret pour ce flux : SiteSealed
-utilise le bouton Google Identity Services et vérifie l'ID token côté serveur,
-sans appeler une API Google.
-
-## Déploiement Railway
-
-Le projet contient le service web `SiteSealed`, MySQL, Bucket S3, Postgres,
-Redis et le service cron séparé `SiteSealed Rails`.
-
-### Service web `SiteSealed`
-
-Conserver `/railway.json` comme chemin de configuration et définir :
-
-```text
-DATABASE_MODE=required
-MYSQL_URL=${{MySQL.MYSQL_URL}}
-DATABASE_URL=${{Postgres.DATABASE_URL}}
-REDIS_URL=${{Redis.REDIS_URL}}
-
-PUBLIC_BASE_URL=https://app.sitesealed.com
-GOOGLE_OAUTH_CLIENT_ID=<client Web>.apps.googleusercontent.com
-AUTH_SESSION_TTL_HOURS=168
-SEAL_RATE_LIMIT_PER_HOUR=20
-UPLOAD_GRANT_TTL_SECONDS=900
-STORAGE_ADMISSION_MB_PER_DAY=2048
-STORAGE_ADMISSION_MB_PER_USER_PER_DAY=256
-
-S3_ACCESS_KEY=${{"Bucket S3".ACCESS_KEY_ID}}
-S3_BUCKET=${{"Bucket S3".BUCKET}}
-S3_ENDPOINT=${{"Bucket S3".ENDPOINT}}
-S3_REGION=${{"Bucket S3".REGION}}
-S3_SECRET_KEY=${{"Bucket S3".SECRET_ACCESS_KEY}}
-```
-
-Il ne faut définir ni `UPLOAD_ADMISSION_SECRET`, ni Google client secret dans
-Railway. `GOOGLE_CLIENT_ID` et `GOOGLE_CLIENT_SECRET` ne sont pas lus par cette
-version : seule `GOOGLE_OAUTH_CLIENT_ID` est attendue. Les secrets Evidency et
-Ethereum restent exclusivement dans le worker.
-
-### Service cron `SiteSealed Rails`
-
-Définir `/railway.rails.json` comme chemin de configuration. Après validation
-manuelle, utiliser `0 * * * *` comme cron (une exécution au début de chaque
-heure, UTC). Le processus traite les files, vérifie les transactions déjà
-soumises, nettoie les staging expirés, puis se termine.
-
-```text
-DATABASE_MODE=required
-MYSQL_URL=${{MySQL.MYSQL_URL}}
-DATABASE_URL=${{Postgres.DATABASE_URL}}
-REDIS_URL=${{Redis.REDIS_URL}}
-
-S3_ACCESS_KEY=${{"Bucket S3".ACCESS_KEY_ID}}
-S3_BUCKET=${{"Bucket S3".BUCKET}}
-S3_ENDPOINT=${{"Bucket S3".ENDPOINT}}
-S3_REGION=${{"Bucket S3".REGION}}
-S3_SECRET_KEY=${{"Bucket S3".SECRET_ACCESS_KEY}}
-STAGING_OBJECT_TTL_HOURS=24
-STAGING_REAPER_MAX_OBJECTS=1000
-
-EVIDENCY_MODE=sandbox
-EVIDENCY_API_BASE_URL=https://api-sandbox.evidency.io
-EVIDENCY_API_KEY=<secret Railway>
-EVIDENCY_PROJECT_KEY=<clé du projet Sandbox>
-EVIDENCY_TIMEOUT_MS=12000
-EVIDENCY_BATCH_SIZE=50
-EVIDENCY_TARGET_RECORD_ID=
-EVIDENCY_DRY_RUN=false
-EVIDENCY_MAX_REQUESTS_PER_RUN=1
-EVIDENCY_RUNTIME_STATUS_TTL_SECONDS=90000
-
-ETHEREUM_ANCHOR_MODE=mainnet
-ETHEREUM_RPC_URL=<endpoint WSS Ethereum Mainnet>
-ETHEREUM_ANCHOR_PRIVATE_KEY=<secret Railway>
-ETHEREUM_EXPECTED_ANCHOR_ADDRESS=<adresse publique du portefeuille dédié>
-ETHEREUM_DRY_RUN=true
-ETHEREUM_MAX_TRANSACTIONS_PER_RUN=1
-ETHEREUM_CONFIRMATIONS=12
-ETHEREUM_MAX_FEE_GWEI=5
-ETHEREUM_MAX_TX_FEE_ETH=0.00015
-ETHEREUM_GAS_LIMIT=30000
-ANCHOR_MAX_BATCH_SIZE=1024
-ETHEREUM_RUNTIME_STATUS_TTL_SECONDS=90000
-```
-
-`ETHEREUM_TARGET_RECORD_ID` doit rester absent : la sélection est automatique.
-Un seul endpoint RPC opérationnel est requis. Le portefeuille doit être dédié,
-peu approvisionné et sans autre usage. Le cron horaire groupe jusqu'à 1 024
-reçus dans une racine et n'autorise qu'une transaction par exécution ; il ne
-dépense donc pas des ETH toutes les 15 minutes.
-
-Pour la première mise en service, conserver `ETHEREUM_DRY_RUN=true`, lancer le
-worker manuellement et vérifier `transactionsSigned: 0` et
-`transactionsBroadcast: 0`. Passer ensuite une seule fois à `false`, noter le
-`transactionHash`, puis relancer le même worker jusqu'à `FINALIZED`. Activer le
-cron horaire seulement après ce contrôle.
-
-Une transaction déjà `SIGNED` ou `SUBMITTED` est reprise à l'identique. Le
-worker ne crée pas de remplacement et n'augmente pas automatiquement les frais.
-Une transaction encore dans le mempool reste `SUBMITTED` tant qu'aucun reçu de
-bloc n'existe : ses champs transitoires ne peuvent plus provoquer un faux
-`INVALID_ON_CHAIN`. Un lot précédemment classé ainsi reste réinspectable et peut
-passer à `FINALIZED` sans nouvelle signature, diffusion ou dépense d'ETH.
-
-## Limites restantes
+## Limites restantes et prochaine frontière du whitepaper
 
 - Evidency Sandbox n'a aucune valeur qualifiée eIDAS ;
 - révocation CRL/OCSP : `NOT_CHECKED` ;
-- pas de capture in-app attestée, de confiance appareil ou de GNSS ;
-- la connexion Google autorise le dépôt mais ne prouve ni l'auteur ni la scène ;
+- aucune attestation matérielle de caméra, appareil ou GNSS dans un navigateur ;
+- aucune protection absolue contre image rejouée, caméra virtuelle, écran
+  photographié ou scène mise en scène ;
+- pas encore de capture vidéo, file hors ligne ou double temps attesté hors ligne ;
+- la session Google lie un compte pseudonymisé, mais ne prouve pas l'identité
+  civile de l'opérateur ni l'auteur intellectuel du contenu ;
 - le PDF contient l'original en clair et doit être distribué en conséquence ;
-- pas de preuve de véracité ou de scène non mise en scène ;
 - pas encore d'audit de sécurité indépendant ni de politique institutionnelle
   de gestion des clés.
 
-L'alpha prouve ce qu'elle peut recalculer et expose explicitement tout le reste.
+L'étape suivante conforme au whitepaper est une application native : caméra
+verrouillée sans galerie pour la classe live, attestation matérielle de clé et
+d'appareil, GNSS/horloge attestés et file hors ligne affichant séparément temps
+de capture et temps de qualification. La version web actuelle prépare ce modèle
+de données sans prétendre l'avoir déjà atteint.

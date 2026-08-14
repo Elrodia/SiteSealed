@@ -4,9 +4,9 @@ import {
   StandardFonts,
   rgb,
 } from "pdf-lib";
-import { sha256File } from "./sealing.js";
+import { sha256CanonicalJson, sha256File } from "./sealing.js";
 
-const RELEASE = "1.4.0-alpha.10.1";
+const RELEASE = "1.5.0-alpha.1";
 const PAGE_WIDTH = 612;
 const PAGE_HEIGHT = 792;
 const COLORS = {
@@ -150,7 +150,7 @@ function reportState(verification) {
   return "EXTERNAL PROOFS PENDING";
 }
 
-function drawHeader(page, fonts, recordId, state, pageNumber) {
+function drawHeader(page, fonts, recordId, state, pageNumber, totalPages) {
   page.drawRectangle({
     x: 0,
     y: 700,
@@ -210,7 +210,7 @@ function drawHeader(page, fonts, recordId, state, pageNumber) {
     size: 6.4,
     color: COLORS.amber,
   });
-  page.drawText(`PAGE ${pageNumber} / 2`, {
+  page.drawText(`PAGE ${pageNumber} / ${totalPages}`, {
     x: 520,
     y: 710,
     font: fonts.regular,
@@ -398,8 +398,228 @@ function drawRailCard(page, fonts, {
   });
 }
 
+function validateLiveCaptureManifest(record, captureManifest, originalFile) {
+  const capture = captureManifest?.capture;
+  const context = record?.captureContext ?? record?.receipt?.captureContext;
+  const location = capture?.location;
+  if (
+    captureManifest?.schemaVersion !==
+      "sitesealed.capture-manifest.v1.5-alpha.1" ||
+    captureManifest?.recordClass !== "LIVE_CAPTURE_WEB" ||
+    !capture ||
+    !context ||
+    !location
+  ) {
+    throw new Error(
+      "Evidence Report refused: the capture manifest is missing its live-capture context.",
+    );
+  }
+
+  const exactPairs = [
+    [capture.challenge?.challengeId, context.challengeId, "challenge identifier"],
+    [capture.challenge?.issuedAt, context.challengeIssuedAt, "challenge issue time"],
+    [
+      capture.challenge?.captureExpiresAt,
+      context.challengeCaptureExpiresAt,
+      "challenge expiry",
+    ],
+    [capture.capturedAtDevice, context.capturedAt, "claimed capture time"],
+    [capture.location?.measuredAtDevice, context.location?.measuredAt, "location time"],
+    [capture.camera?.facingMode, context.cameraFacingMode, "camera mode"],
+  ];
+  for (const [manifestValue, receiptValue, label] of exactPairs) {
+    if (!manifestValue || manifestValue !== receiptValue) {
+      throw new Error(
+        `Evidence Report refused: the manifest ${label} does not match the server receipt.`,
+      );
+    }
+  }
+
+  if (
+    Number(location.accuracyMeters) !==
+      Number(context.location?.accuracyMeters) ||
+    location.attestation !==
+      "BROWSER_GEOLOCATION_NOT_HARDWARE_ATTESTED" ||
+    capture.device?.attestation !== "NOT_AVAILABLE_WEB_ALPHA" ||
+    capture.time?.attestation !== "SERVER_CHALLENGE_WINDOW" ||
+    capture.challenge?.timeAuthority !== "SITESEALED_SERVER_CHALLENGE"
+  ) {
+    throw new Error(
+      "Evidence Report refused: the manifest's capture limitations or accuracy do not match the server receipt.",
+    );
+  }
+
+  const latitude = Number(location.latitude);
+  const longitude = Number(location.longitude);
+  if (
+    !Number.isFinite(latitude) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    !Number.isFinite(longitude) ||
+    longitude < -180 ||
+    longitude > 180
+  ) {
+    throw new Error(
+      "Evidence Report refused: the capture manifest contains invalid browser-reported coordinates.",
+    );
+  }
+  if (
+    Number(captureManifest.file?.size) !== Number(originalFile.size) ||
+    captureManifest.file?.name !== originalFile.name
+  ) {
+    throw new Error(
+      "Evidence Report refused: the capture manifest does not describe the selected original file.",
+    );
+  }
+}
+
+function drawCaptureContextPage(page, fonts, record, captureManifest, verification) {
+  const capture = captureManifest.capture ?? {};
+  const location = capture.location ?? {};
+  const context = record.captureContext ?? record.receipt?.captureContext ?? {};
+  const capturedAt = capture.capturedAtDevice ?? context.capturedAt;
+  const receivedGapSeconds = Math.max(
+    0,
+    Math.round((Date.parse(record.receivedAt) - Date.parse(capturedAt)) / 1000),
+  );
+  const coordinates =
+    Number.isFinite(Number(location.latitude)) &&
+    Number.isFinite(Number(location.longitude))
+      ? `${Number(location.latitude).toFixed(6)}, ${Number(location.longitude).toFixed(6)}`
+      : "Unavailable";
+
+  drawSection(page, fonts, "5", "SERVER-BOUND CAPTURE CLAIMS", 672);
+  page.drawRectangle({
+    x: 40,
+    y: 610,
+    width: 532,
+    height: 38,
+    color: COLORS.greenSoft,
+    borderColor: COLORS.green,
+    borderWidth: 1,
+  });
+  page.drawText("CONTEXT-BOUND WEB CAMERA WORKFLOW", {
+    x: 53,
+    y: 632,
+    font: fonts.bold,
+    size: 8,
+    color: COLORS.green,
+  });
+  page.drawText("Fresh server challenge and browser context bound to the manifest; no sensor or GNSS attestation.", {
+    x: 53,
+    y: 618,
+    font: fonts.regular,
+    size: 6.5,
+    color: COLORS.ink,
+  });
+
+  labelValue(page, fonts, "Claimed capture time", formatUtc(capturedAt), 40, 581, 246);
+  labelValue(page, fonts, "Server receipt time", formatUtc(record.receivedAt), 315, 581, 257);
+  labelValue(page, fonts, "Challenge issued", formatUtc(context.challengeIssuedAt), 40, 528, 246);
+  labelValue(page, fonts, "Capture window ended", formatUtc(context.challengeCaptureExpiresAt), 315, 528, 257);
+  labelValue(page, fonts, "Capture-to-receipt gap", `${receivedGapSeconds} seconds`, 40, 475, 246);
+  labelValue(
+    page,
+    fonts,
+    "Pseudonymous Google account reference",
+    context.account?.accountReference || "Unavailable",
+    315,
+    475,
+    257,
+    { mono: true },
+  );
+
+  drawSection(page, fonts, "6", "BROWSER LOCATION BOUND INSIDE THE MANIFEST", 415);
+  page.drawRectangle({
+    x: 40,
+    y: 309,
+    width: 532,
+    height: 78,
+    color: COLORS.paper,
+    borderColor: COLORS.line,
+    borderWidth: 1,
+  });
+  labelValue(page, fonts, "Browser-reported coordinates", coordinates, 53, 365, 236, { mono: true });
+  labelValue(
+    page,
+    fonts,
+    "Accuracy / measured",
+    `+/- ${Math.round(Number(location.accuracyMeters ?? 0))} m | ${formatUtc(location.measuredAtDevice)}`,
+    315,
+    365,
+    244,
+  );
+  page.drawText("SOURCE: W3C GEOLOCATION - BROWSER REPORTED - NOT HARDWARE ATTESTED", {
+    x: 53,
+    y: 323,
+    font: fonts.bold,
+    size: 6.1,
+    color: COLORS.red,
+  });
+
+  drawSection(page, fonts, "7", "HONEST SCOPE", 278);
+  page.drawRectangle({
+    x: 40,
+    y: 63,
+    width: 532,
+    height: 187,
+    color: COLORS.paper,
+    borderColor: COLORS.line,
+    borderWidth: 1,
+  });
+  page.drawText("CRYPTOGRAPHICALLY PROVEN", {
+    x: 53,
+    y: 226,
+    font: fonts.bold,
+    size: 6.8,
+    color: COLORS.green,
+  });
+  drawWrapped(page, verification?.scope?.proves, {
+    x: 53,
+    y: 211,
+    width: 506,
+    font: fonts.regular,
+    size: 6.3,
+    lineHeight: 7.6,
+    maxLines: 5,
+  });
+  page.drawText("SERVER-BOUND CLIENT CLAIMS", {
+    x: 53,
+    y: 166,
+    font: fonts.bold,
+    size: 6.8,
+    color: COLORS.amber,
+  });
+  drawWrapped(page, verification?.scope?.attests, {
+    x: 53,
+    y: 151,
+    width: 506,
+    font: fonts.regular,
+    size: 6.3,
+    lineHeight: 7.6,
+    maxLines: 5,
+  });
+  page.drawText("NOT PROVEN / NOT CLAIMED", {
+    x: 53,
+    y: 106,
+    font: fonts.bold,
+    size: 6.8,
+    color: COLORS.red,
+  });
+  drawWrapped(page, verification?.scope?.doesNotProve, {
+    x: 53,
+    y: 91,
+    width: 506,
+    font: fonts.regular,
+    size: 6.1,
+    lineHeight: 7.3,
+    maxLines: 4,
+  });
+}
+
 export async function generateSiteSealedEvidenceReport({
   originalFile,
+  captureManifest = null,
   verification,
   proofBundle,
   timestampToken = null,
@@ -416,6 +636,25 @@ export async function generateSiteSealedEvidenceReport({
   const calculatedSha256 = await sha256File(originalFile);
   if (calculatedSha256 !== String(record.sha256).toLowerCase()) {
     throw new Error("Evidence Report refused: the selected original does not match the recorded SHA-256.");
+  }
+  const liveCapture = record.recordClass === "LIVE_CAPTURE_WEB";
+  if (liveCapture && !captureManifest) {
+    throw new Error(
+      "Evidence Report refused: a live capture requires its private canonical capture manifest.",
+    );
+  }
+  let calculatedManifestSha256 = null;
+  if (captureManifest) {
+    calculatedManifestSha256 = await sha256CanonicalJson(captureManifest);
+    if (
+      calculatedManifestSha256 !==
+      String(record.manifestSha256 ?? "").toLowerCase()
+    ) {
+      throw new Error(
+        "Evidence Report refused: the supplied capture manifest does not match the recorded SHA-256.",
+      );
+    }
+    if (liveCapture) validateLiveCaptureManifest(record, captureManifest, originalFile);
   }
 
   const originalBytes = new Uint8Array(await originalFile.arrayBuffer());
@@ -436,12 +675,16 @@ export async function generateSiteSealedEvidenceReport({
     mono: await pdf.embedFont(StandardFonts.Courier),
   };
   const state = reportState(verification);
+  const totalPages = liveCapture ? 3 : 2;
   const pageOne = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
   const pageTwo = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-  drawHeader(pageOne, fonts, record.recordId, state, 1);
-  drawHeader(pageTwo, fonts, record.recordId, state, 2);
+  const pageThree = liveCapture ? pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT]) : null;
+  drawHeader(pageOne, fonts, record.recordId, state, 1, totalPages);
+  drawHeader(pageTwo, fonts, record.recordId, state, 2, totalPages);
+  if (pageThree) drawHeader(pageThree, fonts, record.recordId, state, 3, totalPages);
   drawFooter(pageOne, fonts);
   drawFooter(pageTwo, fonts);
+  if (pageThree) drawFooter(pageThree, fonts);
 
   drawSection(pageOne, fonts, "1", "ORIGINAL RECORD", 672);
   pageOne.drawRectangle({
@@ -477,6 +720,26 @@ export async function generateSiteSealedEvidenceReport({
       maxLines: 3,
     });
   }
+  pageOne.drawRectangle({
+    x: 47,
+    y: 610,
+    width: 518,
+    height: 23,
+    color: liveCapture ? COLORS.navy : COLORS.red,
+    opacity: 0.94,
+  });
+  pageOne.drawText(
+    liveCapture
+      ? "CONTEXT-BOUND WEB CAPTURE - NO HARDWARE DEVICE ATTESTATION"
+      : "IMPORTED FILE - CAPTURE TIME, LOCATION AND AUTHOR UNVERIFIED",
+    {
+      x: 58,
+      y: 618,
+      font: fonts.bold,
+      size: 7.3,
+      color: COLORS.white,
+    },
+  );
 
   const sourceName = attachmentName(
     `SiteSealed_ORIGINAL_${originalFile.name || "uploaded-file"}`,
@@ -644,14 +907,30 @@ export async function generateSiteSealedEvidenceReport({
     maxLines: 3,
   });
 
+  if (pageThree) {
+    drawCaptureContextPage(
+      pageThree,
+      fonts,
+      record,
+      captureManifest,
+      verification,
+    );
+  }
+
   const proofName = attachmentName(
     `SiteSealed_${record.recordId}_proof-bundle.json`,
     "SiteSealed_proof-bundle.json",
   );
   const proofJson = `${JSON.stringify(proofBundle ?? verification, null, 2)}\n`;
   const proofBytes = new TextEncoder().encode(proofJson);
+  const captureManifestName = captureManifest
+    ? `SiteSealed_${record.recordId}_capture-manifest.json`
+    : null;
+  const captureManifestBytes = captureManifest
+    ? new TextEncoder().encode(`${JSON.stringify(captureManifest, null, 2)}\n`)
+    : null;
   const reportManifest = {
-    schemaVersion: "sitesealed.evidence-report-manifest.v1",
+    schemaVersion: "sitesealed.evidence-report-manifest.v1.5-alpha.1",
     generatorVersion: RELEASE,
     generatedAt: reportTime.toISOString(),
     recordId: record.recordId,
@@ -664,6 +943,13 @@ export async function generateSiteSealedEvidenceReport({
       byteIdentityVerified: true,
     },
     proofBundle: { attachmentName: proofName },
+    captureManifest: captureManifestName
+      ? {
+          attachmentName: captureManifestName,
+          sha256: calculatedManifestSha256,
+          recordClass: captureManifest.recordClass,
+        }
+      : null,
     timestampToken: timestampToken
       ? {
           attachmentName: `SiteSealed_${record.recordId}_timestamp.tsr`,
@@ -676,10 +962,7 @@ export async function generateSiteSealedEvidenceReport({
   await pdf.attach(originalBytes, sourceName, {
     mimeType: originalFile.type || "application/octet-stream",
     description: "Exact byte-for-byte original bound to the recorded SiteSealed SHA-256 digest",
-    creationDate:
-      Number(originalFile.lastModified) > 0
-        ? new Date(originalFile.lastModified)
-        : reportTime,
+    creationDate: reportTime,
     modificationDate: reportTime,
     afRelationship: AFRelationship.Source,
   });
@@ -690,6 +973,15 @@ export async function generateSiteSealedEvidenceReport({
     modificationDate: reportTime,
     afRelationship: AFRelationship.Data,
   });
+  if (captureManifestBytes && captureManifestName) {
+    await pdf.attach(captureManifestBytes, captureManifestName, {
+      mimeType: "application/json",
+      description: "Canonical client-held capture manifest bound by the recorded manifest SHA-256",
+      creationDate: reportTime,
+      modificationDate: reportTime,
+      afRelationship: AFRelationship.Data,
+    });
+  }
   await pdf.attach(
     new TextEncoder().encode(`${JSON.stringify(reportManifest, null, 2)}\n`),
     manifestName,

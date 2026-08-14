@@ -719,6 +719,15 @@
 }
 
 @media (max-width: 600px) {
+  .capture-mode {
+    padding-inline: 18px;
+    grid-template-columns: 1fr;
+  }
+
+  .capture-mode small {
+    white-space: normal;
+  }
+
   .infrastructure-status__heading {
     align-items: flex-start;
     flex-direction: column;
@@ -804,6 +813,10 @@
   }
 
   .local-file-check {
+    grid-template-columns: 1fr;
+  }
+
+  .local-file-check--manifest {
     grid-template-columns: 1fr;
   }
 

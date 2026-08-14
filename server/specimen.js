@@ -6,6 +6,7 @@ import {
   createProofBundle,
   qualifiedRailFromProof,
   scopeForRecord,
+  stableStringify,
 } from "./records.js";
 
 export const SPECIMEN_ID = "SR-2026-08-0147-A3";
@@ -86,12 +87,15 @@ export function createMemoryRecordStore() {
       if (existingId) {
         const existing = entries.get(existingId);
         if (
+          existing.record.recordClass !== input.recordClass ||
           existing.record.sha256 !== input.recordSha256 ||
           existing.record.manifestSha256 !== input.manifestSha256 ||
           existing.encryptedObject?.ciphertextSha256 !==
             input.encryptedObject.ciphertextSha256 ||
           existing.encryptedObject?.recoveryTokenSha256 !==
-            input.encryptedObject.recoveryTokenSha256
+            input.encryptedObject.recoveryTokenSha256 ||
+          stableStringify(existing.record.captureContext ?? null) !==
+            stableStringify(input.captureContext ?? null)
         ) {
           throw new ApiError(
             409,

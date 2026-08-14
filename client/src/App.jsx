@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
+  buildLiveCaptureManifest,
   buildManifest,
+  createCaptureProof,
   createEncryptedUploadHeaders,
   createPrivateRecoveryKit,
   createRecoveryToken,
@@ -20,7 +22,7 @@ const pipeline = [
   {
     number: "01",
     title: "Capture",
-    detail: "In-app camera, device attestation, satellite position and trusted time context.",
+    detail: "In-app web camera, fresh server challenge and browser geolocation; hardware attestation remains a native-app milestone.",
     meta: "Lens",
     icon: "camera",
   },
@@ -418,7 +420,11 @@ async function readApiJson(response) {
   }
 }
 
-async function generateAndDownloadEvidenceReport(originalFile, recordId) {
+async function generateAndDownloadEvidenceReport(
+  originalFile,
+  recordId,
+  captureManifest = null,
+) {
   if (!originalFile) {
     throw new Error("Select the exact original before generating the Evidence Report.");
   }
@@ -456,6 +462,7 @@ async function generateAndDownloadEvidenceReport(originalFile, recordId) {
   } = await import("./evidence-report.js");
   const bytes = await generateSiteSealedEvidenceReport({
     originalFile,
+    captureManifest,
     verification,
     proofBundle,
     timestampToken,
@@ -658,11 +665,57 @@ function GoogleAccountAccess({ auth, onLogout }) {
   );
 }
 
+function browserPosition() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error("This browser does not expose geolocation."));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(resolve, reject, {
+      enableHighAccuracy: true,
+      timeout: 15_000,
+      maximumAge: 0,
+    });
+  });
+}
+
+function stopMediaStream(stream) {
+  for (const track of stream?.getTracks?.() ?? []) track.stop();
+}
+
+function canvasJpegBlob(video) {
+  if (!video?.videoWidth || !video?.videoHeight) {
+    return Promise.reject(new Error("The camera is not ready to capture a frame."));
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const context = canvas.getContext("2d", { alpha: false });
+  if (!context) {
+    return Promise.reject(new Error("The browser could not initialize the capture canvas."));
+  }
+  context.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => blob ? resolve(blob) : reject(new Error("The camera frame could not be encoded.")),
+      "image/jpeg",
+      0.95,
+    );
+  });
+}
+
 function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
   const fileInputId = useId();
   const projectInputId = useId();
   const descriptionInputId = useId();
+  const [workflowMode, setWorkflowMode] = useState("live");
   const [file, setFile] = useState(null);
+  const [captureContext, setCaptureContext] = useState(null);
+  const [capturePreviewUrl, setCapturePreviewUrl] = useState("");
+  const [cameraStream, setCameraStream] = useState(null);
+  const [cameraStatus, setCameraStatus] = useState("idle");
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
   const [projectReference, setProjectReference] = useState("");
   const [description, setDescription] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
@@ -679,9 +732,19 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
     preparedAttemptRef.current = null;
   }, [auth.user?.id]);
 
-  const selectFile = (event) => {
-    const nextFile = event.target.files?.[0] ?? null;
-    setFile(nextFile);
+  useEffect(() => {
+    if (!videoRef.current || !cameraStream) return;
+    videoRef.current.srcObject = cameraStream;
+    videoRef.current.play().catch(() => {});
+  }, [cameraStream]);
+
+  useEffect(() => () => stopMediaStream(streamRef.current), []);
+
+  useEffect(() => () => {
+    if (capturePreviewUrl) URL.revokeObjectURL(capturePreviewUrl);
+  }, [capturePreviewUrl]);
+
+  const resetOutput = () => {
     setStatus("idle");
     setMessage("");
     setResult(null);
@@ -689,7 +752,150 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
     setBackupStatus("idle");
     setReportStatus("idle");
     preparedAttemptRef.current = null;
+  };
+
+  const changeWorkflowMode = (nextMode) => {
+    stopMediaStream(streamRef.current);
+    streamRef.current = null;
+    setCameraStream(null);
+    setCameraStatus("idle");
+    setWorkflowMode(nextMode);
+    setFile(null);
+    setCaptureContext(null);
+    setCapturePreviewUrl("");
+    setAcknowledged(false);
+    resetOutput();
     setSubmissionId(createRandomUuid());
+  };
+
+  const selectFile = (event) => {
+    const nextFile = event.target.files?.[0] ?? null;
+    setFile(nextFile);
+    setCaptureContext(null);
+    setCapturePreviewUrl("");
+    resetOutput();
+    setSubmissionId(createRandomUuid());
+  };
+
+  const startCamera = async () => {
+    resetOutput();
+    if (!auth.authenticated || !auth.csrfToken) {
+      setStatus("error");
+      setMessage("Continue with Google before opening the SiteSealed camera.");
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setStatus("error");
+      setMessage("This browser cannot provide the in-app camera required for a live capture.");
+      return;
+    }
+    setFile(null);
+    setCaptureContext(null);
+    setCapturePreviewUrl("");
+    setSubmissionId(createRandomUuid());
+    setCameraStatus("starting");
+    try {
+      stopMediaStream(streamRef.current);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 2560 },
+          height: { ideal: 1440 },
+        },
+      });
+      streamRef.current = stream;
+      setCameraStream(stream);
+      setCameraStatus("ready");
+    } catch (error) {
+      setCameraStatus("error");
+      setStatus("error");
+      setMessage(
+        error instanceof Error
+          ? `Camera access failed: ${error.message}`
+          : "Camera access failed.",
+      );
+    }
+  };
+
+  const captureNow = async () => {
+    if (!cameraStream || !videoRef.current || !auth.csrfToken) return;
+    setCameraStatus("capturing");
+    setMessage("");
+    try {
+      const challengeResponse = await fetch("/api/capture/challenges", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-sitesealed-csrf": auth.csrfToken,
+        },
+        body: JSON.stringify({ submissionId }),
+      });
+      const challengePayload = await readApiJson(challengeResponse);
+      const challengeReceivedAt = Date.now();
+      if (!challengeResponse.ok) {
+        if (challengeResponse.status === 401) await onAuthRefresh();
+        throw new Error(
+          challengePayload.message || "A fresh capture challenge could not be issued.",
+        );
+      }
+
+      const capturedAt = new Date().toISOString();
+      if (Date.parse(capturedAt) > Date.parse(challengePayload.captureExpiresAt)) {
+        throw new Error("The fresh capture window expired. Capture the photograph again.");
+      }
+      const [blob, position] = await Promise.all([
+        canvasJpegBlob(videoRef.current),
+        browserPosition(),
+      ]);
+      const trackSettings = cameraStream.getVideoTracks()[0]?.getSettings?.() ?? {};
+      const safeTimestamp = capturedAt.replaceAll(":", "-").replace(".000Z", "Z");
+      const capturedFile = new File(
+        [blob],
+        `SiteSealed_CAPTURE_${safeTimestamp}.jpg`,
+        { type: "image/jpeg", lastModified: Date.parse(capturedAt) },
+      );
+      const nextCaptureContext = {
+        challenge: challengePayload.challenge,
+        challengeId: challengePayload.challengeId,
+        issuedAt: challengePayload.issuedAt,
+        captureExpiresAt: challengePayload.captureExpiresAt,
+        capturedAt,
+        clockDeltaMs:
+          challengeReceivedAt - Date.parse(challengePayload.issuedAt),
+        cameraFacingMode: ["environment", "user"].includes(trackSettings.facingMode)
+          ? trackSettings.facingMode
+          : "unknown",
+        width: Number(trackSettings.width || videoRef.current.videoWidth),
+        height: Number(trackSettings.height || videoRef.current.videoHeight),
+        location: {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracyMeters: position.coords.accuracy,
+          altitudeMeters: position.coords.altitude ?? null,
+          altitudeAccuracyMeters: position.coords.altitudeAccuracy ?? null,
+          headingDegrees: position.coords.heading ?? null,
+          speedMetersPerSecond: position.coords.speed ?? null,
+          measuredAt: new Date(position.timestamp).toISOString(),
+        },
+      };
+      setFile(capturedFile);
+      setCaptureContext(nextCaptureContext);
+      setCapturePreviewUrl(URL.createObjectURL(capturedFile));
+      preparedAttemptRef.current = null;
+      stopMediaStream(cameraStream);
+      streamRef.current = null;
+      setCameraStream(null);
+      setCameraStatus("captured");
+    } catch (error) {
+      setCameraStatus("ready");
+      setStatus("error");
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "The context-bound camera capture could not be completed.",
+      );
+    }
   };
 
   const seal = async (event) => {
@@ -708,35 +914,52 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
 
     if (!file) {
       setStatus("error");
-      setMessage("Select a file to create an Evidence Report record.");
+      setMessage(
+        workflowMode === "live"
+          ? "Take a new photograph with the SiteSealed camera first."
+          : "Select a file to create an imported-file integrity record.",
+      );
       return;
     }
     if (file.size > MAX_FILE_BYTES) {
       setStatus("error");
-      setMessage("This v1.4 alpha workflow accepts files up to 25 MB.");
+      setMessage("This v1.5 alpha workflow accepts files up to 25 MB.");
       return;
     }
-    if (!acknowledged) {
+    if (workflowMode === "live" && !captureContext) {
       setStatus("error");
-      setMessage("Confirm that this is an imported file, not an attested live capture.");
+      setMessage("A live record requires a fresh server-challenged camera capture.");
+      return;
+    }
+    if (workflowMode === "import" && !acknowledged) {
+      setStatus("error");
+      setMessage("Confirm that this is an imported file, not a context-bound live workflow.");
       return;
     }
     try {
       let attempt = preparedAttemptRef.current;
       const attemptMatches =
         attempt?.file === file &&
+        attempt?.workflowMode === workflowMode &&
+        attempt?.captureContext === captureContext &&
         attempt?.projectReference === projectReference &&
         attempt?.description === description;
       let activeSubmissionId = submissionId;
 
       if (!attemptMatches) {
-        if (attempt) {
+        if (attempt && workflowMode !== "live") {
           activeSubmissionId = createRandomUuid();
           setSubmissionId(activeSubmissionId);
         }
         setStatus("hashing");
         const recordSha256 = await sha256File(file);
-        const manifest = buildManifest(file, { projectReference, description });
+        const manifest = workflowMode === "live"
+          ? buildLiveCaptureManifest(file, {
+              projectReference,
+              description,
+              capture: captureContext,
+            })
+          : buildManifest(file, { projectReference, description });
 
         setStatus("encrypting");
         const encrypted = await encryptManifest(manifest);
@@ -744,6 +967,8 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
         const recoveryToken = await createRecoveryToken();
         attempt = {
           file,
+          workflowMode,
+          captureContext,
           projectReference,
           description,
           submissionId: activeSubmissionId,
@@ -834,6 +1059,12 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
         envelope: encrypted.envelope,
         encryptedObject,
         submissionId: activeSubmissionId,
+        recordClass:
+          workflowMode === "live" ? "LIVE_CAPTURE_WEB" : "IMPORTED_FILE",
+        captureProof:
+          workflowMode === "live"
+            ? createCaptureProof(captureContext)
+            : null,
       });
 
       setStatus("recording");
@@ -907,7 +1138,11 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
     if (!file || !result) return;
     setReportStatus("loading");
     try {
-      await generateAndDownloadEvidenceReport(file, result.record.recordId);
+      await generateAndDownloadEvidenceReport(
+        file,
+        result.record.recordId,
+        recoveryKit?.manifest ?? null,
+      );
       setReportStatus("success");
     } catch (error) {
       setReportStatus(
@@ -931,8 +1166,12 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
       <div className="sealing-workbench__header">
         <span className="sealing-workbench__icon"><Icon name="shield" size={25} /></span>
         <div>
-          <span>V1.4 ALPHA WORKFLOW</span>
-          <strong>Create an imported-file Evidence Report record</strong>
+          <span>V1.5 CAPTURE ARCHITECTURE</span>
+          <strong>
+            {workflowMode === "live"
+              ? "Create a context-bound live capture"
+              : "Register a pre-existing file as integrity-only"}
+          </strong>
         </div>
         <span className="development-pill">DUAL RAIL ASYNC</span>
       </div>
@@ -945,31 +1184,121 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
 
       <GoogleAccountAccess auth={auth} onLogout={onLogout} />
 
+      <div className="capture-mode" role="tablist" aria-label="Evidence record class">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={workflowMode === "live"}
+          className={workflowMode === "live" ? "capture-mode__active" : ""}
+          onClick={() => changeWorkflowMode("live")}
+        >
+          <Icon name="camera" size={18} />
+          <span><strong>Live capture</strong><small>Camera + fresh challenge + location</small></span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={workflowMode === "import"}
+          className={workflowMode === "import" ? "capture-mode__active" : ""}
+          onClick={() => changeWorkflowMode("import")}
+        >
+          <Icon name="upload" size={18} />
+          <span><strong>Import existing file</strong><small>Integrity only - no capture claim</small></span>
+        </button>
+      </div>
+
       <form className="seal-form" onSubmit={seal} noValidate>
         <div className="seal-form__grid">
-          <div className="file-picker">
-            <input
-              id={fileInputId}
-              type="file"
-              onChange={selectFile}
-              aria-describedby={`${fileInputId}-hint`}
-            />
-            <label htmlFor={fileInputId}>
-              <span><Icon name="upload" size={28} /></span>
-              {file ? (
-                <>
-                  <strong>{file.name}</strong>
-                  <small>{formatBytes(file.size)} - click to replace</small>
-                </>
+          {workflowMode === "live" ? (
+            <div className="live-camera">
+              {cameraStream ? (
+                <video
+                  ref={videoRef}
+                  className="live-camera__video"
+                  playsInline
+                  muted
+                  aria-label="Live SiteSealed camera preview"
+                />
+              ) : capturePreviewUrl ? (
+                <img
+                  className="live-camera__video"
+                  src={capturePreviewUrl}
+                  alt="Newly captured SiteSealed photograph"
+                />
               ) : (
-                <>
-                  <strong>Select a construction record</strong>
-                  <small>Photo, PDF or other file - maximum 25 MB</small>
-                </>
+                <div className="live-camera__empty">
+                  <span><Icon name="camera" size={34} /></span>
+                  <strong>Take a new photograph now</strong>
+                  <small>Gallery files cannot enter the live-capture class.</small>
+                </div>
               )}
-            </label>
-            <p id={`${fileInputId}-hint`}>Only hashes and AES-256-GCM ciphertext leave this browser.</p>
-          </div>
+              <div className="live-camera__actions">
+                {!cameraStream ? (
+                  <button
+                    className="button button--navy"
+                    type="button"
+                    onClick={startCamera}
+                    disabled={cameraStatus === "starting"}
+                  >
+                    {cameraStatus === "starting"
+                      ? "Opening camera..."
+                      : captureContext
+                        ? "Retake photograph"
+                        : "Open SiteSealed camera"}
+                    <Icon name="camera" size={17} />
+                  </button>
+                ) : (
+                  <button
+                    className="button button--amber"
+                    type="button"
+                    onClick={captureNow}
+                    disabled={cameraStatus === "capturing"}
+                  >
+                    {cameraStatus === "capturing"
+                      ? "Binding time and location..."
+                      : "Capture now"}
+                    <Icon name="camera" size={17} />
+                  </button>
+                )}
+              </div>
+              {captureContext && file && (
+                <div className="live-camera__attestation">
+                  <span>SERVER CHALLENGE + CLIENT CONTEXT BOUND</span>
+                  <strong>{new Date(captureContext.capturedAt).toLocaleString()}</strong>
+                  <small>
+                    {captureContext.location.latitude.toFixed(6)}, {captureContext.location.longitude.toFixed(6)} (+/- {Math.round(captureContext.location.accuracyMeters)} m)
+                  </small>
+                </div>
+              )}
+              <p>
+                A one-time server challenge and a fresh browser location fix are hashed inside the encrypted manifest. Hardware device attestation is not available in this web alpha.
+              </p>
+            </div>
+          ) : (
+            <div className="file-picker file-picker--import">
+              <input
+                id={fileInputId}
+                type="file"
+                onChange={selectFile}
+                aria-describedby={`${fileInputId}-hint`}
+              />
+              <label htmlFor={fileInputId}>
+                <span><Icon name="upload" size={28} /></span>
+                {file ? (
+                  <>
+                    <strong>{file.name}</strong>
+                    <small>{formatBytes(file.size)} - click to replace</small>
+                  </>
+                ) : (
+                  <>
+                    <strong>Select an existing construction record</strong>
+                    <small>Photo, PDF or other file - maximum 25 MB</small>
+                  </>
+                )}
+              </label>
+              <p id={`${fileInputId}-hint`}>Imported files prove integrity and existence only, never capture time or location.</p>
+            </div>
+          )}
 
           <div className="seal-form__context">
             <label htmlFor={projectInputId}>Project reference <span>encrypted</span></label>
@@ -993,17 +1322,26 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
           </div>
         </div>
 
-        <label className="seal-acknowledgement">
-          <input
-            type="checkbox"
-            checked={acknowledged}
-            onChange={(event) => setAcknowledged(event.target.checked)}
-          />
-          <span>
-            <strong>I understand this is an imported-file Evidence Report.</strong>
-            It is not a live capture or qualified eIDAS timestamp. Any Evidency sandbox token is test-only; Ethereum anchoring happens asynchronously.
-          </span>
-        </label>
+        {workflowMode === "import" ? (
+          <label className="seal-acknowledgement seal-acknowledgement--import">
+            <input
+              type="checkbox"
+              checked={acknowledged}
+              onChange={(event) => setAcknowledged(event.target.checked)}
+            />
+            <span>
+              <strong>I understand this is an imported-file integrity record.</strong>
+              It does not prove when or where the file was created. Any Evidency sandbox token is test-only; Ethereum anchoring happens asynchronously.
+            </span>
+          </label>
+        ) : (
+          <div className="capture-scope-note">
+            <Icon name="shield" size={20} />
+            <p>
+              <strong>Context-bound web capture.</strong> The fresh challenge, claimed capture time, Google account reference and browser location are bound to the manifest. A web browser still cannot prove hardware integrity or that the scene was unstaged.
+            </p>
+          </div>
+        )}
 
         <div className="seal-form__submit">
           {auth.status === "ready" && auth.configured && !auth.authenticated ? (
@@ -1014,6 +1352,7 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
               type="submit"
               disabled={
                 !auth.authenticated ||
+                cameraStatus === "capturing" ||
                 ["hashing", "encrypting", "authorizing", "uploading", "recording"].includes(status)
               }
             >
@@ -1026,7 +1365,7 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
               {!progressLabel && auth.authenticated && <Icon name="arrow" size={17} />}
             </button>
           )}
-          <p>Controlled alpha: Google account session, exact-object grant, per-account allowance, IP limit and a global Redis storage ceiling.</p>
+          <p>Controlled alpha: fresh capture challenge, Google account session, exact-object grant, per-account allowance and global Redis storage ceiling.</p>
         </div>
       </form>
 
@@ -1057,6 +1396,9 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
             </div>
             <div className="seal-success__facts">
               <div><span>FILE SHA-256</span><code>{result.record.sha256}</code></div>
+              {result.record.recordClass === "LIVE_CAPTURE_WEB" && (
+                <div><span>CLAIMED CAPTURE TIME</span><strong>{new Date(result.record.capturedAt).toLocaleString()}</strong></div>
+              )}
               <div><span>SERVER RECORD TIME</span><strong>{new Date(result.record.receivedAt).toLocaleString()}</strong></div>
               <div><span>CANONICAL EXPORT</span><strong>Evidence Report PDF - visible and exact original incorporated</strong></div>
             </div>
@@ -1261,10 +1603,13 @@ function Verifier() {
 function VerifierV12({ requestedRecord }) {
   const inputId = useId();
   const compareInputId = useId();
+  const recoveryKitInputId = useId();
   const pathRecordId = useRef(recordIdFromPath());
   const lastAutomaticRequest = useRef("");
   const [recordId, setRecordId] = useState(pathRecordId.current);
   const [comparisonFile, setComparisonFile] = useState(null);
+  const [privateRecoveryKit, setPrivateRecoveryKit] = useState(null);
+  const [recoveryKitMessage, setRecoveryKitMessage] = useState("");
   const [status, setStatus] = useState("idle");
   const [result, setResult] = useState(null);
   const [message, setMessage] = useState("");
@@ -1307,6 +1652,13 @@ function VerifierV12({ requestedRecord }) {
 
       setRecordId(normalized);
       setResult({ ...payload, clientProofCheck });
+      if (
+        privateRecoveryKit?.record?.recordId &&
+        privateRecoveryKit.record.recordId !== payload.record.recordId
+      ) {
+        setPrivateRecoveryKit(null);
+        setRecoveryKitMessage("");
+      }
       setFileCheck(nextFileCheck);
       setStatus("success");
       window.history.replaceState({}, "", `/verify/${encodeURIComponent(normalized)}`);
@@ -1345,12 +1697,48 @@ function VerifierV12({ requestedRecord }) {
     }
   };
 
+  const selectPrivateRecoveryKit = async (event) => {
+    const nextFile = event.target.files?.[0] ?? null;
+    setReportStatus("idle");
+    setRecoveryKitMessage("");
+    if (!nextFile) {
+      setPrivateRecoveryKit(null);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(await nextFile.text());
+      if (
+        parsed?.schemaVersion !== "sitesealed.private-recovery-kit.v1.2" ||
+        !parsed?.manifest ||
+        parsed.manifest.recordClass !== "LIVE_CAPTURE_WEB" ||
+        !parsed?.record?.recordId
+      ) {
+        throw new Error("This is not a SiteSealed live-capture recovery kit.");
+      }
+      if (
+        result?.record?.recordId &&
+        parsed.record.recordId !== result.record.recordId
+      ) {
+        throw new Error("This private recovery kit belongs to a different record.");
+      }
+      setPrivateRecoveryKit(parsed);
+      setRecoveryKitMessage("Live capture manifest loaded locally. Nothing was uploaded.");
+    } catch (error) {
+      setPrivateRecoveryKit(null);
+      setRecoveryKitMessage(
+        error instanceof Error ? error.message : "The private recovery kit could not be read.",
+      );
+    }
+  };
+
   const useSpecimen = () => {
     setRecordId(SPECIMEN_ID);
     setStatus("idle");
     setMessage("");
     setResult(null);
     setFileCheck({ state: "NOT_CHECKED", digest: null });
+    setPrivateRecoveryKit(null);
+    setRecoveryKitMessage("");
     setReportStatus("idle");
     document.getElementById(inputId)?.focus();
   };
@@ -1369,6 +1757,7 @@ function VerifierV12({ requestedRecord }) {
       const current = await generateAndDownloadEvidenceReport(
         comparisonFile,
         result.record.recordId,
+        privateRecoveryKit?.manifest ?? null,
       );
       setResult((existing) => ({
         ...current,
@@ -1392,7 +1781,7 @@ function VerifierV12({ requestedRecord }) {
         ? "LOCAL FILE MATCH VERIFIED"
         : fileCheck.state === "MISMATCH"
           ? "LOCAL FILE DOES NOT MATCH"
-          : "V1.4 ALPHA EVIDENCE RECORD FOUND";
+          : "V1.5 ALPHA EVIDENCE RECORD FOUND";
 
   const qualifiedRailReady = Boolean(
     result?.specimen ||
@@ -1434,7 +1823,7 @@ function VerifierV12({ requestedRecord }) {
           <span>PUBLIC VERIFICATION PORTAL</span>
           <strong>Evidence record and original-file checker</strong>
         </div>
-        <span className="live-pill">V1.4 ALPHA</span>
+        <span className="live-pill">V1.5 ALPHA</span>
       </div>
 
       <form className="verify-form" onSubmit={verify} noValidate>
@@ -1474,6 +1863,29 @@ function VerifierV12({ requestedRecord }) {
             {comparisonFile ? `${comparisonFile.name} (${formatBytes(comparisonFile.size)})` : "Choose local file"}
           </label>
         </div>
+
+        {result?.record?.recordClass === "LIVE_CAPTURE_WEB" && (
+          <div className="local-file-check local-file-check--manifest">
+            <div>
+              <span><Icon name="key" size={18} /></span>
+              <p><strong>Select the private recovery kit to reproduce this live-capture report.</strong><br />Its bound manifest is parsed only in this browser. Keep the kit confidential.</p>
+            </div>
+            <input
+              id={recoveryKitInputId}
+              type="file"
+              accept="application/json,.json"
+              onChange={selectPrivateRecoveryKit}
+            />
+            <label htmlFor={recoveryKitInputId}>
+              {privateRecoveryKit ? "Live manifest loaded" : "Choose recovery kit"}
+            </label>
+            {recoveryKitMessage && (
+              <small className={privateRecoveryKit ? "local-kit-status--success" : "local-kit-status--error"}>
+                {recoveryKitMessage}
+              </small>
+            )}
+          </div>
+        )}
       </form>
 
       <div className="verifier-response" aria-live="polite">
@@ -1600,14 +2012,22 @@ function VerifierV12({ requestedRecord }) {
                   type="button"
                   className="evidence-report-download"
                   onClick={downloadEvidenceReport}
-                  disabled={fileCheck.state !== "MATCH" || reportStatus === "loading"}
+                  disabled={
+                    fileCheck.state !== "MATCH" ||
+                    reportStatus === "loading" ||
+                    (result.record.recordClass === "LIVE_CAPTURE_WEB" &&
+                      !privateRecoveryKit?.manifest)
+                  }
                 >
                   {reportStatus === "loading"
                     ? "Generating SiteSealed Evidence Report..."
                     : fileCheck.state === "HASHING"
                       ? "Verifying the original..."
                     : fileCheck.state === "MATCH"
-                      ? "Download SiteSealed Evidence Report"
+                      ? result.record.recordClass === "LIVE_CAPTURE_WEB" &&
+                        !privateRecoveryKit?.manifest
+                        ? "Select the private recovery kit to generate the report"
+                        : "Download SiteSealed Evidence Report"
                       : fileCheck.state === "MISMATCH"
                         ? "Original does not match this record"
                         : "Select the original to generate the Evidence Report"}
@@ -1717,7 +2137,7 @@ function InfrastructureStatus() {
     <div className="infrastructure-status" aria-live="polite">
       <div className="infrastructure-status__heading">
         <div>
-          <span>V1.4 ALPHA.9 / SIX RUNTIME ROLES</span>
+          <span>V1.5 ALPHA.1 / SIX RUNTIME ROLES</span>
           <strong>Private storage, internal audit and two external proof rails.</strong>
         </div>
         <small className={failed ? "is-error" : health ? "is-online" : ""}>
@@ -1892,7 +2312,7 @@ function App() {
           <div className="hero__mesh" aria-hidden="true" />
           <div className="container hero__inner">
             <div className="hero__copy">
-              <div className="phase-tag"><span>V1.4 ALPHA</span> EVIDENCY SANDBOX + ETHEREUM MAINNET</div>
+              <div className="phase-tag"><span>V1.5 ALPHA</span> EVIDENCY SANDBOX + ETHEREUM MAINNET</div>
               <h1>Construction records that can <em>verify themselves.</em></h1>
               <p className="hero__lede">
                 Create a real SHA-256 evidence record and client-encrypted backup, then export one canonical Evidence Report containing the visible exact original. Evidency sandbox time has no legal effect, so final “sealed” status stays disabled.
@@ -1970,7 +2390,7 @@ function App() {
             </div>
             <div className="offline-note">
               <span><Icon name="anchor" size={20} /></span>
-              <p><strong>Offline is a first-class case.</strong> Captures can be hashed and queued locally; the report then discloses both attested capture time and qualified sealing time.</p>
+              <p><strong>Whitepaper target: offline is a first-class case.</strong> A future attested native client will hash and queue captures locally, then disclose capture time separately from qualified sealing time. This web alpha does not yet implement that promise.</p>
             </div>
           </div>
         </section>
@@ -2049,12 +2469,12 @@ function App() {
             <div className="report__copy">
               <SectionHeading
                 eyebrow="04 / The artefact"
-                title="A court-ready format that explains its own limits."
+                title="A portable format that explains its own limits."
                 copy="The Evidence Report brings the capture manifest, the two proof rails and a fixed scope statement into one portable document."
               />
               <div className="report-points">
                 <div><span>01</span><p><strong>Project and record</strong> Context, operator, device and record class.</p></div>
-                <div><span>02</span><p><strong>Capture manifest</strong> File fingerprint, attested time, mode and position.</p></div>
+                <div><span>02</span><p><strong>Capture manifest</strong> File fingerprint plus explicitly labelled proven, server-bound and client-reported context.</p></div>
                 <div><span>03</span><p><strong>Dual proof bundle</strong> Qualified timestamp token and public Merkle inclusion path.</p></div>
                 <div><span>04</span><p><strong>Honest scope</strong> A plain-language boundary between proof, attestation and ordinary evidence.</p></div>
               </div>
@@ -2072,11 +2492,11 @@ function App() {
               <SectionHeading
                 eyebrow="05 / First real workflow"
                 title="Hash locally. Encrypt locally. Record only what is necessary."
-                copy="This v1.4 alpha creates a persistent imported-file evidence record, issues test timestamps through the Evidency sandbox adapter and batches evidence digests for a real Ethereum mainnet anchor, while keeping the whitepaper's final legal threshold visibly out of reach."
+                copy="This v1.5 alpha adds a context-bound web-camera class while preserving imported files as a separate integrity-only class. It issues test timestamps through the unchanged Evidency sandbox adapter and batches evidence digests for the unchanged Ethereum mainnet anchor, while keeping the whitepaper's final legal threshold visibly out of reach."
               />
               <div className="seal-workflow__boundary">
                 <span><Icon name="alert" size={18} /> CURRENT BOUNDARY</span>
-                <p><strong>Implemented in alpha:</strong> SHA-256, client-side AES-256-GCM, private S3 ciphertext, MySQL evidence records, PostgreSQL append-only audit, Redis coordination, Evidency sandbox RFC 3161 requests with independent CMS signature and pinned-chain validation, domain-separated Merkle proofs, Ethereum mainnet transactions, public lookup and one browser-built Evidence Report containing the exact original and proof sources.</p>
+                <p><strong>Implemented in alpha:</strong> SHA-256, client-side AES-256-GCM, separate live/import classes, web camera, account-bound one-time server challenges, browser-reported geolocation, private S3 ciphertext, MySQL evidence records, PostgreSQL append-only audit, Redis coordination, Evidency sandbox RFC 3161 requests with independent CMS signature and pinned-chain validation, domain-separated Merkle proofs, Ethereum mainnet transactions, public lookup and one browser-built Evidence Report containing the exact original and proof sources.</p>
                 <p><strong>Still not production-qualified:</strong> Evidency production contract and production trust policy, certificate revocation validation, in-app camera attestation, identity assurance beyond a verified Google account, device trust, GNSS and a formal security review.</p>
               </div>
             </div>
@@ -2096,7 +2516,7 @@ function App() {
               <SectionHeading
                 eyebrow="06 / Open verification"
                 title="A proof held by one side is a claim. A proof checkable by the other is evidence."
-                copy="Look up any v1.4 alpha evidence record, inspect each external rail independently and recalculate the original file's SHA-256 entirely in your browser before generating the canonical report."
+                copy="Look up any alpha evidence record, inspect each external rail independently and recalculate the original file's SHA-256 entirely in your browser before generating the canonical report."
                 inverse
               />
               <div className="verify__promise">
@@ -2125,11 +2545,11 @@ function App() {
               ))}
             </div>
             <div className="scope-statement">
-              <div className="scope-statement__label">FIXED SCOPE STATEMENT</div>
+              <div className="scope-statement__label">WHITEPAPER TARGET SCOPE / NOT MET BY THIS WEB ALPHA</div>
               <blockquote>
                 “This report proves that the listed files existed in exactly this form no later than the certified time, that they have not been altered since, and that they were captured through an attested device and account at the recorded coordinates.”
               </blockquote>
-              <p>It does not, by itself, prove who or what is depicted, nor that the depicted scene was unstaged.</p>
+              <p>The current web report cannot claim an attested device, hardware GNSS or qualified production time. It also does not prove who or what is depicted, nor that the depicted scene was unstaged.</p>
             </div>
           </div>
         </section>
@@ -2198,7 +2618,7 @@ function App() {
             </div>
             <div>
               <strong>Status</strong>
-              <span>Genesis v1.4 alpha.10.1 canonical Evidence Report MVP</span>
+              <span>Genesis v1.5 alpha.1 context-bound capture MVP</span>
               <span>Evidency sandbox test rail</span>
               <span>Ethereum mainnet final rail</span>
             </div>

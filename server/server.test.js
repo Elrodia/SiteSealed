@@ -259,13 +259,28 @@ after(async () => {
   });
 });
 
-test("health endpoint reports the honest v1.4-alpha.10.1 capability boundary", async () => {
+test("health endpoint reports the honest v1.5-alpha.1 capability boundary", async () => {
   const response = await fetch(`${baseUrl}/api/health`);
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.ok, true);
   assert.equal(payload.service, "sitesealed");
-  assert.equal(payload.version, "1.4.0-alpha.10.1");
+  assert.equal(payload.version, "1.5.0-alpha.1");
+  assert.equal(
+    payload.sealing.workflow,
+    "CONTEXT_BOUND_WEB_CAPTURE_WITH_SEPARATE_IMPORTED_CLASS",
+  );
+  assert.deepEqual(payload.sealing.liveCapture, {
+    officialUiUsesCameraOnly: true,
+    freshServerChallenge: true,
+    browserGeolocationManifestBound: true,
+    accountBound: true,
+    hardwareDeviceAttestation: false,
+    browserGeolocationHardwareAttested: false,
+    physicalSensorOriginProven: false,
+    directApiClientExcluded: false,
+    offlineQueue: false,
+  });
   assert.equal(payload.sealing.clientEncryptedObjectStorage, true);
   assert.equal(
     payload.sealing.operationalAudit,
@@ -319,6 +334,7 @@ test("health endpoint reports the honest v1.4-alpha.10.1 capability boundary", a
     distributed: false,
     rateLimiting: true,
     uploadGrants: true,
+    captureChallenges: true,
     accountSessions: true,
     boundedStorageAdmission: true,
     verificationCache: true,
@@ -606,6 +622,133 @@ test("a real digest receipt binds a client-encrypted original without receiving 
   );
 });
 
+test("capture challenges require both the authenticated account and application CSRF", async () => {
+  const submissionId = "123e4567-e89b-42d3-a456-426614174777";
+  const unauthenticated = await fetch(`${baseUrl}/api/capture/challenges`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ submissionId }),
+  });
+  assert.equal(unauthenticated.status, 401);
+
+  const noCsrf = await fetch(`${baseUrl}/api/capture/challenges`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      cookie: testAuth.cookie,
+    },
+    body: JSON.stringify({ submissionId }),
+  });
+  assert.equal(noCsrf.status, 403);
+
+  const extraField = await fetch(`${baseUrl}/api/capture/challenges`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...testAuth },
+    body: JSON.stringify({ submissionId, recordSha256: "a".repeat(64) }),
+  });
+  assert.equal(extraField.status, 400);
+  assert.equal(
+    (await extraField.json()).code,
+    "INVALID_CAPTURE_CHALLENGE_REQUEST",
+  );
+});
+
+test("a live web capture requires and consumes a fresh account-bound challenge", async () => {
+  const body = validRequest({ recordClass: "LIVE_CAPTURE_WEB" });
+  const challengeResponse = await fetch(`${baseUrl}/api/capture/challenges`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...testAuth,
+    },
+    body: JSON.stringify({ submissionId: body.submissionId }),
+  });
+  const challenge = await challengeResponse.json();
+  assert.equal(challengeResponse.status, 201);
+  assert.equal(challenge.status, "CAPTURE_CHALLENGE_ISSUED");
+  assert.equal(challenge.timeAuthority, "SITESEALED_SERVER_CHALLENGE");
+
+  const capturedAt = new Date(
+    Date.parse(challenge.issuedAt) + 10_000,
+  ).toISOString();
+  body.captureProof = {
+    challenge: challenge.challenge,
+    capturedAt,
+    locationMeasuredAt: capturedAt,
+    locationAccuracyMeters: 7.4,
+    clockDeltaMs: 12,
+    cameraFacingMode: "environment",
+    deviceAttestation: "NOT_AVAILABLE_WEB_ALPHA",
+    locationAttestation: "BROWSER_GEOLOCATION_NOT_HARDWARE_ATTESTED",
+    timeAttestation: "SERVER_CHALLENGE_WINDOW",
+    coordinatesManifestBound: true,
+  };
+
+  const created = await createReceipt(body);
+  assert.equal(created.response.status, 201);
+  assert.equal(created.payload.record.recordClass, "LIVE_CAPTURE_WEB");
+  assert.equal(
+    created.payload.record.classification,
+    "Context-bound web camera capture - alpha",
+  );
+  assert.equal(created.payload.record.capturedAt, capturedAt);
+  assert.equal(
+    created.payload.record.captureContext.challengeId,
+    challenge.challengeId,
+  );
+  assert.equal(
+    created.payload.record.captureContext.account.provider,
+    "GOOGLE",
+  );
+  assert.match(
+    created.payload.record.captureContext.account.accountReference,
+    /^[a-f0-9]{64}$/,
+  );
+  assert.equal(
+    created.payload.record.captureContext.deviceAttestation,
+    "NOT_AVAILABLE_WEB_ALPHA",
+  );
+  assert.equal(
+    Object.hasOwn(created.payload.record.captureContext.location, "latitude"),
+    false,
+  );
+  assert.equal(
+    Object.hasOwn(created.payload.record.captureContext.location, "longitude"),
+    false,
+  );
+  assert.equal(
+    JSON.stringify(created.payload).includes(challenge.challenge),
+    false,
+  );
+  assert.match(created.payload.scope.attests, /fresh, submission-bound/);
+  assert.match(created.payload.scope.doesNotProve, /virtual camera/);
+
+  const replay = await createReceipt(body);
+  assert.equal(replay.response.status, 200);
+  assert.equal(replay.payload.record.recordId, created.payload.record.recordId);
+});
+
+test("an imported or pre-existing file cannot self-assert the live-capture class", async () => {
+  const body = validRequest({
+    recordClass: "LIVE_CAPTURE_WEB",
+    captureProof: {
+      challenge: `123e4567-e89b-42d3-a456-426614174000.${"A".repeat(43)}`,
+      capturedAt: new Date().toISOString(),
+      locationMeasuredAt: new Date().toISOString(),
+      locationAccuracyMeters: 10,
+      clockDeltaMs: 0,
+      cameraFacingMode: "unknown",
+      deviceAttestation: "NOT_AVAILABLE_WEB_ALPHA",
+      locationAttestation: "BROWSER_GEOLOCATION_NOT_HARDWARE_ATTESTED",
+      timeAttestation: "SERVER_CHALLENGE_WINDOW",
+      coordinatesManifestBound: true,
+    },
+  });
+  const rejected = await createReceipt(body);
+  assert.equal(rejected.response.status, 403);
+  assert.equal(rejected.payload.code, "CAPTURE_CHALLENGE_REJECTED");
+});
+
 test("submission IDs make client retries idempotent", async () => {
   const body = validRequest();
   const first = await createReceipt(body);
@@ -640,8 +783,8 @@ test("public bundle binds both encrypted manifest and encrypted-original digest"
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-disposition"), /proof-bundle\.json/);
   const payload = await response.json();
-  assert.equal(payload.schemaVersion, "sitesealed.proof-bundle.v1.4-alpha.1");
-  assert.equal(payload.bundleVersion, "1.4-alpha.1");
+  assert.equal(payload.schemaVersion, "sitesealed.proof-bundle.v1.5-alpha.1");
+  assert.equal(payload.bundleVersion, "1.5-alpha.1");
   assert.equal(payload.receiptSha256, created.payload.record.receiptSha256);
   assert.equal(payload.encryptedManifest.algorithm, "AES-256-GCM");
   assert.equal(payload.encryptedOriginal.state, "STORED_ENCRYPTED");
@@ -729,8 +872,8 @@ test("unknown records fail honestly", async () => {
   assert.equal(payload.code, "RECORD_NOT_FOUND");
 });
 
-test("the production server serves the React application, official brand assets and v1.4 proof documents", async () => {
-  const [homeResponse, faviconResponse, iconResponse, icon512Response, manifestResponse, reportResponse, schemaResponse] = await Promise.all([
+test("the production server serves the React application, official brand assets and compatible proof schemas", async () => {
+  const [homeResponse, faviconResponse, iconResponse, icon512Response, manifestResponse, reportResponse, legacySchemaResponse, currentSchemaResponse] = await Promise.all([
     fetch(`${baseUrl}/`),
     fetch(`${baseUrl}/favicon.svg?v=20260812`),
     fetch(`${baseUrl}/icon-192.svg`),
@@ -738,6 +881,7 @@ test("the production server serves the React application, official brand assets 
     fetch(`${baseUrl}/site.webmanifest`),
     fetch(`${baseUrl}/documents/SiteSealed_EvidenceReport_SPECIMEN.pdf`),
     fetch(`${baseUrl}/schemas/proof-bundle-v1.4-alpha.1.schema.json`),
+    fetch(`${baseUrl}/schemas/proof-bundle-v1.5-alpha.1.schema.json`),
   ]);
   assert.equal(homeResponse.status, 200);
   const homeHtml = await homeResponse.text();
@@ -776,7 +920,8 @@ test("the production server serves the React application, official brand assets 
   assert.match(manifestResponse.headers.get("cache-control"), /no-cache/);
   assert.equal(reportResponse.status, 200);
   assert.match(reportResponse.headers.get("content-type"), /application\/pdf/);
-  assert.equal(schemaResponse.status, 200);
+  assert.equal(legacySchemaResponse.status, 200);
+  assert.equal(currentSchemaResponse.status, 200);
 });
 
 test("malformed JSON receives a controlled client error", async () => {
