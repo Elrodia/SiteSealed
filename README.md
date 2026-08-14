@@ -1,4 +1,4 @@
-# SiteSealed Genesis v1.5.0-alpha.1 — Context-bound capture
+# SiteSealed Genesis v1.5.0-alpha.2 — Context-bound capture
 
 SiteSealed crée des enregistrements d'intégrité et un seul artefact humain
 canonique : le **SiteSealed Evidence Report PDF**. Le rapport affiche l'original,
@@ -62,15 +62,20 @@ comme une preuve de temps ou de lieu.
 7. La création du reçu réclame atomiquement le défi et vérifie compte,
    soumission, empreintes, temps déclaré et contexte. Le secret du défi n'est
    jamais persistant dans le reçu public.
-8. Le PDF est généré localement avec l'original exact et le manifeste privé. Le
-   générateur recalcule les deux empreintes et recoupe les champs du manifeste
-   avec le contexte attesté par le serveur avant de produire le rapport.
+8. Immédiatement après la capture, le PDF est généré localement avec l'original
+   encore présent en mémoire. Pour une régénération ultérieure, le Recovery Kit
+   récupère le ciphertext référencé depuis le stockage privé, le vérifie, le
+   déchiffre localement et reconstitue le même original sans demander une photo
+   séparée. Le générateur recalcule ensuite les deux empreintes et recoupe le
+   manifeste avec le contexte attesté par le serveur.
 
 ## Un seul artefact canonique
 
 Il n'existe aucune variante publique/privée du rapport. Le serveur, qui ne
 possède que du ciphertext, ne fabrique pas de PDF incomplet. Le navigateur crée
-le rapport uniquement avec l'original exact détenu localement.
+le rapport avec l'original exact encore en mémoire, avec un original importé
+sélectionné localement ou, pour une capture live, avec l'original récupéré et
+déchiffré localement grâce au Recovery Kit.
 
 Le PDF contient :
 
@@ -84,10 +89,13 @@ Le PDF contient :
 - trois rubriques séparées : prouvé, attesté/déclaré et non prouvé.
 
 Le rapport est confidentiel exactement dans la mesure où l'original l'est :
-quiconque reçoit le PDF peut voir et extraire le fichier original. Le kit de
-récupération AES reste secret et séparé. Pour régénérer plus tard le rapport
-d'une capture live, le vérificateur demande l'original et ce kit ; ils sont lus
-uniquement dans le navigateur.
+quiconque reçoit le PDF peut voir et extraire le fichier original. Le Recovery
+Kit reste secret : il contient la seule clé AES et le jeton privé permettant au
+navigateur de récupérer le ciphertext référencé. Pour une capture live, ce kit
+suffit à régénérer le rapport tant que l'objet chiffré référencé demeure
+disponible dans le stockage privé ; aucune photographie séparée n'est demandée.
+Le jeton n'est envoyé qu'à l'endpoint same-origin dérivé de l'identifiant du
+reçu, jamais à une URL fournie par le kit.
 
 ## Dual rail : gel de non-régression
 

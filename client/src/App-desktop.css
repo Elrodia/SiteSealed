@@ -2744,6 +2744,10 @@ button {
   color: #76d5ac;
 }
 
+.local-kit-status--loading {
+  color: var(--amber-300);
+}
+
 .local-kit-status--error {
   color: #ff8b82;
 }

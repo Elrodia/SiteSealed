@@ -341,6 +341,25 @@ async function encryptAesGcm(plaintext, rawKey, iv) {
   return gcm(rawKey, iv).encrypt(plaintext);
 }
 
+async function decryptAesGcm(ciphertext, rawKey, iv) {
+  if (globalThis.crypto.subtle) {
+    const key = await globalThis.crypto.subtle.importKey(
+      "raw",
+      rawKey,
+      "AES-GCM",
+      false,
+      ["decrypt"],
+    );
+    const plaintext = await globalThis.crypto.subtle.decrypt(
+      { name: "AES-GCM", iv },
+      key,
+      ciphertext,
+    );
+    return new Uint8Array(plaintext);
+  }
+  return gcm(rawKey, iv).decrypt(ciphertext);
+}
+
 export async function encryptManifest(manifest) {
   const canonicalManifest = stableStringify(manifest);
   const plaintext = new TextEncoder().encode(canonicalManifest);
@@ -488,6 +507,164 @@ export function createPrivateRecoveryKit({
     manifest,
     scope: serverResponse.scope,
   };
+}
+
+function recoveryKitBytes(value, expectedLength, label) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`The private recovery kit is missing ${label}.`);
+  }
+  let bytes;
+  try {
+    bytes = base64ToBytes(value);
+  } catch {
+    throw new Error(`The private recovery kit contains an invalid ${label}.`);
+  }
+  if (bytes.length !== expectedLength) {
+    throw new Error(`The private recovery kit contains an invalid ${label}.`);
+  }
+  return bytes;
+}
+
+function recoveryFileName(value, recordId) {
+  const name = String(value ?? "")
+    .split(/[\\/]/)
+    .at(-1)
+    .trim()
+    .slice(0, 255);
+  return name || `SiteSealed_${recordId}_original`;
+}
+
+function recoveryMediaType(value) {
+  const mediaType = String(value ?? "").trim().toLowerCase();
+  return /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(mediaType)
+    ? mediaType
+    : "application/octet-stream";
+}
+
+export async function recoverOriginalFromPrivateRecoveryKit({
+  recoveryKit,
+  record,
+  fetchImpl = globalThis.fetch?.bind(globalThis),
+}) {
+  if (
+    recoveryKit?.schemaVersion !== "sitesealed.private-recovery-kit.v1.2" ||
+    !recoveryKit?.manifest ||
+    !recoveryKit?.record ||
+    !recoveryKit?.encryptedOriginal
+  ) {
+    throw new Error("This is not a supported SiteSealed private recovery kit.");
+  }
+  const recordId = String(record?.recordId ?? "");
+  if (!recordId || recoveryKit.record.recordId !== recordId) {
+    throw new Error("This private recovery kit belongs to a different record.");
+  }
+  if (
+    recoveryKit.record.sha256 !== record.sha256 ||
+    recoveryKit.record.manifestSha256 !== record.manifestSha256 ||
+    recoveryKit.manifest.recordClass !== record.recordClass
+  ) {
+    throw new Error("The private recovery kit does not match the public evidence record.");
+  }
+
+  const manifestSha256 = await sha256CanonicalJson(recoveryKit.manifest);
+  if (manifestSha256 !== record.manifestSha256) {
+    throw new Error("The private recovery kit manifest failed its recorded SHA-256 check.");
+  }
+
+  const encryptedOriginal = recoveryKit.encryptedOriginal;
+  const publicStorage = record.storage ?? {};
+  if (
+    encryptedOriginal.algorithm !== "AES-256-GCM" ||
+    encryptedOriginal.ciphertextSha256 !== publicStorage.ciphertextSha256 ||
+    Number(encryptedOriginal.ciphertextBytes) !== Number(publicStorage.ciphertextBytes) ||
+    Number(encryptedOriginal.plaintextBytes) !== Number(publicStorage.plaintextBytes)
+  ) {
+    throw new Error("The recovery metadata does not match the stored encrypted original.");
+  }
+  const plaintextBytes = Number(encryptedOriginal.plaintextBytes);
+  const ciphertextBytes = Number(encryptedOriginal.ciphertextBytes);
+  if (
+    !Number.isSafeInteger(plaintextBytes) ||
+    plaintextBytes <= 0 ||
+    plaintextBytes > MAX_FILE_BYTES ||
+    ciphertextBytes !== plaintextBytes + 16 ||
+    Number(recoveryKit.manifest.file?.size) !== plaintextBytes
+  ) {
+    throw new Error("The recovery kit contains inconsistent original-file sizes.");
+  }
+
+  const recoveryKey = recoveryKit.manifestEncryption?.key;
+  if (
+    recoveryKit.manifestEncryption?.algorithm !== "AES-256-GCM" ||
+    recoveryKit.manifestEncryption?.keyEncoding !== "base64-raw-256-bit" ||
+    encryptedOriginal.keyEncoding !== "base64-raw-256-bit" ||
+    encryptedOriginal.key !== recoveryKey
+  ) {
+    throw new Error("The private recovery kit contains inconsistent encryption keys.");
+  }
+  const rawKey = recoveryKitBytes(recoveryKey, 32, "AES-256 key");
+  const iv = recoveryKitBytes(encryptedOriginal.iv, 12, "original-file IV");
+  const recoveryToken = encryptedOriginal.retrieval?.requestBody?.recoveryToken;
+  recoveryKitBytes(recoveryToken, 32, "private recovery token");
+  if (typeof fetchImpl !== "function") {
+    throw new Error("This browser cannot retrieve the encrypted original.");
+  }
+
+  // Deliberately derive the same-origin endpoint instead of trusting a URL
+  // contained in an imported private kit. This prevents recovery-token exfiltration.
+  const endpoint = `/api/records/${encodeURIComponent(recordId)}/encrypted-original`;
+  const response = await fetchImpl(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ recoveryToken }),
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  if (!response?.ok) {
+    let message = "The encrypted original could not be retrieved.";
+    try {
+      const payload = JSON.parse(await response.text());
+      if (typeof payload?.message === "string" && payload.message.trim()) {
+        message = payload.message;
+      }
+    } catch {
+      // Keep the controlled message when the server response is not JSON.
+    }
+    throw new Error(message);
+  }
+
+  const ciphertext = new Uint8Array(await response.arrayBuffer());
+  if (
+    ciphertext.length !== ciphertextBytes ||
+    await sha256Bytes(ciphertext) !== encryptedOriginal.ciphertextSha256
+  ) {
+    throw new Error("The retrieved encrypted original failed its SHA-256 check.");
+  }
+
+  let plaintext;
+  try {
+    plaintext = await decryptAesGcm(ciphertext, rawKey, iv);
+  } catch {
+    throw new Error("The encrypted original could not be authenticated and decrypted.");
+  }
+  if (
+    plaintext.length !== plaintextBytes ||
+    await sha256Bytes(plaintext) !== record.sha256
+  ) {
+    throw new Error("The recovered original does not match the recorded SHA-256 digest.");
+  }
+
+  const captureTime = recoveryKit.manifest.capture?.capturedAtDevice;
+  const importedTime = recoveryKit.manifest.file?.lastModifiedClientValue;
+  const parsedTime = Date.parse(captureTime || importedTime || "");
+  return new File(
+    [plaintext],
+    recoveryFileName(recoveryKit.manifest.file?.name, recordId),
+    {
+      type: recoveryMediaType(recoveryKit.manifest.file?.mediaType),
+      lastModified: Number.isFinite(parsedTime) ? parsedTime : 0,
+    },
+  );
 }
 
 export function formatBytes(bytes) {

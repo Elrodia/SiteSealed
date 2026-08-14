@@ -6,7 +6,7 @@ import {
 } from "pdf-lib";
 import { sha256CanonicalJson, sha256File } from "./sealing.js";
 
-const RELEASE = "1.5.0-alpha.1";
+const RELEASE = "1.5.0-alpha.2";
 const PAGE_WIDTH = 612;
 const PAGE_HEIGHT = 792;
 const COLORS = {

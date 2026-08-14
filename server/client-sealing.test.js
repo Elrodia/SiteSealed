@@ -20,11 +20,13 @@ import {
   buildManifest,
   createCaptureProof,
   createEncryptedUploadHeaders,
+  createPrivateRecoveryKit,
   createRecoveryToken,
   createSealRequest,
   createUploadGrantRequest,
   encryptManifest,
   encryptOriginal,
+  recoverOriginalFromPrivateRecoveryKit,
   recalculateEvidenceDigest,
   sha256CanonicalJson,
   sha256File,
@@ -154,6 +156,95 @@ test("the client encrypts the canonical manifest and keeps the key outside the A
     },
   );
   assert.equal(JSON.stringify(request).includes(recoveryToken.token), false);
+});
+
+test("the private recovery kit alone restores an exact live capture from private storage", async () => {
+  const capturedAt = "2026-08-14T20:15:05.000Z";
+  const originalBytes = Buffer.from("exact live-camera JPEG bytes");
+  const originalFile = new File(
+    [originalBytes],
+    "SiteSealed_CAPTURE_2026-08-14T20-15-05Z.jpg",
+    { type: "image/jpeg", lastModified: Date.parse(capturedAt) },
+  );
+  const manifest = {
+    schemaVersion: "sitesealed.capture-manifest.v1.5-alpha.1",
+    recordClass: "LIVE_CAPTURE_WEB",
+    file: {
+      name: originalFile.name,
+      size: originalFile.size,
+      mediaType: originalFile.type,
+    },
+    capture: { capturedAtDevice: capturedAt },
+  };
+  const encryptedManifest = await encryptManifest(manifest);
+  const encryptedOriginal = await encryptOriginal(
+    originalFile,
+    encryptedManifest.recoveryKey,
+  );
+  const recoveryToken = await createRecoveryToken();
+  const recordId = "SR-20260814-RECOVERYKITONLY";
+  const record = {
+    recordId,
+    recordClass: "LIVE_CAPTURE_WEB",
+    sha256: await sha256File(originalFile),
+    manifestSha256: encryptedManifest.manifestSha256,
+    storage: {
+      state: "STORED_ENCRYPTED",
+      ciphertextSha256: encryptedOriginal.envelope.ciphertextSha256,
+      ciphertextBytes: encryptedOriginal.envelope.ciphertextBytes,
+      plaintextBytes: encryptedOriginal.envelope.plaintextBytes,
+    },
+  };
+  const recoveryKit = createPrivateRecoveryKit({
+    manifest,
+    envelope: encryptedManifest.envelope,
+    recoveryKey: encryptedManifest.recoveryKey,
+    encryptedObject: encryptedOriginal.envelope,
+    recoveryToken: recoveryToken.token,
+    serverResponse: {
+      record,
+      links: {
+        encryptedOriginal: "https://attacker.invalid/collect-recovery-token",
+      },
+      scope: {},
+    },
+  });
+
+  let requestedUrl;
+  let requestedOptions;
+  const recovered = await recoverOriginalFromPrivateRecoveryKit({
+    recoveryKit,
+    record,
+    fetchImpl: async (url, options) => {
+      requestedUrl = url;
+      requestedOptions = options;
+      return new Response(encryptedOriginal.ciphertext, { status: 200 });
+    },
+  });
+
+  assert.equal(
+    requestedUrl,
+    `/api/records/${recordId}/encrypted-original`,
+  );
+  assert.equal(requestedOptions.method, "POST");
+  assert.deepEqual(JSON.parse(requestedOptions.body), {
+    recoveryToken: recoveryToken.token,
+  });
+  assert.equal(recovered.name, originalFile.name);
+  assert.equal(recovered.type, "image/jpeg");
+  assert.equal(recovered.lastModified, Date.parse(capturedAt));
+  assert.deepEqual(Buffer.from(await recovered.arrayBuffer()), originalBytes);
+
+  const corruptedCiphertext = Uint8Array.from(encryptedOriginal.ciphertext);
+  corruptedCiphertext[0] ^= 0xff;
+  await assert.rejects(
+    recoverOriginalFromPrivateRecoveryKit({
+      recoveryKit,
+      record,
+      fetchImpl: async () => new Response(corruptedCiphertext, { status: 200 }),
+    }),
+    /encrypted original failed its SHA-256 check/,
+  );
 });
 
 test("the live web manifest binds a fresh challenge, browser context and honest limitations", async () => {
@@ -563,6 +654,9 @@ test("the browser uses Google Identity Services and sends SiteSealed CSRF tokens
   assert.match(source, /onChange=\{selectComparisonFile\}/);
   assert.match(source, /onChange=\{selectPrivateRecoveryKit\}/);
   assert.match(source, /Choose recovery kit/);
+  assert.match(source, /recoverOriginalFromPrivateRecoveryKit/);
+  assert.match(source, /No separate photo is required/);
+  assert.match(source, /the private recovery kit is all you need/);
   assert.match(
     source,
     /nextFile && status === "success" && result && !result\.specimen[\s\S]*?runVerification\(result\.record\.recordId, nextFile\)/,

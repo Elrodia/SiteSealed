@@ -13,6 +13,7 @@ import {
   encryptOriginal,
   formatBytes,
   MAX_FILE_BYTES,
+  recoverOriginalFromPrivateRecoveryKit,
   sha256File,
   verifyPublicProofArtifacts,
 } from "./sealing.js";
@@ -1404,7 +1405,7 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
             </div>
             <div className="seal-success__warning">
               <Icon name="key" size={19} />
-              <p><strong>Download the private recovery kit now.</strong> It contains the only copy of the AES key and must remain confidential.</p>
+              <p><strong>Download the private recovery kit now.</strong> It contains the only copy of the AES key and the private retrieval capability. For a live capture, this kit alone restores the encrypted original and regenerates the Evidence Report while SiteSealed storage remains available.</p>
             </div>
             <div className="seal-success__actions">
               <button
@@ -1610,6 +1611,7 @@ function VerifierV12({ requestedRecord }) {
   const [comparisonFile, setComparisonFile] = useState(null);
   const [privateRecoveryKit, setPrivateRecoveryKit] = useState(null);
   const [recoveryKitMessage, setRecoveryKitMessage] = useState("");
+  const [recoveryKitStatus, setRecoveryKitStatus] = useState("idle");
   const [status, setStatus] = useState("idle");
   const [result, setResult] = useState(null);
   const [message, setMessage] = useState("");
@@ -1657,7 +1659,9 @@ function VerifierV12({ requestedRecord }) {
         privateRecoveryKit.record.recordId !== payload.record.recordId
       ) {
         setPrivateRecoveryKit(null);
+        setComparisonFile(null);
         setRecoveryKitMessage("");
+        setRecoveryKitStatus("idle");
       }
       setFileCheck(nextFileCheck);
       setStatus("success");
@@ -1701,8 +1705,11 @@ function VerifierV12({ requestedRecord }) {
     const nextFile = event.target.files?.[0] ?? null;
     setReportStatus("idle");
     setRecoveryKitMessage("");
+    setRecoveryKitStatus("idle");
     if (!nextFile) {
       setPrivateRecoveryKit(null);
+      setComparisonFile(null);
+      setFileCheck({ state: "NOT_CHECKED", digest: null });
       return;
     }
     try {
@@ -1721,10 +1728,29 @@ function VerifierV12({ requestedRecord }) {
       ) {
         throw new Error("This private recovery kit belongs to a different record.");
       }
+      if (!result?.record) {
+        throw new Error("Verify the evidence record before loading its private recovery kit.");
+      }
+      setRecoveryKitMessage(
+        "Retrieving the encrypted capture and decrypting it locally...",
+      );
+      setRecoveryKitStatus("loading");
+      const recoveredOriginal = await recoverOriginalFromPrivateRecoveryKit({
+        recoveryKit: parsed,
+        record: result.record,
+      });
       setPrivateRecoveryKit(parsed);
-      setRecoveryKitMessage("Live capture manifest loaded locally. Nothing was uploaded.");
+      setComparisonFile(recoveredOriginal);
+      setFileCheck({ state: "MATCH", digest: result.record.sha256 });
+      setRecoveryKitStatus("success");
+      setRecoveryKitMessage(
+        `Exact live capture recovered and verified locally (${formatBytes(recoveredOriginal.size)}). No separate photo is required.`,
+      );
     } catch (error) {
       setPrivateRecoveryKit(null);
+      setComparisonFile(null);
+      setFileCheck({ state: "NOT_CHECKED", digest: null });
+      setRecoveryKitStatus("error");
       setRecoveryKitMessage(
         error instanceof Error ? error.message : "The private recovery kit could not be read.",
       );
@@ -1736,9 +1762,11 @@ function VerifierV12({ requestedRecord }) {
     setStatus("idle");
     setMessage("");
     setResult(null);
+    setComparisonFile(null);
     setFileCheck({ state: "NOT_CHECKED", digest: null });
     setPrivateRecoveryKit(null);
     setRecoveryKitMessage("");
+    setRecoveryKitStatus("idle");
     setReportStatus("idle");
     document.getElementById(inputId)?.focus();
   };
@@ -1849,38 +1877,45 @@ function VerifierV12({ requestedRecord }) {
           <button type="button" onClick={useSpecimen}>Use specimen ID</button>
         </div>
 
-        <div className="local-file-check">
-          <div>
-            <span><Icon name="file" size={18} /></span>
-            <p><strong>Select the original to generate the Evidence Report.</strong><br />Its hash is checked automatically and the file is never uploaded.</p>
+        {result?.record?.recordClass !== "LIVE_CAPTURE_WEB" && (
+          <div className="local-file-check">
+            <div>
+              <span><Icon name="file" size={18} /></span>
+              <p><strong>Select the original to generate the Evidence Report.</strong><br />Its hash is checked automatically and the file is never uploaded.</p>
+            </div>
+            <input
+              id={compareInputId}
+              type="file"
+              onChange={selectComparisonFile}
+            />
+            <label htmlFor={compareInputId}>
+              {comparisonFile ? `${comparisonFile.name} (${formatBytes(comparisonFile.size)})` : "Choose local file"}
+            </label>
           </div>
-          <input
-            id={compareInputId}
-            type="file"
-            onChange={selectComparisonFile}
-          />
-          <label htmlFor={compareInputId}>
-            {comparisonFile ? `${comparisonFile.name} (${formatBytes(comparisonFile.size)})` : "Choose local file"}
-          </label>
-        </div>
+        )}
 
         {result?.record?.recordClass === "LIVE_CAPTURE_WEB" && (
           <div className="local-file-check local-file-check--manifest">
             <div>
               <span><Icon name="key" size={18} /></span>
-              <p><strong>Select the private recovery kit to reproduce this live-capture report.</strong><br />Its bound manifest is parsed only in this browser. Keep the kit confidential.</p>
+              <p><strong>For a stored live capture, the private recovery kit is all you need.</strong><br />It retrieves the ciphertext while private storage remains available, decrypts it locally and verifies its SHA-256 before generating the report. No separate photo is required.</p>
             </div>
             <input
               id={recoveryKitInputId}
               type="file"
               accept="application/json,.json"
               onChange={selectPrivateRecoveryKit}
+              disabled={recoveryKitStatus === "loading"}
             />
             <label htmlFor={recoveryKitInputId}>
-              {privateRecoveryKit ? "Live manifest loaded" : "Choose recovery kit"}
+              {recoveryKitStatus === "loading"
+                ? "Recovering live capture..."
+                : privateRecoveryKit
+                  ? "Live capture recovered"
+                  : "Choose recovery kit"}
             </label>
             {recoveryKitMessage && (
-              <small className={privateRecoveryKit ? "local-kit-status--success" : "local-kit-status--error"}>
+              <small className={`local-kit-status--${recoveryKitStatus}`}>
                 {recoveryKitMessage}
               </small>
             )}
@@ -1892,7 +1927,7 @@ function VerifierV12({ requestedRecord }) {
         {status === "idle" && (
           <div className="verifier-idle">
             <span className="verifier-idle__line" />
-            <p>Look up an evidence record, then prove byte-for-byte integrity with the original file.</p>
+            <p>Look up an evidence record, then use its private recovery kit for a live capture or the independently held original for an imported file.</p>
           </div>
         )}
 
@@ -1937,10 +1972,14 @@ function VerifierV12({ requestedRecord }) {
                   </strong>
                   <p>
                     {fileCheck.state === "MATCH"
-                      ? "The selected file recalculates to the recorded SHA-256 digest."
+                      ? result.record.recordClass === "LIVE_CAPTURE_WEB"
+                        ? "The encrypted capture was recovered with the private kit, decrypted locally and matched the recorded SHA-256 digest."
+                        : "The selected file recalculates to the recorded SHA-256 digest."
                       : fileCheck.state === "MISMATCH"
                         ? "The selected file is not the same byte sequence as the recorded digest."
-                        : "Select the independently held original above and run verification again."}
+                        : result.record.recordClass === "LIVE_CAPTURE_WEB"
+                          ? "Choose the private recovery kit above; the original photograph is recovered automatically."
+                          : "Select the independently held original above and run verification again."}
                   </p>
                 </div>
               </div>
@@ -2026,11 +2065,13 @@ function VerifierV12({ requestedRecord }) {
                     : fileCheck.state === "MATCH"
                       ? result.record.recordClass === "LIVE_CAPTURE_WEB" &&
                         !privateRecoveryKit?.manifest
-                        ? "Select the private recovery kit to generate the report"
+                        ? "Choose the recovery kit to restore the live capture"
                         : "Download SiteSealed Evidence Report"
                       : fileCheck.state === "MISMATCH"
                         ? "Original does not match this record"
-                        : "Select the original to generate the Evidence Report"}
+                        : result.record.recordClass === "LIVE_CAPTURE_WEB"
+                          ? "Choose the recovery kit to restore the live capture"
+                          : "Select the original to generate the Evidence Report"}
                   <Icon name="download" size={15} />
                 </button>
                 {result.record.chainRail?.anchor && (
@@ -2137,7 +2178,7 @@ function InfrastructureStatus() {
     <div className="infrastructure-status" aria-live="polite">
       <div className="infrastructure-status__heading">
         <div>
-          <span>V1.5 ALPHA.1 / SIX RUNTIME ROLES</span>
+          <span>V1.5 ALPHA.2 / SIX RUNTIME ROLES</span>
           <strong>Private storage, internal audit and two external proof rails.</strong>
         </div>
         <small className={failed ? "is-error" : health ? "is-online" : ""}>
@@ -2618,7 +2659,7 @@ function App() {
             </div>
             <div>
               <strong>Status</strong>
-              <span>Genesis v1.5 alpha.1 context-bound capture MVP</span>
+              <span>Genesis v1.5 alpha.2 context-bound capture MVP</span>
               <span>Evidency sandbox test rail</span>
               <span>Ethereum mainnet final rail</span>
             </div>
