@@ -99,6 +99,18 @@ button {
   transform: translateY(0);
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .container {
   width: min(1180px, calc(100% - 64px));
   margin-inline: auto;
@@ -303,6 +315,56 @@ button {
 
 .nav > a:hover::after {
   transform: scaleX(1);
+}
+
+.language-selector {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.language-selector::before {
+  position: absolute;
+  left: 11px;
+  color: var(--amber-500);
+  content: "A/文";
+  font-family: var(--font-mono);
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: -0.08em;
+  pointer-events: none;
+}
+
+.language-selector select {
+  width: 144px;
+  height: 38px;
+  padding: 0 27px 0 40px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  appearance: none;
+  background:
+    linear-gradient(45deg, transparent 50%, rgba(255, 255, 255, 0.72) 50%) calc(100% - 14px) 16px / 5px 5px no-repeat,
+    linear-gradient(135deg, rgba(255, 255, 255, 0.72) 50%, transparent 50%) calc(100% - 9px) 16px / 5px 5px no-repeat,
+    rgba(255, 255, 255, 0.055);
+  color: var(--white);
+  cursor: pointer;
+  font-family: var(--font-condensed);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.035em;
+  text-overflow: ellipsis;
+}
+
+.language-selector select:hover,
+.language-selector select:focus-visible {
+  border-color: var(--amber-500);
+  outline: none;
+}
+
+.language-selector option {
+  background: var(--navy-950);
+  color: var(--white);
 }
 
 .menu-toggle {

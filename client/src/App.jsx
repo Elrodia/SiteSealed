@@ -11,12 +11,22 @@ import {
   createUploadGrantRequest,
   encryptManifest,
   encryptOriginal,
-  formatBytes,
   MAX_FILE_BYTES,
   recoverOriginalFromPrivateRecoveryKit,
   sha256File,
   verifyPublicProofArtifacts,
 } from "./sealing.js";
+import {
+  getActiveLocale,
+  localizeRailStatus,
+  localizeScope,
+  translate,
+} from "./i18n/index.js";
+import {
+  LanguageSelector,
+  Localized,
+  useI18n,
+} from "./i18n/I18nProvider.jsx";
 const SPECIMEN_ID = "SR-2026-08-0147-A3";
 
 const pipeline = [
@@ -271,10 +281,12 @@ function GoogleMark() {
 
 function Brand({ compact = false }) {
   return (
-    <a className={`brand${compact ? " brand--compact" : ""}`} href="#top" aria-label="SiteSealed home">
-      <img src="/icon-192.svg?v=20260812" alt="" width="42" height="42" />
-      <span className="brand__name">SITESEALED</span>
-    </a>
+    <Localized>
+      <a className={`brand${compact ? " brand--compact" : ""}`} href="#top" aria-label="SiteSealed home">
+        <img src="/icon-192.svg?v=20260812" alt="" width="42" height="42" />
+        <span className="brand__name">SITESEALED</span>
+      </a>
+    </Localized>
   );
 }
 
@@ -304,37 +316,40 @@ function Header({ onSeal, onVerify }) {
   };
 
   return (
-    <header className="site-header">
-      <div className="container header__inner">
-        <Brand />
-        <nav className={`nav${menuOpen ? " nav--open" : ""}`} aria-label="Primary navigation">
-          <a href="#method" onClick={close}>How it works</a>
-          <a href="#seal" onClick={close}>Create an Evidence Report</a>
-          <a href="#proof" onClick={close}>Dual rail</a>
-          <a href="#principles" onClick={close}>Principles</a>
-          <a href="/documents/SiteSealed_Whitepaper_v1.0_Genesis.pdf" onClick={close}>Whitepaper</a>
-          <button className="button button--small button--amber nav__cta" type="button" onClick={seal}>
-            Create an Evidence Report <Icon name="arrow" size={16} />
+    <Localized>
+      <header className="site-header">
+        <div className="container header__inner">
+          <Brand />
+          <nav className={`nav${menuOpen ? " nav--open" : ""}`} aria-label="Primary navigation">
+            <a href="#method" onClick={close}>How it works</a>
+            <a href="#seal" onClick={close}>Create an Evidence Report</a>
+            <a href="#proof" onClick={close}>Dual rail</a>
+            <a href="#principles" onClick={close}>Principles</a>
+            <a href="/documents/SiteSealed_Whitepaper_v1.0_Genesis.pdf" onClick={close}>Whitepaper</a>
+            <button className="button button--small button--amber nav__cta" type="button" onClick={seal}>
+              Create an Evidence Report <Icon name="arrow" size={16} />
+            </button>
+            <button className="nav__verify" type="button" onClick={verify}>Verify</button>
+          </nav>
+          <LanguageSelector className="header__language" />
+          <button
+            className="menu-toggle"
+            type="button"
+            aria-label={menuOpen ? "Close navigation" : "Open navigation"}
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            <Icon name={menuOpen ? "close" : "menu"} size={24} />
           </button>
-          <button className="nav__verify" type="button" onClick={verify}>Verify</button>
-        </nav>
-        <button
-          className="menu-toggle"
-          type="button"
-          aria-label={menuOpen ? "Close navigation" : "Open navigation"}
-          aria-expanded={menuOpen}
-          onClick={() => setMenuOpen((open) => !open)}
-        >
-          <Icon name={menuOpen ? "close" : "menu"} size={24} />
-        </button>
-      </div>
-    </header>
+        </div>
+      </header>
+    </Localized>
   );
 }
 
 function HeroSeal() {
   return (
-    <div className="hero-seal" aria-label="Illustration of a SiteSealed record carrying two independent proofs">
+    <Localized><div className="hero-seal" aria-label="Illustration of a SiteSealed record carrying two independent proofs">
       <div className="hero-seal__topbar">
         <span><i /> TARGET CAPTURE</span>
         <span>SR-2026-08-0147-A3</span>
@@ -375,17 +390,17 @@ function HeroSeal() {
         <span><small>TARGET PROOF BUNDLE</small><strong>Independently checkable</strong></span>
         <span className="seal-status__pulse" />
       </div>
-    </div>
+    </div></Localized>
   );
 }
 
 function SectionHeading({ eyebrow, title, copy, align = "left", inverse = false }) {
   return (
-    <div className={`section-heading section-heading--${align}${inverse ? " section-heading--inverse" : ""}`}>
+    <Localized><div className={`section-heading section-heading--${align}${inverse ? " section-heading--inverse" : ""}`}>
       <p className="eyebrow">{eyebrow}</p>
       <h2>{title}</h2>
       {copy && <p className="section-heading__copy">{copy}</p>}
-    </div>
+    </div></Localized>
   );
 }
 
@@ -421,11 +436,18 @@ async function readApiJson(response) {
   }
 }
 
+function localizedApiFailure(payload, fallbackId) {
+  const message = translate(getActiveLocale(), fallbackId);
+  const code = String(payload?.code ?? "").trim();
+  return code ? `${message} (${code})` : message;
+}
+
 async function generateAndDownloadEvidenceReport(
   originalFile,
   recordId,
   captureManifest = null,
 ) {
+  const locale = getActiveLocale();
   if (!originalFile) {
     throw new Error("Select the exact original before generating the Evidence Report.");
   }
@@ -436,11 +458,11 @@ async function generateAndDownloadEvidenceReport(
   ]);
   const verification = await readApiJson(verificationResponse);
   if (!verificationResponse.ok) {
-    throw new Error(verification.message || "The current record could not be verified.");
+    throw new Error(localizedApiFailure(verification, "api.verifyFailed"));
   }
   const proofBundle = await readApiJson(bundleResponse);
   if (!bundleResponse.ok) {
-    throw new Error(proofBundle.message || "The proof bundle could not be attached.");
+    throw new Error(localizedApiFailure(proofBundle, "api.bundleFailed"));
   }
 
   let timestampToken = null;
@@ -468,6 +490,7 @@ async function generateAndDownloadEvidenceReport(
     proofBundle,
     timestampToken,
     baseUrl: window.location.origin,
+    locale,
   });
   downloadBlob(
     evidenceReportFileName(recordId),
@@ -487,6 +510,7 @@ function recordIdFromPath() {
 }
 
 function GoogleSignInControl({ auth }) {
+  const { googleLocale } = useI18n();
   const buttonRef = useRef(null);
   const [buttonError, setButtonError] = useState("");
   const [buttonReady, setButtonReady] = useState(false);
@@ -533,7 +557,7 @@ function GoogleSignInControl({ auth }) {
       if (cspNonce && cspNonce !== "__SITESEALED_CSP_NONCE__") {
         googleScript.nonce = cspNonce;
       }
-      googleScript.src = "https://accounts.google.com/gsi/client?hl=en";
+      googleScript.src = `https://accounts.google.com/gsi/client?hl=${encodeURIComponent(googleLocale)}`;
       googleScript.async = true;
       googleScript.defer = true;
       googleScript.dataset.sitesealedGoogleIdentity = "true";
@@ -567,7 +591,7 @@ function GoogleSignInControl({ auth }) {
           text: "continue_with",
           logo_alignment: "left",
           width: 400,
-          locale: "en_US",
+          locale: googleLocale,
         });
         setButtonError("");
         setButtonReady(true);
@@ -600,10 +624,11 @@ function GoogleSignInControl({ auth }) {
     auth.configured,
     auth.loginUri,
     auth.status,
+    googleLocale,
   ]);
 
   return (
-    <div className="google-signin-control">
+    <Localized><div className="google-signin-control">
       <div className="google-signin-slot" data-ready={buttonReady ? "true" : "false"}>
         <span
           className="google-signin-visual button button--amber"
@@ -628,13 +653,13 @@ function GoogleSignInControl({ auth }) {
           {buttonError || "Loading secure Google sign-in…"}
         </small>
       )}
-    </div>
+    </div></Localized>
   );
 }
 
 function GoogleAccountAccess({ auth, onLogout }) {
   return (
-    <div className="account-access" aria-live="polite">
+    <Localized><div className="account-access" aria-live="polite">
       <div className="account-access__copy">
         <span>DEPOSIT ACCOUNT</span>
         {auth.status === "loading" && <strong>Checking your SiteSealed session…</strong>}
@@ -662,7 +687,7 @@ function GoogleAccountAccess({ auth, onLogout }) {
           </button>
         </div>
       )}
-    </div>
+    </div></Localized>
   );
 }
 
@@ -706,6 +731,11 @@ function canvasJpegBlob(video) {
 }
 
 function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
+  const {
+    formatBytes: formatLocalizedBytes,
+    formatDateTime,
+    t,
+  } = useI18n();
   const fileInputId = useId();
   const projectInputId = useId();
   const descriptionInputId = useId();
@@ -837,7 +867,7 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
       if (!challengeResponse.ok) {
         if (challengeResponse.status === 401) await onAuthRefresh();
         throw new Error(
-          challengePayload.message || "A fresh capture challenge could not be issued.",
+          localizedApiFailure(challengePayload, "camera.challengeFailed"),
         );
       }
 
@@ -924,7 +954,7 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
     }
     if (file.size > MAX_FILE_BYTES) {
       setStatus("error");
-      setMessage("This v1.5 alpha workflow accepts files up to 25 MB.");
+      setMessage("This v1.6 alpha workflow accepts files up to 25 MB.");
       return;
     }
     if (workflowMode === "live" && !captureContext) {
@@ -1015,7 +1045,7 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
           if (!grantResponse.ok) {
             if (grantResponse.status === 401) await onAuthRefresh();
             throw new Error(
-              grantPayload.message || "The encrypted deposit was not authorized.",
+              localizedApiFailure(grantPayload, "seal.depositDenied"),
             );
           }
           attempt.uploadGrant = grantPayload.grant;
@@ -1047,7 +1077,7 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
             attempt.uploadGrant = null;
           }
           throw new Error(
-            uploadPayload.message || "The encrypted original could not be stored.",
+            localizedApiFailure(uploadPayload, "seal.uploadFailed"),
           );
         }
         encryptedObject = uploadPayload.encryptedObject;
@@ -1081,7 +1111,7 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
       const payload = await readApiJson(response);
       if (!response.ok) {
         if (response.status === 401) await onAuthRefresh();
-        throw new Error(payload.message || "The Evidence Report record could not be created.");
+        throw new Error(localizedApiFailure(payload, "seal.recordFailed"));
       }
 
       const kit = createPrivateRecoveryKit({
@@ -1121,7 +1151,7 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
       });
       if (!response.ok) {
         const payload = await readApiJson(response);
-        throw new Error(payload.message || "The encrypted backup could not be retrieved.");
+        throw new Error(localizedApiFailure(payload, "seal.backupFailed"));
       }
       downloadBlob(
         `SiteSealed_${result.record.recordId}_encrypted-original.ssenc`,
@@ -1158,16 +1188,16 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
     hashing: "Hashing the file locally...",
     encrypting: "Encrypting the manifest and original locally...",
     authorizing: "Requesting a one-time, object-bound deposit grant...",
-    uploading: "Sending only encrypted ciphertext to the private Bucket...",
+    uploading: "Sending only encrypted ciphertext to the private bucket...",
     recording: "Binding the MySQL evidence record and PostgreSQL audit event...",
   }[status];
 
   return (
-    <div className="sealing-workbench">
+    <Localized><div className="sealing-workbench">
       <div className="sealing-workbench__header">
         <span className="sealing-workbench__icon"><Icon name="shield" size={25} /></span>
         <div>
-          <span>V1.5 CAPTURE ARCHITECTURE</span>
+          <span>V1.6 CAPTURE ARCHITECTURE</span>
           <strong>
             {workflowMode === "live"
               ? "Create a context-bound live capture"
@@ -1204,7 +1234,7 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
           onClick={() => changeWorkflowMode("import")}
         >
           <Icon name="upload" size={18} />
-          <span><strong>Import existing file</strong><small>Integrity only - no capture claim</small></span>
+          <span><strong>Import existing file</strong><small>Integrity only — no capture claim</small></span>
         </button>
       </div>
 
@@ -1265,9 +1295,9 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
               {captureContext && file && (
                 <div className="live-camera__attestation">
                   <span>SERVER CHALLENGE + CLIENT CONTEXT BOUND</span>
-                  <strong>{new Date(captureContext.capturedAt).toLocaleString()}</strong>
+                  <strong>{formatDateTime(captureContext.capturedAt)}</strong>
                   <small>
-                    {captureContext.location.latitude.toFixed(6)}, {captureContext.location.longitude.toFixed(6)} (+/- {Math.round(captureContext.location.accuracyMeters)} m)
+                    {captureContext.location.latitude.toFixed(6)}, {captureContext.location.longitude.toFixed(6)} ({t("workbench.locationAccuracy", { meters: Math.round(captureContext.location.accuracyMeters) })})
                   </small>
                 </div>
               )}
@@ -1288,12 +1318,12 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
                 {file ? (
                   <>
                     <strong>{file.name}</strong>
-                    <small>{formatBytes(file.size)} - click to replace</small>
+                    <small>{t("workbench.replaceFile", { size: formatLocalizedBytes(file.size) })}</small>
                   </>
                 ) : (
                   <>
                     <strong>Select an existing construction record</strong>
-                    <small>Photo, PDF or other file - maximum 25 MB</small>
+                    <small>Photo, PDF or other file — maximum 25 MB</small>
                   </>
                 )}
               </label>
@@ -1393,15 +1423,15 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
                 <small>EVIDENCE RECORD CREATED / EXTERNAL RAILS QUEUED</small>
                 <h3>{result.record.recordId}</h3>
               </div>
-              <em>{result.storage?.persistent ? "S3 + MySQL + PostgreSQL persisted" : "Memory only - not persistent"}</em>
+              <em>{result.storage?.persistent ? "S3 + MySQL + PostgreSQL persisted" : "Memory only — not persistent"}</em>
             </div>
             <div className="seal-success__facts">
               <div><span>FILE SHA-256</span><code>{result.record.sha256}</code></div>
               {result.record.recordClass === "LIVE_CAPTURE_WEB" && (
-                <div><span>CLAIMED CAPTURE TIME</span><strong>{new Date(result.record.capturedAt).toLocaleString()}</strong></div>
+                <div><span>CLAIMED CAPTURE TIME</span><strong>{formatDateTime(result.record.capturedAt)}</strong></div>
               )}
-              <div><span>SERVER RECORD TIME</span><strong>{new Date(result.record.receivedAt).toLocaleString()}</strong></div>
-              <div><span>CANONICAL EXPORT</span><strong>Evidence Report PDF - visible and exact original incorporated</strong></div>
+              <div><span>SERVER RECORD TIME</span><strong>{formatDateTime(result.record.receivedAt)}</strong></div>
+              <div><span>CANONICAL EXPORT</span><strong>Evidence Report PDF — visible and exact original incorporated</strong></div>
             </div>
             <div className="seal-success__warning">
               <Icon name="key" size={19} />
@@ -1420,7 +1450,7 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
                 <Icon name="download" size={16} />
               </button>
               <button className="button button--navy" type="button" onClick={downloadRecoveryKit}>
-                Recovery kit - keep secret <Icon name="download" size={16} />
+                Recovery kit — keep secret <Icon name="download" size={16} />
               </button>
               <button
                 className="button button--outline"
@@ -1452,7 +1482,7 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
           </div>
         )}
       </div>
-    </div>
+    </div></Localized>
   );
 }
 
@@ -1478,7 +1508,7 @@ function Verifier() {
         body: JSON.stringify({ recordId }),
       });
       const payload = await readApiJson(response);
-      if (!response.ok) throw new Error(payload.message || "Verification failed.");
+      if (!response.ok) throw new Error(localizedApiFailure(payload, "api.verificationFailed"));
       setResult(payload);
       setStatus("success");
     } catch (error) {
@@ -1602,6 +1632,11 @@ function Verifier() {
 }
 
 function VerifierV12({ requestedRecord }) {
+  const {
+    locale,
+    formatBytes: formatLocalizedBytes,
+    t,
+  } = useI18n();
   const inputId = useId();
   const compareInputId = useId();
   const recoveryKitInputId = useId();
@@ -1637,7 +1672,7 @@ function VerifierV12({ requestedRecord }) {
     try {
       const response = await fetch(`/api/verify/${encodeURIComponent(normalized)}`);
       const payload = await readApiJson(response);
-      if (!response.ok) throw new Error(payload.message || "Verification failed.");
+      if (!response.ok) throw new Error(localizedApiFailure(payload, "api.verificationFailed"));
 
       let nextFileCheck = { state: "NOT_CHECKED", digest: null };
       if (fileToCheck) {
@@ -1665,7 +1700,11 @@ function VerifierV12({ requestedRecord }) {
       }
       setFileCheck(nextFileCheck);
       setStatus("success");
-      window.history.replaceState({}, "", `/verify/${encodeURIComponent(normalized)}`);
+      window.history.replaceState(
+        {},
+        "",
+        `/verify/${encodeURIComponent(normalized)}?lang=${encodeURIComponent(locale)}`,
+      );
     } catch (error) {
       setStatus("error");
       setMessage(error instanceof Error ? error.message : "Verification failed.");
@@ -1744,7 +1783,9 @@ function VerifierV12({ requestedRecord }) {
       setFileCheck({ state: "MATCH", digest: result.record.sha256 });
       setRecoveryKitStatus("success");
       setRecoveryKitMessage(
-        `Exact live capture recovered and verified locally (${formatBytes(recoveredOriginal.size)}). No separate photo is required.`,
+        t("verify.recoveredMessage", {
+          size: formatLocalizedBytes(recoveredOriginal.size),
+        }),
       );
     } catch (error) {
       setPrivateRecoveryKit(null);
@@ -1809,7 +1850,7 @@ function VerifierV12({ requestedRecord }) {
         ? "LOCAL FILE MATCH VERIFIED"
         : fileCheck.state === "MISMATCH"
           ? "LOCAL FILE DOES NOT MATCH"
-          : "V1.5 ALPHA EVIDENCE RECORD FOUND";
+        : "V1.6 ALPHA EVIDENCE RECORD FOUND";
 
   const qualifiedRailReady = Boolean(
     result?.specimen ||
@@ -1844,14 +1885,14 @@ function VerifierV12({ requestedRecord }) {
             : "EXTERNAL RAILS QUEUED";
 
   return (
-    <div className="verifier-shell verifier-shell--v12">
+    <Localized><div className="verifier-shell verifier-shell--v12">
       <div className="verifier-shell__header">
         <span className="verifier-shell__icon"><Icon name="shield" size={24} /></span>
         <div>
           <span>PUBLIC VERIFICATION PORTAL</span>
           <strong>Evidence record and original-file checker</strong>
         </div>
-        <span className="live-pill">V1.5 ALPHA</span>
+        <span className="live-pill">V1.6 ALPHA</span>
       </div>
 
       <form className="verify-form" onSubmit={verify} noValidate>
@@ -1889,7 +1930,7 @@ function VerifierV12({ requestedRecord }) {
               onChange={selectComparisonFile}
             />
             <label htmlFor={compareInputId}>
-              {comparisonFile ? `${comparisonFile.name} (${formatBytes(comparisonFile.size)})` : "Choose local file"}
+              {comparisonFile ? `${comparisonFile.name} (${formatLocalizedBytes(comparisonFile.size)})` : "Choose local file"}
             </label>
           </div>
         )}
@@ -1997,7 +2038,7 @@ function VerifierV12({ requestedRecord }) {
                         : "Evidence digest valid; public anchor not attached yet"}
                   </strong>
                   <p>
-                    Evidence digest: {result.clientProofCheck?.evidenceDigest} · Merkle inclusion: {result.clientProofCheck?.merkleInclusion} · Ethereum calldata: {result.clientProofCheck?.transactionBinding}
+                    {t("verify.evidenceDigest")}: {result.clientProofCheck?.evidenceDigest} · {t("common.merkleInclusion")}: {result.clientProofCheck?.merkleInclusion} · {t("verify.ethereumCalldata")}: {result.clientProofCheck?.transactionBinding}
                   </p>
                 </div>
               </div>
@@ -2007,12 +2048,17 @@ function VerifierV12({ requestedRecord }) {
               <article className={`verified-rail verified-rail--green${qualifiedRailReady ? "" : " verified-rail--pending"}`}>
                 <span>RAIL A / RFC 3161 TIME</span>
                 <strong>{result.record.qualifiedRail.provider}</strong>
-                <p>{result.record.qualifiedRail.status}</p>
+                <p>{localizeRailStatus(locale, "qualified", result.record.qualifiedRail)}</p>
               </article>
               <article className={`verified-rail verified-rail--amber${chainRailFailed ? " verified-rail--failed" : chainRailReady ? "" : " verified-rail--pending"}`}>
                 <span>RAIL B / ETHEREUM MAINNET</span>
                 <strong>{result.record.chainRail.chain}</strong>
-                <p>{result.record.chainRail.block ? `Block ${result.record.chainRail.block} - ` : ""}{result.record.chainRail.status}</p>
+                <p>{result.record.chainRail.block
+                  ? t("verify.block", {
+                      block: result.record.chainRail.block,
+                      status: localizeRailStatus(locale, "chain", result.record.chainRail),
+                    })
+                  : localizeRailStatus(locale, "chain", result.record.chainRail)}</p>
               </article>
             </div>
 
@@ -2030,7 +2076,9 @@ function VerifierV12({ requestedRecord }) {
                 {result.operationalAudit?.state === "RECORDED" ? (
                   <>
                     <strong>
-                      Event sequence {result.operationalAudit.event.sequence} - hash chain valid
+                      {t("verify.auditRecorded", {
+                        sequence: result.operationalAudit.event.sequence,
+                      })}
                     </strong>
                     <code>{result.operationalAudit.event.eventSha256}</code>
                   </>
@@ -2094,12 +2142,12 @@ function VerifierV12({ requestedRecord }) {
             )}
 
             <p className="verified-result__disclaimer">
-              <strong>Honest scope:</strong> {result.scope.doesNotProve}
+              <strong>Honest scope:</strong> {localizeScope(locale, result).doesNotProve}
             </p>
           </div>
         )}
       </div>
-    </div>
+    </div></Localized>
   );
 }
 
@@ -2175,10 +2223,10 @@ function InfrastructureStatus() {
   ];
 
   return (
-    <div className="infrastructure-status" aria-live="polite">
+    <Localized><div className="infrastructure-status" aria-live="polite">
       <div className="infrastructure-status__heading">
         <div>
-          <span>V1.5 ALPHA.3 / SIX RUNTIME ROLES</span>
+          <span>V1.6 ALPHA.1 / SIX RUNTIME ROLES</span>
           <strong>Private storage, internal audit and two external proof rails.</strong>
         </div>
         <small className={failed ? "is-error" : health ? "is-online" : ""}>
@@ -2232,7 +2280,7 @@ function InfrastructureStatus() {
             <div
               className="infrastructure-node"
               key={service.name}
-              title={service.data?.message ?? undefined}
+              title={`${service.name}: ${label}`}
             >
               <i className={indicatorClass} />
               <div>
@@ -2248,7 +2296,7 @@ function InfrastructureStatus() {
         Evidency sandbox is test-only and never qualified. Ethereum writes are opt-in,
         use real ETH and run in the separate hourly Railway worker.
       </p>
-    </div>
+    </div></Localized>
   );
 }
 
@@ -2277,7 +2325,7 @@ function App() {
       ]);
       if (!configResponse.ok || !sessionResponse.ok) {
         throw new Error(
-          config.message || session.message || "The account service could not be reached.",
+          localizedApiFailure(config.code ? config : session, "api.accountUnavailable"),
         );
       }
       setAuth({
@@ -2288,7 +2336,9 @@ function App() {
         loginUri: config.loginUri ?? null,
         user: session.user ?? null,
         csrfToken: session.csrfToken ?? null,
-        error: config.configurationError || "",
+        error: config.configurationError
+          ? translate(getActiveLocale(), "account.notConfigured")
+          : "",
       });
     } catch (error) {
       setAuth((current) => ({
@@ -2318,7 +2368,7 @@ function App() {
       });
       const payload = await readApiJson(response);
       if (!response.ok) {
-        throw new Error(payload.message || "The account session could not be closed.");
+        throw new Error(localizedApiFailure(payload, "api.logoutFailed"));
       }
       await refreshAuth();
     } catch (error) {
@@ -2344,7 +2394,7 @@ function App() {
   };
 
   return (
-    <>
+    <Localized><>
       <a className="skip-link" href="#main-content">Skip to content</a>
       <Header onSeal={scrollToSeal} onVerify={scrollToVerifier} />
 
@@ -2353,7 +2403,7 @@ function App() {
           <div className="hero__mesh" aria-hidden="true" />
           <div className="container hero__inner">
             <div className="hero__copy">
-              <div className="phase-tag"><span>V1.5 ALPHA</span> EVIDENCY SANDBOX + ETHEREUM MAINNET</div>
+              <div className="phase-tag"><span>V1.6 ALPHA</span> EVIDENCY SANDBOX + ETHEREUM MAINNET</div>
               <h1>Construction records that can <em>verify themselves.</em></h1>
               <p className="hero__lede">
                 Create a real SHA-256 evidence record and client-encrypted backup, then export one canonical Evidence Report containing the visible exact original. Evidency sandbox time has no legal effect, so final “sealed” status stays disabled.
@@ -2533,7 +2583,7 @@ function App() {
               <SectionHeading
                 eyebrow="05 / First real workflow"
                 title="Hash locally. Encrypt locally. Record only what is necessary."
-                copy="This v1.5 alpha adds a context-bound web-camera class while preserving imported files as a separate integrity-only class. It issues test timestamps through the unchanged Evidency sandbox adapter and batches evidence digests for the unchanged Ethereum mainnet anchor, while keeping the whitepaper's final legal threshold visibly out of reach."
+                copy="This v1.6 alpha adds a context-bound web-camera class while preserving imported files as a separate integrity-only class. It issues test timestamps through the unchanged Evidency sandbox adapter and batches evidence digests for the unchanged Ethereum mainnet anchor, while keeping the whitepaper's final legal threshold visibly out of reach."
               />
               <div className="seal-workflow__boundary">
                 <span><Icon name="alert" size={18} /> CURRENT BOUNDARY</span>
@@ -2659,7 +2709,7 @@ function App() {
             </div>
             <div>
               <strong>Status</strong>
-              <span>Genesis v1.5 alpha.3 context-bound capture MVP</span>
+              <span>Genesis v1.6 alpha.1 context-bound capture MVP</span>
               <span>Evidency sandbox test rail</span>
               <span>Ethereum mainnet final rail</span>
             </div>
@@ -2671,7 +2721,7 @@ function App() {
           <a href="#top">Back to top ↑</a>
         </div>
       </footer>
-    </>
+    </></Localized>
   );
 }
 

@@ -1,9 +1,19 @@
-# SiteSealed Genesis v1.5.0-alpha.3 — Context-bound capture
+# SiteSealed Genesis v1.6.0-alpha.1 — International Evidence Reports
 
 SiteSealed crée des enregistrements d'intégrité et un seul artefact humain
 canonique : le **SiteSealed Evidence Report PDF**. Le rapport affiche l'original,
 l'incorpore byte-for-byte comme fichier source associé, décrit la portée exacte
 de la preuve et rassemble les artefacts des deux rails externes.
+
+## Internationalisation de l’interface et des rapports
+
+L’application et les Evidence Reports sont disponibles en anglais américain
+(`en-US`), français de Belgique (`fr-BE`), néerlandais de Belgique (`nl-BE`),
+allemand (`de-DE`) et portugais brésilien (`pt-BR`). La langue est choisie dans
+l’en-tête, conservée localement et propagée au générateur PDF. Les dates,
+nombres et tailles sont formatés selon la locale sélectionnée. Les données
+canoniques de preuve — codes d’état, schémas, empreintes, manifestes, signatures,
+preuves Merkle et données Ethereum — ne sont jamais traduites ni modifiées.
 
 Cette version avance vers le whitepaper sans transformer une capacité web en
 promesse excessive. Elle introduit une classe de capture web liée à un compte,

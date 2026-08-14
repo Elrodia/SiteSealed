@@ -477,7 +477,7 @@ test("the browser creates one Evidence Report containing the visible and exact o
 
   const { document, attachments } = await extractPdfAttachments(reportBytes);
   assert.equal(document.getPageCount(), 2);
-  assert.equal(document.getTitle(), `SiteSealed Evidence Report ${recordId}`);
+  assert.equal(document.getTitle(), `EVIDENCE REPORT — SiteSealed ${recordId}`);
   assert.deepEqual(
     Buffer.from(attachments.get("SiteSealed_ORIGINAL_site-inspection.png")),
     originalBytes,
@@ -494,6 +494,7 @@ test("the browser creates one Evidence Report containing the visible and exact o
   assert.equal(manifest.original.sha256, sha256);
   assert.equal(manifest.original.byteLength, originalBytes.length);
   assert.equal(manifest.original.byteIdentityVerified, true);
+  assert.equal(manifest.locale, "en-US");
 });
 
 test("a live-capture Evidence Report embeds and cross-checks its private canonical manifest", async () => {
@@ -639,14 +640,14 @@ test("the browser uses Google Identity Services and sends SiteSealed CSRF tokens
   );
   assert.match(source, /google\.accounts\.id\.renderButton/);
   assert.match(source, /ux_mode: "redirect"/);
-  assert.match(source, /gsi\/client\?hl=en/);
+  assert.match(source, /gsi\/client\?hl=\$\{encodeURIComponent\(googleLocale\)\}/);
   assert.match(source, /googleScript\.nonce = cspNonce/);
   assert.match(source, /color_scheme: "dark"/);
   assert.match(source, /type: "standard"/);
   assert.match(source, /theme: "outline_dark"/);
   assert.match(source, /size: "large"/);
   assert.match(source, /width: 400/);
-  assert.match(source, /locale: "en_US"/);
+  assert.match(source, /locale: googleLocale/);
   assert.match(source, /function GoogleMark\(\)/);
   assert.match(source, /Continue with Google before uploading/);
   assert.match(source, /generateSiteSealedEvidenceReport/);

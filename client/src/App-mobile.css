@@ -81,9 +81,14 @@
   }
 
   .brand,
+  .header__language,
   .menu-toggle {
     position: relative;
     z-index: 2;
+  }
+
+  .header__language {
+    margin-left: auto;
   }
 
   .nav > a {
@@ -370,6 +375,10 @@
 }
 
 @media (max-width: 600px) {
+  .language-selector select {
+    width: 92px;
+  }
+
   .container {
     width: calc(100% - 34px);
   }
