@@ -4,9 +4,14 @@ import {
   StandardFonts,
   rgb,
 } from "pdf-lib";
+import {
+  SITESEALED_FAVICON_BACKGROUND_PATH,
+  SITESEALED_FAVICON_MARK_PATH,
+  SITESEALED_FAVICON_RING_PATH,
+} from "./report-brand.js";
 import { sha256CanonicalJson, sha256File } from "./sealing.js";
 
-const RELEASE = "1.5.0-alpha.2";
+const RELEASE = "1.5.0-alpha.3";
 const PAGE_WIDTH = 612;
 const PAGE_HEIGHT = 792;
 const COLORS = {
@@ -23,6 +28,31 @@ const COLORS = {
   line: rgb(217 / 255, 223 / 255, 226 / 255),
   white: rgb(1, 1, 1),
 };
+
+function drawFavicon(page) {
+  const x = 37;
+  const top = 767;
+  const scale = 42 / 192;
+  page.drawSvgPath(SITESEALED_FAVICON_BACKGROUND_PATH, {
+    x,
+    y: top,
+    scale,
+    color: rgb(14 / 255, 42 / 255, 71 / 255),
+  });
+  page.drawSvgPath(SITESEALED_FAVICON_RING_PATH, {
+    x,
+    y: top,
+    scale,
+    borderColor: rgb(217 / 255, 130 / 255, 27 / 255),
+    borderWidth: 12.75,
+  });
+  page.drawSvgPath(SITESEALED_FAVICON_MARK_PATH, {
+    x,
+    y: top,
+    scale,
+    color: rgb(244 / 255, 239 / 255, 232 / 255),
+  });
+}
 
 function printable(value, fallback = "Unavailable") {
   const normalized = String(value ?? "").trim();
@@ -165,20 +195,7 @@ function drawHeader(page, fonts, recordId, state, pageNumber, totalPages) {
     height: 3,
     color: COLORS.amber,
   });
-  page.drawCircle({
-    x: 58,
-    y: 746,
-    size: 21,
-    borderColor: COLORS.amber,
-    borderWidth: 1.5,
-  });
-  page.drawText("SS", {
-    x: 49.5,
-    y: 742.5,
-    font: fonts.bold,
-    size: 8,
-    color: COLORS.amber,
-  });
+  drawFavicon(page);
   page.drawText("EVIDENCE REPORT", {
     x: 92,
     y: 750,
@@ -202,12 +219,22 @@ function drawHeader(page, fonts, recordId, state, pageNumber, totalPages) {
     borderWidth: 1,
   });
   const badge = printable(state).slice(0, 40);
+  const requestedBadgeSize = badge === "ALPHA DUAL RAIL COMPLETE" ? 9.4 : 7.2;
+  const badgeWidth = 144;
+  const naturalBadgeWidth = fonts.bold.widthOfTextAtSize(
+    badge,
+    requestedBadgeSize,
+  );
+  const badgeSize = Math.min(
+    requestedBadgeSize,
+    requestedBadgeSize * (badgeWidth / naturalBadgeWidth),
+  );
+  const renderedBadgeWidth = fonts.bold.widthOfTextAtSize(badge, badgeSize);
   page.drawText(badge, {
-    x: 419,
-    y: 743,
-    width: 144,
+    x: 419 + (badgeWidth - renderedBadgeWidth) / 2,
+    y: 741.7,
     font: fonts.bold,
-    size: 6.4,
+    size: badgeSize,
     color: COLORS.amber,
   });
   page.drawText(`PAGE ${pageNumber} / ${totalPages}`, {
@@ -679,12 +706,6 @@ export async function generateSiteSealedEvidenceReport({
   const pageOne = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
   const pageTwo = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
   const pageThree = liveCapture ? pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT]) : null;
-  drawHeader(pageOne, fonts, record.recordId, state, 1, totalPages);
-  drawHeader(pageTwo, fonts, record.recordId, state, 2, totalPages);
-  if (pageThree) drawHeader(pageThree, fonts, record.recordId, state, 3, totalPages);
-  drawFooter(pageOne, fonts);
-  drawFooter(pageTwo, fonts);
-  if (pageThree) drawFooter(pageThree, fonts);
 
   drawSection(pageOne, fonts, "1", "ORIGINAL RECORD", 672);
   pageOne.drawRectangle({
@@ -916,6 +937,16 @@ export async function generateSiteSealedEvidenceReport({
       verification,
     );
   }
+
+  // Draw the fixed chrome last so embedded image previews can never obscure it.
+  drawHeader(pageOne, fonts, record.recordId, state, 1, totalPages);
+  drawHeader(pageTwo, fonts, record.recordId, state, 2, totalPages);
+  if (pageThree) {
+    drawHeader(pageThree, fonts, record.recordId, state, 3, totalPages);
+  }
+  drawFooter(pageOne, fonts);
+  drawFooter(pageTwo, fonts);
+  if (pageThree) drawFooter(pageThree, fonts);
 
   const proofName = attachmentName(
     `SiteSealed_${record.recordId}_proof-bundle.json`,

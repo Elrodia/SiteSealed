@@ -562,7 +562,7 @@ export function createApp({
     response.status(200).json({
       ok: true,
       service: "sitesealed",
-      version: "1.5.0-alpha.2",
+      version: "1.5.0-alpha.3",
       sealing: {
         workflow: "CONTEXT_BOUND_WEB_CAPTURE_WITH_SEPARATE_IMPORTED_CLASS",
         liveCapture: {
