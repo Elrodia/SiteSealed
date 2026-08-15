@@ -259,13 +259,13 @@ after(async () => {
   });
 });
 
-test("health endpoint reports the honest v1.6-alpha.1 capability boundary", async () => {
+test("health endpoint reports the honest v1.6-alpha.2 capability boundary", async () => {
   const response = await fetch(`${baseUrl}/api/health`);
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.ok, true);
   assert.equal(payload.service, "sitesealed");
-  assert.equal(payload.version, "1.6.0-alpha.1");
+  assert.equal(payload.version, "1.6.0-alpha.2");
   assert.equal(
     payload.sealing.workflow,
     "CONTEXT_BOUND_WEB_CAPTURE_WITH_SEPARATE_IMPORTED_CLASS",
@@ -872,9 +872,10 @@ test("unknown records fail honestly", async () => {
   assert.equal(payload.code, "RECORD_NOT_FOUND");
 });
 
-test("the production server serves the React application, official brand assets and compatible proof schemas", async () => {
-  const [homeResponse, faviconResponse, iconResponse, icon512Response, manifestResponse, reportResponse, legacySchemaResponse, currentSchemaResponse] = await Promise.all([
+test("the production server serves the React application, social preview, official brand assets and compatible proof schemas", async () => {
+  const [homeResponse, socialResponse, faviconResponse, iconResponse, icon512Response, manifestResponse, reportResponse, legacySchemaResponse, currentSchemaResponse] = await Promise.all([
     fetch(`${baseUrl}/`),
+    fetch(`${baseUrl}/sitesealed-social-1200x628.png`),
     fetch(`${baseUrl}/favicon.svg?v=20260812`),
     fetch(`${baseUrl}/icon-192.svg`),
     fetch(`${baseUrl}/icon-512.svg?v=20260812`),
@@ -888,6 +889,19 @@ test("the production server serves the React application, official brand assets 
   assert.match(homeHtml, /id="root"/);
   assert.match(homeHtml, /favicon\.svg\?v=20260812/);
   assert.match(homeHtml, /<html lang="en-US">/);
+  assert.match(homeHtml, /<link rel="canonical" href="https:\/\/app\.sitesealed\.com\/"/);
+  assert.match(
+    homeHtml,
+    /property="og:image" content="https:\/\/app\.sitesealed\.com\/sitesealed-social-1200x628\.png"/,
+  );
+  assert.match(homeHtml, /property="og:image:width" content="1200"/);
+  assert.match(homeHtml, /property="og:image:height" content="628"/);
+  assert.match(homeHtml, /name="twitter:card" content="summary_large_image"/);
+  assert.match(
+    homeHtml,
+    /<title>SiteSealed — verifiable construction evidence<\/title>/,
+  );
+  assert.doesNotMatch(homeHtml, /SiteSealed v1\.6|alpha\.[0-9]/i);
   const cspNonce = homeHtml.match(
     /name="sitesealed-csp-nonce" content="([A-Za-z0-9_-]+)"/,
   )?.[1];
@@ -906,6 +920,12 @@ test("the production server serves the React application, official brand assets 
     new RegExp(`style-src[^;]*'nonce-${cspNonce}'`),
   );
   assert.doesNotMatch(contentSecurityPolicy, /unsafe-inline/);
+  assert.equal(socialResponse.status, 200);
+  assert.match(socialResponse.headers.get("content-type"), /image\/png/);
+  const socialBytes = Buffer.from(await socialResponse.arrayBuffer());
+  assert.equal(socialBytes.subarray(1, 4).toString("ascii"), "PNG");
+  assert.equal(socialBytes.readUInt32BE(16), 1200);
+  assert.equal(socialBytes.readUInt32BE(20), 628);
   assert.equal(faviconResponse.status, 200);
   assert.match(faviconResponse.headers.get("content-type"), /image\/svg\+xml/);
   assert.match(faviconResponse.headers.get("cache-control"), /no-cache/);

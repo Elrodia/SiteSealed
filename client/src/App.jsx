@@ -954,7 +954,7 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
     }
     if (file.size > MAX_FILE_BYTES) {
       setStatus("error");
-      setMessage("This v1.6 alpha workflow accepts files up to 25 MB.");
+      setMessage("This workflow accepts files up to 25 MB.");
       return;
     }
     if (workflowMode === "live" && !captureContext) {
@@ -1197,7 +1197,7 @@ function SealingWorkbench({ auth, onAuthRefresh, onLogout, onVerify }) {
       <div className="sealing-workbench__header">
         <span className="sealing-workbench__icon"><Icon name="shield" size={25} /></span>
         <div>
-          <span>V1.6 CAPTURE ARCHITECTURE</span>
+          <span>CAPTURE WORKFLOW</span>
           <strong>
             {workflowMode === "live"
               ? "Create a context-bound live capture"
@@ -1850,7 +1850,7 @@ function VerifierV12({ requestedRecord }) {
         ? "LOCAL FILE MATCH VERIFIED"
         : fileCheck.state === "MISMATCH"
           ? "LOCAL FILE DOES NOT MATCH"
-        : "V1.6 ALPHA EVIDENCE RECORD FOUND";
+        : "EVIDENCE RECORD FOUND";
 
   const qualifiedRailReady = Boolean(
     result?.specimen ||
@@ -1892,7 +1892,7 @@ function VerifierV12({ requestedRecord }) {
           <span>PUBLIC VERIFICATION PORTAL</span>
           <strong>Evidence record and original-file checker</strong>
         </div>
-        <span className="live-pill">V1.6 ALPHA</span>
+        <span className="live-pill">PUBLIC VERIFICATION</span>
       </div>
 
       <form className="verify-form" onSubmit={verify} noValidate>
@@ -2226,7 +2226,7 @@ function InfrastructureStatus() {
     <Localized><div className="infrastructure-status" aria-live="polite">
       <div className="infrastructure-status__heading">
         <div>
-          <span>V1.6 ALPHA.1 / SIX RUNTIME ROLES</span>
+          <span>V1.6 ALPHA.2 / SIX RUNTIME ROLES</span>
           <strong>Private storage, internal audit and two external proof rails.</strong>
         </div>
         <small className={failed ? "is-error" : health ? "is-online" : ""}>
@@ -2403,7 +2403,7 @@ function App() {
           <div className="hero__mesh" aria-hidden="true" />
           <div className="container hero__inner">
             <div className="hero__copy">
-              <div className="phase-tag"><span>V1.6 ALPHA</span> EVIDENCY SANDBOX + ETHEREUM MAINNET</div>
+              <div className="phase-tag">EVIDENCY SANDBOX + ETHEREUM MAINNET</div>
               <h1>Construction records that can <em>verify themselves.</em></h1>
               <p className="hero__lede">
                 Create a real SHA-256 evidence record and client-encrypted backup, then export one canonical Evidence Report containing the visible exact original. Evidency sandbox time has no legal effect, so final “sealed” status stays disabled.
@@ -2583,7 +2583,7 @@ function App() {
               <SectionHeading
                 eyebrow="05 / First real workflow"
                 title="Hash locally. Encrypt locally. Record only what is necessary."
-                copy="This v1.6 alpha adds a context-bound web-camera class while preserving imported files as a separate integrity-only class. It issues test timestamps through the unchanged Evidency sandbox adapter and batches evidence digests for the unchanged Ethereum mainnet anchor, while keeping the whitepaper's final legal threshold visibly out of reach."
+                copy="This controlled release adds a context-bound web-camera class while preserving imported files as a separate integrity-only class. It issues test timestamps through the unchanged Evidency sandbox adapter and batches evidence digests for the unchanged Ethereum mainnet anchor, while keeping the whitepaper's final legal threshold visibly out of reach."
               />
               <div className="seal-workflow__boundary">
                 <span><Icon name="alert" size={18} /> CURRENT BOUNDARY</span>
@@ -2709,7 +2709,7 @@ function App() {
             </div>
             <div>
               <strong>Status</strong>
-              <span>Genesis v1.6 alpha.1 context-bound capture MVP</span>
+              <span>Context-bound capture workflow</span>
               <span>Evidency sandbox test rail</span>
               <span>Ethereum mainnet final rail</span>
             </div>

@@ -20,7 +20,7 @@ import {
   translate,
 } from "./i18n/index.js";
 
-const RELEASE = "1.6.0-alpha.1";
+const RELEASE = "1.6.0-alpha.2";
 const PAGE_WIDTH = 612;
 const PAGE_HEIGHT = 792;
 const COLORS = {
@@ -217,7 +217,7 @@ function drawHeader(page, fonts, recordId, state, pageNumber, totalPages, locale
     size: 16,
     color: COLORS.white,
   });
-  page.drawText(`SiteSealed ${RELEASE} | ${printable(recordId)}`, {
+  page.drawText(`SiteSealed | ${printable(recordId)}`, {
     x: 92,
     y: 729,
     font: fonts.regular,
@@ -712,7 +712,7 @@ export async function generateSiteSealedEvidenceReport({
   pdf.setTitle(`${translate(reportLocale, "report.title")} — SiteSealed ${record.recordId}`);
   pdf.setAuthor(translate(reportLocale, "report.metadata.author"));
   pdf.setSubject(translate(reportLocale, "report.metadata.subject"));
-  pdf.setCreator(translate(reportLocale, "report.metadata.creator", { release: RELEASE }));
+  pdf.setCreator(translate(reportLocale, "report.metadata.creator"));
   pdf.setProducer("pdf-lib / SiteSealed browser workflow");
   pdf.setCreationDate(reportTime);
   pdf.setModificationDate(reportTime);

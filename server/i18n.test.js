@@ -75,7 +75,9 @@ test("every locale catalog is structurally complete and translates critical surf
   const criticalIds = [
     "nav.create",
     "google.continueBeforeUpload",
+    "workbench.version",
     "workbench.liveTitle",
+    "verify.version",
     "verify.downloadReport",
     "scope.live.limit",
     "report.title",
@@ -91,6 +93,27 @@ test("every locale catalog is structurally complete and translates critical surf
         `${locale} must translate ${id}`,
       );
     }
+  }
+});
+
+test("buyer-facing release labels omit software version numbers", () => {
+  const publicIds = [
+    "seal.maxSize",
+    "workbench.version",
+    "verify.version",
+    "verify.recordFound",
+    "landing.workflowCopy",
+    "footer.mvp",
+  ];
+  for (const locale of SUPPORTED_LOCALES) {
+    for (const id of publicIds) {
+      assert.doesNotMatch(
+        translate(locale, id),
+        /\bv?\d+\.\d+(?:\.\d+)?(?:[- ]?alpha(?:\.\d+)?)?/i,
+        `${locale} exposes a software version in ${id}`,
+      );
+    }
+    assert.match(translate(locale, "status.version"), /1\.6/);
   }
 });
 
@@ -216,6 +239,8 @@ test("the canonical Evidence Report is generated and tagged in every supported l
       `${translate(locale, "report.title")} — SiteSealed ${recordId}`,
     );
     assert.equal(document.getAuthor(), translate(locale, "report.metadata.author"));
+    assert.equal(document.getCreator(), translate(locale, "report.metadata.creator"));
+    assert.doesNotMatch(document.getCreator(), /1\.6|alpha/i);
     assert.deepEqual(
       Buffer.from(attachments.get("SiteSealed_ORIGINAL_inspection-école.png")),
       originalBytes,
@@ -226,6 +251,7 @@ test("the canonical Evidence Report is generated and tagged in every supported l
       ).toString("utf8"),
     );
     assert.equal(manifest.locale, locale);
+    assert.equal(manifest.generatorVersion, "1.6.0-alpha.2");
     assert.equal(manifest.original.sha256, verification.record.sha256);
   }
 });

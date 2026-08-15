@@ -1,4 +1,4 @@
-# SiteSealed Genesis v1.6.0-alpha.1 — International Evidence Reports
+# SiteSealed Genesis v1.6.0-alpha.2 — Social sharing metadata
 
 SiteSealed crée des enregistrements d'intégrité et un seul artefact humain
 canonique : le **SiteSealed Evidence Report PDF**. Le rapport affiche l'original,
