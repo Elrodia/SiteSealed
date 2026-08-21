@@ -359,6 +359,7 @@ export const nlBE = Object.freeze({
   "landing.start": "Begin met sealen.",
   "footer.tagline": "Een neutrale bewijslaag voor de bouwsector.",
   "footer.explore": "Ontdekken",
+  "footer.qualifiedTimestamping": "Gekwalificeerde tijdstempeling",
   "footer.documents": "Documenten",
   "footer.whitepaper": "Whitepaper v1.0 (EN)",
   "footer.specimen": "Evidence Report-specimen (EN)",

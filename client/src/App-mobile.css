@@ -397,8 +397,16 @@
 }
 
 @media (max-width: 600px) {
-  .language-selector select {
-    width: 92px;
+  .language-selector__trigger {
+    width: 108px;
+  }
+
+  .language-selector__selected-label {
+    display: none;
+  }
+
+  .language-selector__selected-short {
+    display: block;
   }
 
   .container {

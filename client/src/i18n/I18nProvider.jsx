@@ -5,7 +5,9 @@ import {
   isValidElement,
   useContext,
   useEffect,
+  useId,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -124,20 +126,115 @@ export function Localized({ children }) {
 
 export function LanguageSelector({ className = "" }) {
   const { locale, options, setLocale, t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+  const triggerRef = useRef(null);
+  const listboxId = useId();
+  const selected = options.find((option) => option.locale === locale) ?? options[0];
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOutside = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    return () => document.removeEventListener("pointerdown", closeOutside);
+  }, [open]);
+
+  const optionButtons = () =>
+    [...(rootRef.current?.querySelectorAll('[role="option"]') ?? [])];
+
+  const focusOption = (index) => {
+    const buttons = optionButtons();
+    if (!buttons.length) return;
+    buttons[(index + buttons.length) % buttons.length]?.focus();
+  };
+
+  const openAndFocus = (offset = 0) => {
+    setOpen(true);
+    requestAnimationFrame(() => {
+      const selectedIndex = Math.max(
+        0,
+        options.findIndex((option) => option.locale === locale),
+      );
+      focusOption(selectedIndex + offset);
+    });
+  };
+
+  const choose = (nextLocale) => {
+    setLocale(nextLocale);
+    setOpen(false);
+    requestAnimationFrame(() => triggerRef.current?.focus());
+  };
+
+  const handleTriggerKeyDown = (event) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      openAndFocus(event.key === "ArrowDown" ? 0 : -1);
+    }
+  };
+
+  const handleOptionKeyDown = (event) => {
+    const buttons = optionButtons();
+    const index = buttons.indexOf(event.currentTarget);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      focusOption(index + (event.key === "ArrowDown" ? 1 : -1));
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      focusOption(event.key === "Home" ? 0 : buttons.length - 1);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setOpen(false);
+      triggerRef.current?.focus();
+    }
+  };
+
   return (
-    <label className={`language-selector${className ? ` ${className}` : ""}`}>
+    <div
+      className={`language-selector${className ? ` ${className}` : ""}`}
+      ref={rootRef}
+    >
       <span className="sr-only">{t("language.label")}</span>
-      <select
-        value={locale}
-        onChange={(event) => setLocale(event.target.value)}
+      <button
+        className="language-selector__trigger"
+        type="button"
+        ref={triggerRef}
+        aria-label={t("language.select")}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={listboxId}
+        onClick={() => (open ? setOpen(false) : openAndFocus())}
+        onKeyDown={handleTriggerKeyDown}
+      >
+        <img className="language-selector__flag" src={selected.flag} alt="" width="22" height="15" />
+        <span className="language-selector__selected-label">{selected.label}</span>
+        <span className="language-selector__selected-short">{selected.shortLabel}</span>
+        <span className="language-selector__chevron" aria-hidden="true" />
+      </button>
+      <div
+        className={`language-selector__menu${open ? " language-selector__menu--open" : ""}`}
+        id={listboxId}
+        role="listbox"
         aria-label={t("language.select")}
       >
         {options.map((option) => (
-          <option key={option.locale} value={option.locale}>
-            {option.label}
-          </option>
+          <button
+            className="language-selector__option"
+            key={option.locale}
+            type="button"
+            role="option"
+            aria-selected={option.locale === locale}
+            tabIndex={open ? 0 : -1}
+            onClick={() => choose(option.locale)}
+            onKeyDown={handleOptionKeyDown}
+          >
+            <img className="language-selector__flag" src={option.flag} alt="" width="22" height="15" />
+            <span>{option.label}</span>
+            <small>{option.shortLabel}</small>
+          </button>
         ))}
-      </select>
-    </label>
+      </div>
+    </div>
   );
 }

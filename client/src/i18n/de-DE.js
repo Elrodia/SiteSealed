@@ -359,6 +359,7 @@ export const deDE = Object.freeze({
   "landing.start": "Mit dem Versiegeln beginnen.",
   "footer.tagline": "Eine neutrale Beweisschicht für die Bauwirtschaft.",
   "footer.explore": "Entdecken",
+  "footer.qualifiedTimestamping": "Qualifizierte Zeitstempel",
   "footer.documents": "Dokumente",
   "footer.whitepaper": "Whitepaper v1.0 (EN)",
   "footer.specimen": "Evidence-Report-Muster (EN)",

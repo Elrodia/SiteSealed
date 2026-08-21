@@ -359,6 +359,7 @@ export const ptBR = Object.freeze({
   "landing.start": "Comece a selar.",
   "footer.tagline": "Uma camada neutra de prova para o setor de construção.",
   "footer.explore": "Explorar",
+  "footer.qualifiedTimestamping": "Carimbo do tempo qualificado",
   "footer.documents": "Documentos",
   "footer.whitepaper": "Whitepaper v1.0 (EN)",
   "footer.specimen": "Espécime de Evidence Report (EN)",

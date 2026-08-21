@@ -361,6 +361,7 @@ export const frBE = Object.freeze({
   "landing.start": "Commencez à sceller.",
   "footer.tagline": "Une couche de preuve neutre pour le secteur de la construction.",
   "footer.explore": "Explorer",
+  "footer.qualifiedTimestamping": "Horodatage qualifié",
   "footer.documents": "Documents",
   "footer.whitepaper": "Livre blanc v1.0 (EN)",
   "footer.specimen": "Spécimen d’Evidence Report (EN)",

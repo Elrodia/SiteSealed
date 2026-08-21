@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "node scripts/generate-public-seo.mjs && vite build && node scripts/generate-public-seo.mjs --dist",
     "preview": "vite preview --host 0.0.0.0"
   },
   "engines": {

@@ -365,6 +365,7 @@ export const esES = Object.freeze({
   "landing.start": "Empiece a sellar.",
   "footer.tagline": "Una capa neutral de prueba para el sector de la construcción.",
   "footer.explore": "Explorar",
+  "footer.qualifiedTimestamping": "Sellado de tiempo cualificado",
   "footer.documents": "Documentos",
   "footer.whitepaper": "Libro blanco v1.0 (EN)",
   "footer.specimen": "Muestra del informe de evidencia (EN)",

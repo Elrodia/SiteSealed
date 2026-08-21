@@ -20,14 +20,14 @@ export const SUPPORTED_LOCALES = Object.freeze([
 ]);
 
 export const LOCALE_OPTIONS = Object.freeze([
-  { locale: "en-US", label: "English (US)", shortLabel: "EN" },
-  { locale: "fr-BE", label: "Français (Belgique)", shortLabel: "FR" },
-  { locale: "nl-BE", label: "Nederlands (België)", shortLabel: "NL" },
-  { locale: "de-DE", label: "Deutsch", shortLabel: "DE" },
-  { locale: "pt-BR", label: "Português (Brasil)", shortLabel: "PT-BR" },
-  { locale: "es-ES", label: "Español (España)", shortLabel: "ES" },
-  { locale: "it-IT", label: "Italiano (Italia)", shortLabel: "IT" },
-  { locale: "lb-LU", label: "Lëtzebuergesch", shortLabel: "LB" },
+  { locale: "en-US", label: "English (US)", shortLabel: "EN", flag: "/flags/us.svg" },
+  { locale: "fr-BE", label: "Français (Belgique)", shortLabel: "FR", flag: "/flags/be.svg" },
+  { locale: "nl-BE", label: "Nederlands (België)", shortLabel: "NL", flag: "/flags/be.svg" },
+  { locale: "de-DE", label: "Deutsch", shortLabel: "DE", flag: "/flags/de.svg" },
+  { locale: "pt-BR", label: "Português (Brasil)", shortLabel: "PT-BR", flag: "/flags/br.svg" },
+  { locale: "es-ES", label: "Español (España)", shortLabel: "ES", flag: "/flags/es.svg" },
+  { locale: "it-IT", label: "Italiano (Italia)", shortLabel: "IT", flag: "/flags/it.svg" },
+  { locale: "lb-LU", label: "Lëtzebuergesch", shortLabel: "LB", flag: "/flags/lu.svg" },
 ]);
 
 export const catalogs = Object.freeze({

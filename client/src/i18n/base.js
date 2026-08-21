@@ -372,6 +372,7 @@ export const baseMessages = Object.freeze({
   "landing.start": "Start sealing.",
   "footer.tagline": "A neutral proof layer for the construction industry.",
   "footer.explore": "Explore",
+  "footer.qualifiedTimestamping": "Qualified timestamping",
   "footer.documents": "Documents",
   "footer.whitepaper": "Whitepaper v1.0 (EN)",
   "footer.specimen": "Evidence Report specimen (EN)",

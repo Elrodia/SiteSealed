@@ -365,6 +365,7 @@ export const itIT = Object.freeze({
   "landing.start": "Inizia a sigillare.",
   "footer.tagline": "Un livello neutrale di prova per il settore delle costruzioni.",
   "footer.explore": "Esplora",
+  "footer.qualifiedTimestamping": "Marcatura temporale qualificata",
   "footer.documents": "Documenti",
   "footer.whitepaper": "Whitepaper v1.0 (EN)",
   "footer.specimen": "Esempio di Evidence Report (EN)",

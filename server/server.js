@@ -59,6 +59,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const clientDist = path.resolve(__dirname, "../client/dist");
 const indexFile = path.join(clientDist, "index.html");
+const publicPageFiles = Object.freeze([
+  ["/how-it-works", path.join(clientDist, ".public-pages/how-it-works.html")],
+  [
+    "/qualified-timestamping",
+    path.join(clientDist, ".public-pages/qualified-timestamping.html"),
+  ],
+  ["/verify", path.join(clientDist, ".public-pages/verify.html")],
+]);
 
 function positiveInteger(value, fallback) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -1251,17 +1259,25 @@ export function createApp({
 
   if (existsSync(indexFile)) {
     const indexTemplate = readFileSync(indexFile, "utf8");
-    const sendClientIndex = (_request, response) => {
+    const sendHtmlTemplate = (template, response) => {
       const cspNonce = String(response.locals.cspNonce ?? "");
       response.set("Cache-Control", "no-cache");
       response.set("Content-Language", "en-US");
       response.type("html");
       return response.send(
-        indexTemplate.replaceAll("__SITESEALED_CSP_NONCE__", cspNonce),
+        template.replaceAll("__SITESEALED_CSP_NONCE__", cspNonce),
       );
     };
+    const sendClientIndex = (_request, response) =>
+      sendHtmlTemplate(indexTemplate, response);
 
     app.get("/index.html", sendClientIndex);
+    for (const [route, filePath] of publicPageFiles) {
+      if (!existsSync(filePath)) continue;
+      const template = readFileSync(filePath, "utf8");
+      app.get(route, (_request, response) =>
+        sendHtmlTemplate(template, response));
+    }
     app.use(
       express.static(clientDist, {
         index: false,

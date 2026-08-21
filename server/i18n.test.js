@@ -16,6 +16,7 @@ import {
 } from "pdf-lib";
 import {
   DEFAULT_LOCALE,
+  LOCALE_OPTIONS,
   SUPPORTED_LOCALES,
   catalogDiagnostics,
   catalogs,
@@ -64,6 +65,19 @@ test("i18n exposes exactly the eight release locales with deterministic detectio
   assert.equal(normalizeLocale("it_IT"), "it-IT");
   assert.equal(normalizeLocale("lb"), "lb-LU");
   assert.equal(normalizeLocale("lu-LU"), "lb-LU");
+  assert.deepEqual(
+    LOCALE_OPTIONS.map(({ locale, flag }) => ({ locale, flag })),
+    [
+      { locale: "en-US", flag: "/flags/us.svg" },
+      { locale: "fr-BE", flag: "/flags/be.svg" },
+      { locale: "nl-BE", flag: "/flags/be.svg" },
+      { locale: "de-DE", flag: "/flags/de.svg" },
+      { locale: "pt-BR", flag: "/flags/br.svg" },
+      { locale: "es-ES", flag: "/flags/es.svg" },
+      { locale: "it-IT", flag: "/flags/it.svg" },
+      { locale: "lb-LU", flag: "/flags/lu.svg" },
+    ],
+  );
   assert.equal(
     detectLocale({ search: "?lang=de-DE", stored: "fr-BE", languages: ["pt-BR"] }),
     "de-DE",
@@ -204,7 +218,10 @@ test("the complete React application renders its critical surfaces in every loca
       ]) {
         assert.ok(html.includes(translate(locale, id)), `${locale} did not render ${id}`);
       }
-      assert.match(html, new RegExp(`<option value="${locale}" selected="">`));
+      const selected = LOCALE_OPTIONS.find((option) => option.locale === locale);
+      assert.match(html, /role="listbox"/);
+      assert.ok(html.includes(`src="${selected.flag}"`));
+      assert.ok(html.includes(selected.label));
     }
   } finally {
     globalThis.window = previousWindow;

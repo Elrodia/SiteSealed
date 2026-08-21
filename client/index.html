@@ -11,9 +11,21 @@
     />
     <meta name="robots" content="index, follow" />
     <link rel="canonical" href="https://app.sitesealed.com/" />
+    <!-- SITESEALED_HREFLANG_START -->
+    <link rel="alternate" hreflang="en-US" href="https://app.sitesealed.com/?lang=en-US" />
+    <link rel="alternate" hreflang="fr-BE" href="https://app.sitesealed.com/?lang=fr-BE" />
+    <link rel="alternate" hreflang="nl-BE" href="https://app.sitesealed.com/?lang=nl-BE" />
+    <link rel="alternate" hreflang="de-DE" href="https://app.sitesealed.com/?lang=de-DE" />
+    <link rel="alternate" hreflang="pt-BR" href="https://app.sitesealed.com/?lang=pt-BR" />
+    <link rel="alternate" hreflang="es-ES" href="https://app.sitesealed.com/?lang=es-ES" />
+    <link rel="alternate" hreflang="it-IT" href="https://app.sitesealed.com/?lang=it-IT" />
+    <link rel="alternate" hreflang="lb-LU" href="https://app.sitesealed.com/?lang=lb-LU" />
+    <link rel="alternate" hreflang="x-default" href="https://app.sitesealed.com/" />
+    <!-- SITESEALED_HREFLANG_END -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="SiteSealed" />
     <meta property="og:url" content="https://app.sitesealed.com/" />
+    <!-- SITESEALED_OG_LOCALES_START -->
     <meta property="og:locale" content="en_US" />
     <meta property="og:locale:alternate" content="fr_BE" />
     <meta property="og:locale:alternate" content="nl_BE" />
@@ -22,6 +34,7 @@
     <meta property="og:locale:alternate" content="es_ES" />
     <meta property="og:locale:alternate" content="it_IT" />
     <meta property="og:locale:alternate" content="lb_LU" />
+    <!-- SITESEALED_OG_LOCALES_END -->
     <meta property="og:title" content="SiteSealed | Verifiable construction evidence" />
     <meta
       property="og:description"
@@ -41,12 +54,110 @@
     />
     <meta name="twitter:image" content="https://app.sitesealed.com/sitesealed-social-1200x628.png" />
     <meta name="twitter:image:alt" content="SiteSealed social preview for verifiable construction evidence" />
+    <!-- SITESEALED_JSONLD_START -->
+    <script type="application/ld+json" nonce="__SITESEALED_CSP_NONCE__" data-sitesealed-jsonld="software-application">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "SiteSealed",
+        "description": "A web application for creating privacy-preserving construction evidence records, exporting one canonical Evidence Report and independently checking exact-file, RFC 3161 sandbox and Ethereum Merkle proof artefacts. The current sandbox timestamp is test-only and not qualified.",
+        "applicationCategory": "BusinessApplication",
+        "operatingSystem": "Web",
+        "url": "https://app.sitesealed.com/",
+        "image": "https://app.sitesealed.com/sitesealed-social-1200x628.png",
+        "inLanguage": [
+          "en-US",
+          "fr-BE",
+          "nl-BE",
+          "de-DE",
+          "pt-BR",
+          "es-ES",
+          "it-IT",
+          "lb-LU"
+        ],
+        "publisher": {
+          "@type": "Organization",
+          "name": "SiteSealed",
+          "address": {
+            "@type": "PostalAddress",
+            "addressLocality": "Sprimont",
+            "addressCountry": "BE"
+          }
+        }
+      }
+    </script>
+    <script type="application/ld+json" nonce="__SITESEALED_CSP_NONCE__" data-sitesealed-jsonld="faq">
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "What does a sealed construction record prove?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "It binds the exact original and canonical manifest to SHA-256 digests and exposes the state of each external proof rail. A valid digest and finalized Merkle anchor support integrity and inclusion conclusions. They do not prove that the depicted event is factually true."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What is a qualified eIDAS electronic timestamp?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "It is a timestamp delivered as a qualified service by a qualified trust service provider under eIDAS. It carries a presumption concerning the accuracy of its date and time and the integrity of the bound data. SiteSealed currently uses Evidency Sandbox: its tokens are test-only, not qualified and have no qualified eIDAS legal effect."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How is the public-chain anchor verified?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Fetch the full Ethereum mainnet transaction from any node, decode its calldata as the ASCII marker SSLD plus a version byte and 32-byte Merkle root, recompute the root from the record leaf and every left or right inclusion-path sibling, and compare the two roots."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What does SiteSealed not prove?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "It does not by itself prove truthfulness, that a scene was unstaged, physical sensor origin, hardware-attested location or authorship beyond the bound account. For imported files it does not prove the original capture time, place or author."
+            }
+          }
+        ]
+      }
+    </script>
+    <!-- SITESEALED_JSONLD_END -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20260812" />
     <link rel="manifest" href="/site.webmanifest" />
     <title>SiteSealed — verifiable construction evidence</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main class="seo-shell" id="main-content">
+        <section aria-labelledby="seo-root-title">
+          <p>EVIDENCY SANDBOX + ETHEREUM MAINNET</p>
+          <h1 id="seo-root-title">Construction records that can verify themselves.</h1>
+          <p>Create a real SHA-256 evidence record and client-encrypted backup, then export one canonical Evidence Report containing the visible exact original. Evidency sandbox time has no legal effect, so final “sealed” status stays disabled.</p>
+          <nav aria-label="Public product explanations">
+            <a href="/how-it-works">Understand the five-step sealing pipeline</a>
+            <a href="/qualified-timestamping">Understand qualified electronic timestamping</a>
+            <a href="/verify">Learn how to verify a record independently</a>
+          </nav>
+        </section>
+        <section aria-labelledby="seo-pipeline-title">
+          <h2 id="seo-pipeline-title">From capture to an independently checkable proof bundle</h2>
+          <p>The workflow separates live web capture from imported files, hashes the original and its manifest locally, requests only a test-only RFC 3161 sandbox token in the current alpha, batches evidence digests in a Merkle tree and anchors the root on Ethereum mainnet.</p>
+        </section>
+        <section aria-labelledby="seo-rails-title">
+          <h2 id="seo-rails-title">Two external proof rails with different limits</h2>
+          <p>The Evidency sandbox rail is cryptographically checked but is not qualified and has no qualified eIDAS legal effect. The public-chain rail records a Merkle root in a finalized Ethereum transaction so an independent reader can recompute inclusion from the exported leaf and path.</p>
+        </section>
+        <section aria-labelledby="seo-scope-title">
+          <h2 id="seo-scope-title">Proof of integrity is not proof that a depicted event is true</h2>
+          <p>SiteSealed distinguishes cryptographically proven integrity from server-bound or browser-reported context. It does not prove that a scene was unstaged, that pixels came from a physical sensor, or that an imported file was created at its upload time or location.</p>
+        </section>
+      </main>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

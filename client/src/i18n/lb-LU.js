@@ -365,6 +365,7 @@ export const lbLU = Object.freeze({
   "landing.start": "Mam Versigele ufänken.",
   "footer.tagline": "Eng neutral Beweisschicht fir de Bausecteur.",
   "footer.explore": "Entdecken",
+  "footer.qualifiedTimestamping": "Qualifizéiert Zäitstempelung",
   "footer.documents": "Dokumenter",
   "footer.whitepaper": "Whitepaper v1.0 (EN)",
   "footer.specimen": "Muster vum Beweisrapport (EN)",
