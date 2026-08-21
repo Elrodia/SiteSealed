@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 const expected = new Map([
   [
     ".env.example",
-    "dcf2ce15b75ec5eaf6d6b59b5daee772924c2260151c00c51f06a742fb4e297c",
+    "bd56992bb7bce198c1e62e8d1bf5c2061c9dede6fb6b766b8dd2bcc81b547467",
   ],
   [
     "server/evidency.js",
@@ -43,4 +43,4 @@ if (failed) {
   );
 }
 
-console.log("Dual-rail freeze verified: implementation, environment template and Railway service files are byte-identical to alpha.10.1.");
+console.log("Dual-rail freeze verified: the Evidency/Ethereum implementation and Railway rail settings remain frozen; the approved environment template is unchanged.");

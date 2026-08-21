@@ -33,6 +33,7 @@ import {
   createDisabledEthereumRail,
   createEthereumAnchorClientFromEnv,
 } from "./ethereum.js";
+import { normalizeRateLimitIdentity } from "./net.js";
 import {
   ApiError,
   MAX_ENCRYPTED_ORIGINAL_BYTES,
@@ -145,7 +146,9 @@ export function createSealRateLimiter({
     try {
       const identity = identityResolver
         ? identityResolver(request)
-        : request.ip || request.socket.remoteAddress || "unknown-client";
+        : normalizeRateLimitIdentity(
+            request.ip ?? request.socket?.remoteAddress,
+          );
       if (!identity) {
         throw new Error("A rate-limit identity is required.");
       }
@@ -475,6 +478,11 @@ export function createApp({
   app.get("/api/auth/session", async (request, response, next) => {
     try {
       const session = await loadAuthenticatedSession(request);
+      const storageUsage = session
+        ? await coordinator.getAccountStorageUsage(session.user.id, {
+            quotaBytes: uploadAdmission.accountStorageQuotaBytes,
+          })
+        : null;
       return response.status(200).json({
         ok: true,
         authenticated: Boolean(session),
@@ -482,6 +490,7 @@ export function createApp({
         user: session?.user ?? null,
         csrfToken: session?.csrfToken ?? null,
         expiresAt: session?.expiresAt ?? null,
+        storageUsage,
       });
     } catch (error) {
       return next(error);
@@ -682,7 +691,18 @@ export function createApp({
       const issued = await coordinator.issueUploadGrant(binding, {
         ttlMs: uploadAdmission.grantTtlMs,
         principalId: request.authUser.id,
+        quotaBytes: uploadAdmission.accountStorageQuotaBytes,
       });
+      if (issued.state === "quota_exceeded") {
+        return response.status(413).json({
+          ok: false,
+          code: "ACCOUNT_STORAGE_QUOTA_EXCEEDED",
+          message:
+            "This Google account has reached its cumulative encrypted-storage quota.",
+          quotaBytes: issued.quotaBytes,
+          usedBytes: issued.usedBytes,
+        });
+      }
       return response.status(201).json({
         ok: true,
         status: "UPLOAD_GRANT_ISSUED",

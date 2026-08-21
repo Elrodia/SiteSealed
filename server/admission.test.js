@@ -6,6 +6,7 @@ test("storage admission no longer depends on a shared upload secret", () => {
   const config = resolveUploadAdmissionConfig({ DATABASE_MODE: "required" });
   assert.equal(config.dailyLimitMiB, 2048);
   assert.equal(config.perUserDailyLimitMiB, 256);
+  assert.equal(config.accountStorageQuotaBytes, 500 * 1024 * 1024);
   assert.equal(config.grantTtlMs, 900_000);
   assert.equal("secretDigest" in config, false);
   assert.equal("configured" in config, false);
@@ -32,5 +33,19 @@ test("global and per-user byte ceilings fail closed on invalid values", () => {
         STORAGE_ADMISSION_MB_PER_USER_PER_DAY: "128",
       }),
     /cannot exceed/,
+  );
+});
+
+test("the cumulative account quota is configured in exact bytes", () => {
+  const config = resolveUploadAdmissionConfig({
+    ACCOUNT_STORAGE_QUOTA_BYTES: "123456789",
+  });
+  assert.equal(config.accountStorageQuotaBytes, 123456789);
+  assert.throws(
+    () =>
+      resolveUploadAdmissionConfig({
+        ACCOUNT_STORAGE_QUOTA_BYTES: "0",
+      }),
+    /ACCOUNT_STORAGE_QUOTA_BYTES must be an integer/,
   );
 });

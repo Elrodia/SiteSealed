@@ -1,0 +1,187 @@
+                 D UA L - R A I L A L P H A R E C E I P T                                                                             A L P H A / N OT S E A L E D
+    SS
+                 SiteSealed v1.4-alpha.9 | SR-20260821-REPORTPROOFDETAILS000001
+
+
+
+
+1. RECORD
+
+RECORD ID                       SR-20260821-REPORTPROOFDETAILS000001
+
+CLASS                           Imported file - web workflow
+
+RECEIVED                        2026-08-21 09:30:00 UTC
+
+CAPTURE CLAIM                   None. This is not a live in-app capture.
+
+
+
+2 . C RY P TO G R A P H I C D I G E S T S
+
+FILE SHA-256                    11111111111111111111111111111111
+                                11111111111111111111111111111111
+
+
+MANIFEST SHA-256                22222222222222222222222222222222
+                                22222222222222222222222222222222
+
+
+CIPHER SHA-256                  55555555555555555555555555555555
+                                55555555555555555555555555555555
+
+
+RECEIPT SHA-256                 33333333333333333333333333333333
+                                33333333333333333333333333333333
+
+EVIDENCE DIGEST                 44444444444444444444444444444444
+                                44444444444444444444444444444444
+
+
+                                The plaintext original never left the browser. Its ciphertext and the manifest were encrypted with AES-256-GCM under a client-held
+                                key; only ciphertext was stored privately.
+
+3 . E X T E R N A L P R O O F S TAT U S
+
+
+
+    RAIL A - RFC 3161 TIME                                                                 RAIL B - PUBLIC CHAIN
+
+    NOT ISSUED                                                                             FINALIZED
+    No Evidency RFC 3161 token is attached. The server receipt time has                    Ethereum mainnet block 25,748,941; Merkle inclusion path attached
+    no eIDAS presumption.                                                                  and finalized.
+
+
+
+
+R A I L B - F I N A L I Z E D A N C H O R D ATA
+
+ANCHOR.TRANSACTION                      0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                                        aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+ANCHOR.ADDRESS                          0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+BLOCK                                   25,748,941 | chainId 1
+
+MERKLE.ROOT                             cccccccccccccccccccccccccccccccc
+                                        cccccccccccccccccccccccccccccccc
+
+MERKLE.PROTOCOL                         SITESEALED_MERKLE_SHA256_V1
+
+LEAF                                    dddddddddddddddddddddddddddddddd
+                                        dddddddddddddddddddddddddddddddd
+                                        leafIndex 7 of batchSize 1024
+
+
+
+
+SITESEALED - Every alpha receipt declares its proof state.                                                  ALPHA - NOT A CERTIFIED EVIDENCE REPORT
+D UA L - R A I L A L P H A R E C E I P T                                                                                                 A L P H A / N OT S E A L E D
+SR-20260821-REPORTPROOFDETAILS000001 | CONTINUED
+
+
+
+
+I N C L U S I O N PAT H
+
+PATH[0] LEFT                            00000000000000000000000000000000
+                                        00000000000000000000000000000010
+
+PATH[1] RIGHT                           00000000000000000000000000000000
+                                        00000000000000000000000000000011
+
+PATH[2] LEFT                            00000000000000000000000000000000
+                                        00000000000000000000000000000012
+
+PATH[3] RIGHT                           00000000000000000000000000000000
+                                        00000000000000000000000000000013
+
+PATH[4] LEFT                            00000000000000000000000000000000
+                                        00000000000000000000000000000014
+
+PATH[5] RIGHT                           00000000000000000000000000000000
+                                        00000000000000000000000000000015
+
+PATH[6] LEFT                            00000000000000000000000000000000
+                                        00000000000000000000000000000016
+
+PATH[7] RIGHT                           00000000000000000000000000000000
+                                        00000000000000000000000000000017
+
+PATH[8] LEFT                            00000000000000000000000000000000
+                                        00000000000000000000000000000018
+
+PATH[9] RIGHT                           00000000000000000000000000000000
+                                        00000000000000000000000000000019
+
+PATH[10] LEFT                           00000000000000000000000000000000
+                                        0000000000000000000000000000001a
+
+PATH[11] RIGHT                          00000000000000000000000000000000
+                                        0000000000000000000000000000001b
+
+PATH[12] LEFT                           00000000000000000000000000000000
+                                        0000000000000000000000000000001c
+
+PATH[13] RIGHT                          00000000000000000000000000000000
+                                        0000000000000000000000000000001d
+
+PATH[14] LEFT                           00000000000000000000000000000000
+                                        0000000000000000000000000000001e
+
+PATH[15] RIGHT                          00000000000000000000000000000000
+                                        0000000000000000000000000000001f
+
+PATH[16] LEFT                           00000000000000000000000000000000
+                                        00000000000000000000000000000020
+
+PATH[17] RIGHT                          00000000000000000000000000000000
+                                        00000000000000000000000000000021
+
+VERIFY WITHOUT SITESEALED
+
+                                        1. Fetch the transaction identified by anchor.transaction from any Ethereum node.
+
+                                        2. Decode its calldata as ASCII "SSLD", followed by one version byte and the 32-byte Merkle root.
+
+                                        3. Starting with leaf, recompute the root through each inclusion-path sibling in order, respecting its left/right position.
+
+                                        4. Compare the recomputed root with both the calldata root and merkle.root above.
+
+
+
+
+SITESEALED - Every alpha receipt declares its proof state.                                                    ALPHA - NOT A CERTIFIED EVIDENCE REPORT
+D UA L - R A I L A L P H A R E C E I P T                                                                                                     A L P H A / N OT S E A L E D
+SR-20260821-REPORTPROOFDETAILS000001 | CONTINUED
+
+
+
+
+4. HONEST SCOPE
+
+
+
+    WHAT THIS RECEIPT CAN SHOW
+
+    A locally recalculated matching SHA-256 shows byte identity with this receipt. The cards above list only the external artefacts actually attached; absence remains
+    explicit.
+
+
+    NON-NEGOTIABLE LIMIT
+    Evidency sandbox tokens are test-only and cannot support a QUALIFIED or SEALED status. Imported files also carry no live-capture, identity, location or truthfulness
+    attestation.
+
+
+
+VERIFY LOCALLY - NO FILE UPLOAD
+
+https://app.sitesealed.com/verify/SR-20260821-REPORTPROOFDETAILS000001
+
+Select the independently held original in the verifier. Its SHA-256 is recalculated in the browser and is not uploaded.
+
+
+
+
+SITESEALED - Every alpha receipt declares its proof state.                                                         ALPHA - NOT A CERTIFIED EVIDENCE REPORT
+

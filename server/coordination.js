@@ -8,6 +8,7 @@ import { createClient } from "redis";
 
 const KEY_PREFIX = "sitesealed:v1.4";
 const DEFAULT_RAIL_STATUS_TTL_MS = 25 * 60 * 60 * 1000;
+const DEFAULT_ACCOUNT_STORAGE_QUOTA_BYTES = 500 * 1024 * 1024;
 const RATE_LIMIT_SCRIPT = `
 local current = redis.call('INCR', KEYS[1])
 if current == 1 then
@@ -76,18 +77,92 @@ end
 redis.call('SET', KEYS[1], cjson.encode(entry), 'PX', grantTtl)
 return {'CLAIMED', tostring(math.max(0, globalLimit - globalTotal)), tostring(math.max(0, userLimit - userTotal))}
 `;
+const ISSUE_UPLOAD_GRANT_SCRIPT = `
+-- SITESEALED_ACCOUNT_QUOTA_ISSUE
+local reserved = tonumber(redis.call('GET', KEYS[4]) or '0')
+local expired = redis.call('ZRANGEBYSCORE', KEYS[5], '-inf', ARGV[3])
+for _, grantId in ipairs(expired) do
+  local expiredBytes = tonumber(redis.call('HGET', KEYS[6], grantId) or '0')
+  reserved = math.max(0, reserved - expiredBytes)
+  redis.call('HDEL', KEYS[6], grantId)
+end
+if #expired > 0 then
+  redis.call('ZREMRANGEBYSCORE', KEYS[5], '-inf', ARGV[3])
+end
+redis.call('SET', KEYS[4], tostring(reserved))
+
+local used = tonumber(redis.call('GET', KEYS[2]) or '0')
+local requestedBytes = tonumber(ARGV[5])
+if redis.call('SISMEMBER', KEYS[3], ARGV[8]) == 1 then
+  requestedBytes = 0
+end
+local quotaBytes = tonumber(ARGV[6])
+if used + reserved + requestedBytes > quotaBytes then
+  return {'QUOTA_EXCEEDED', tostring(used), tostring(reserved)}
+end
+
+local entry = cjson.decode(ARGV[1])
+entry.reservationBytes = requestedBytes
+entry.storageObjectDigest = ARGV[8]
+entry.expiresAtMs = tonumber(ARGV[4])
+local stored = redis.call('SET', KEYS[1], cjson.encode(entry), 'NX', 'PX', ARGV[2])
+if not stored then
+  return {'COLLISION', tostring(used), tostring(reserved)}
+end
+if requestedBytes > 0 then
+  reserved = reserved + requestedBytes
+  redis.call('SET', KEYS[4], tostring(reserved))
+  redis.call('HSET', KEYS[6], ARGV[7], tostring(requestedBytes))
+  redis.call('ZADD', KEYS[5], ARGV[4], ARGV[7])
+end
+return {'ISSUED', tostring(used), tostring(reserved)}
+`;
+const READ_ACCOUNT_STORAGE_USAGE_SCRIPT = `
+-- SITESEALED_ACCOUNT_QUOTA_USAGE
+local reserved = tonumber(redis.call('GET', KEYS[2]) or '0')
+local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', ARGV[1])
+for _, grantId in ipairs(expired) do
+  local expiredBytes = tonumber(redis.call('HGET', KEYS[4], grantId) or '0')
+  reserved = math.max(0, reserved - expiredBytes)
+  redis.call('HDEL', KEYS[4], grantId)
+end
+if #expired > 0 then
+  redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', ARGV[1])
+end
+redis.call('SET', KEYS[2], tostring(reserved))
+local used = tonumber(redis.call('GET', KEYS[1]) or '0')
+return {tostring(used), tostring(reserved)}
+`;
 const COMPLETE_UPLOAD_GRANT_SCRIPT = `
+-- SITESEALED_ACCOUNT_QUOTA_COMPLETE
 local raw = redis.call('GET', KEYS[1])
-if not raw then return 0 end
+if not raw then return {0} end
 local entry = cjson.decode(raw)
-if entry.state ~= 'claimed' or entry.claimToken ~= ARGV[1] then return 0 end
+if entry.state ~= 'claimed' or entry.claimToken ~= ARGV[1] then return {0} end
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl < 1 then return {0} end
+
+local reserved = tonumber(redis.call('GET', KEYS[4]) or '0')
+local reservationBytes = tonumber(redis.call('HGET', KEYS[6], ARGV[3]) or '0')
+if reservationBytes > 0 then
+  reserved = math.max(0, reserved - reservationBytes)
+  redis.call('SET', KEYS[4], tostring(reserved))
+end
+redis.call('HDEL', KEYS[6], ARGV[3])
+redis.call('ZREM', KEYS[5], ARGV[3])
+
+local storageObjectDigest = entry.storageObjectDigest or ARGV[4]
+entry.storageObjectDigest = storageObjectDigest
+local added = redis.call('SADD', KEYS[3], storageObjectDigest)
+local used = tonumber(redis.call('GET', KEYS[2]) or '0')
+if added == 1 then
+  used = redis.call('INCRBY', KEYS[2], tonumber(entry.binding.ciphertextBytes))
+end
 entry.state = 'completed'
 entry.descriptor = cjson.decode(ARGV[2])
 entry.claimToken = nil
-local ttl = redis.call('PTTL', KEYS[1])
-if ttl < 1 then return 0 end
 redis.call('SET', KEYS[1], cjson.encode(entry), 'PX', ttl)
-return 1
+return {1, tostring(used), tostring(added)}
 `;
 const RELEASE_UPLOAD_GRANT_SCRIPT = `
 local raw = redis.call('GET', KEYS[1])
@@ -211,6 +286,26 @@ function userStorageAdmissionKey(principalDigest) {
   return `${KEY_PREFIX}:storage-admission:user:${principalDigest}`;
 }
 
+function accountStorageUsedKey(ownerDigest) {
+  return `${KEY_PREFIX}:account-storage:used:${ownerDigest}`;
+}
+
+function accountStorageObjectsKey(ownerDigest) {
+  return `${KEY_PREFIX}:account-storage:objects:${ownerDigest}`;
+}
+
+function accountStorageReservedKey(ownerDigest) {
+  return `${KEY_PREFIX}:account-storage:reserved:${ownerDigest}`;
+}
+
+function accountStorageReservationExpiriesKey(ownerDigest) {
+  return `${KEY_PREFIX}:account-storage:reservation-expiries:${ownerDigest}`;
+}
+
+function accountStorageReservationBytesKey(ownerDigest) {
+  return `${KEY_PREFIX}:account-storage:reservation-bytes:${ownerDigest}`;
+}
+
 function authSessionKey(token) {
   const digest = createHash("sha256")
     .update(`${KEY_PREFIX}:auth-session\0`)
@@ -230,6 +325,15 @@ function uploadBindingDigest(binding) {
   return createHash("sha256")
     .update(`${KEY_PREFIX}:upload-binding\0`)
     .update(JSON.stringify(binding))
+    .digest("hex");
+}
+
+function uploadStorageObjectDigest(binding) {
+  return createHash("sha256")
+    .update(`${KEY_PREFIX}:storage-object\0`)
+    .update(String(binding?.submissionId ?? ""))
+    .update("\0")
+    .update(String(binding?.ciphertextSha256 ?? ""))
     .digest("hex");
 }
 
@@ -381,37 +485,102 @@ export function createRedisCoordinator(client, options = {}) {
 
     async issueUploadGrant(
       binding,
-      { ttlMs = 15 * 60 * 1000, principalId: ownerId } = {},
+      {
+        ttlMs = 15 * 60 * 1000,
+        principalId: ownerId,
+        quotaBytes = DEFAULT_ACCOUNT_STORAGE_QUOTA_BYTES,
+      } = {},
     ) {
       const normalizedTtlMs = positiveInteger(ttlMs, 15 * 60 * 1000);
+      const normalizedQuotaBytes = positiveInteger(
+        quotaBytes,
+        DEFAULT_ACCOUNT_STORAGE_QUOTA_BYTES,
+      );
       const ownerPrincipalId = normalizedPrincipalId(ownerId);
       if (!ownerPrincipalId) {
         throw new Error("Upload grants require an authenticated principal.");
       }
+      const ownerDigest = principalDigest(ownerPrincipalId);
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const grantId = randomUUID();
         const secret = randomBytes(32).toString("base64url");
+        const issuedAtMs = now();
+        const expiresAtMs = issuedAtMs + normalizedTtlMs;
         const entry = {
           state: "ready",
           secretDigest: uploadGrantSecretDigest(grantId, secret),
           bindingDigest: uploadBindingDigest(binding),
-          principalDigest: principalDigest(ownerPrincipalId),
+          principalDigest: ownerDigest,
           binding: structuredClone(binding),
           budgetDebited: false,
         };
-        const stored = await client.set(
-          uploadGrantKey(grantId),
-          JSON.stringify(entry),
-          { NX: true, PX: normalizedTtlMs },
-        );
-        if (stored === "OK") {
+        const result = await client.eval(ISSUE_UPLOAD_GRANT_SCRIPT, {
+          keys: [
+            uploadGrantKey(grantId),
+            accountStorageUsedKey(ownerDigest),
+            accountStorageObjectsKey(ownerDigest),
+            accountStorageReservedKey(ownerDigest),
+            accountStorageReservationExpiriesKey(ownerDigest),
+            accountStorageReservationBytesKey(ownerDigest),
+          ],
+          arguments: [
+            JSON.stringify(entry),
+            String(normalizedTtlMs),
+            String(issuedAtMs),
+            String(expiresAtMs),
+            String(binding.ciphertextBytes),
+            String(normalizedQuotaBytes),
+            grantId,
+            uploadStorageObjectDigest(binding),
+          ],
+        });
+        const state = String(result?.[0] ?? "COLLISION");
+        if (state === "QUOTA_EXCEEDED") {
+          return {
+            state: "quota_exceeded",
+            usedBytes: Math.max(0, Number(result?.[1] ?? 0)),
+            quotaBytes: normalizedQuotaBytes,
+          };
+        }
+        if (state === "ISSUED") {
           return {
             grant: `${grantId}.${secret}`,
-            expiresAt: new Date(now() + normalizedTtlMs).toISOString(),
+            expiresAt: new Date(expiresAtMs).toISOString(),
           };
+        }
+        if (state !== "COLLISION") {
+          throw new Error(`Unexpected Redis upload grant state: ${state}.`);
         }
       }
       throw new Error("Could not allocate a unique upload grant identifier.");
+    },
+
+    async getAccountStorageUsage(
+      principalId,
+      { quotaBytes = DEFAULT_ACCOUNT_STORAGE_QUOTA_BYTES } = {},
+    ) {
+      const ownerPrincipalId = normalizedPrincipalId(principalId);
+      if (!ownerPrincipalId) {
+        throw new Error("Storage usage requires an authenticated principal.");
+      }
+      const ownerDigest = principalDigest(ownerPrincipalId);
+      const normalizedQuotaBytes = positiveInteger(
+        quotaBytes,
+        DEFAULT_ACCOUNT_STORAGE_QUOTA_BYTES,
+      );
+      const result = await client.eval(READ_ACCOUNT_STORAGE_USAGE_SCRIPT, {
+        keys: [
+          accountStorageUsedKey(ownerDigest),
+          accountStorageReservedKey(ownerDigest),
+          accountStorageReservationExpiriesKey(ownerDigest),
+          accountStorageReservationBytesKey(ownerDigest),
+        ],
+        arguments: [String(now())],
+      });
+      return {
+        usedBytes: Math.max(0, Number(result?.[0] ?? 0)),
+        quotaBytes: normalizedQuotaBytes,
+      };
     },
 
     async issueCaptureChallenge(
@@ -613,11 +782,24 @@ export function createRedisCoordinator(client, options = {}) {
         async complete(descriptor) {
           if (settled) return false;
           const completed = await client.eval(COMPLETE_UPLOAD_GRANT_SCRIPT, {
-            keys: [uploadGrantKey(parsed.grantId)],
-            arguments: [claimToken, JSON.stringify(descriptor)],
+            keys: [
+              uploadGrantKey(parsed.grantId),
+              accountStorageUsedKey(ownerDigest),
+              accountStorageObjectsKey(ownerDigest),
+              accountStorageReservedKey(ownerDigest),
+              accountStorageReservationExpiriesKey(ownerDigest),
+              accountStorageReservationBytesKey(ownerDigest),
+            ],
+            arguments: [
+              claimToken,
+              JSON.stringify(descriptor),
+              parsed.grantId,
+              uploadStorageObjectDigest(binding),
+            ],
           });
-          if (Number(completed) === 1) settled = true;
-          return Number(completed) === 1;
+          const succeeded = Number(completed?.[0] ?? 0) === 1;
+          if (succeeded) settled = true;
+          return succeeded;
         },
         async release() {
           if (settled) return false;
@@ -795,6 +977,7 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
   const captureChallenges = new Map();
   const authSessions = new Map();
   const userStorageAdmissions = new Map();
+  const accountStorageUsages = new Map();
   let storageAdmission = null;
 
   function removeExpired(timestamp) {
@@ -852,14 +1035,49 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
 
     async issueUploadGrant(
       binding,
-      { ttlMs = 15 * 60 * 1000, principalId: ownerId } = {},
+      {
+        ttlMs = 15 * 60 * 1000,
+        principalId: ownerId,
+        quotaBytes = DEFAULT_ACCOUNT_STORAGE_QUOTA_BYTES,
+      } = {},
     ) {
       const timestamp = now();
       removeExpired(timestamp);
       const normalizedTtlMs = positiveInteger(ttlMs, 15 * 60 * 1000);
+      const normalizedQuotaBytes = positiveInteger(
+        quotaBytes,
+        DEFAULT_ACCOUNT_STORAGE_QUOTA_BYTES,
+      );
       const ownerPrincipalId = normalizedPrincipalId(ownerId);
       if (!ownerPrincipalId) {
         throw new Error("Upload grants require an authenticated principal.");
+      }
+      const ownerDigest = principalDigest(ownerPrincipalId);
+      const storageObjectDigest = uploadStorageObjectDigest(binding);
+      const usage = accountStorageUsages.get(ownerDigest) ?? {
+        usedBytes: 0,
+        objects: new Set(),
+      };
+      accountStorageUsages.set(ownerDigest, usage);
+      const reservedBytes = [...uploadGrants.values()]
+        .filter(
+          (entry) =>
+            entry.state !== "completed" &&
+            entry.principalDigest === ownerDigest,
+        )
+        .reduce((total, entry) => total + (entry.reservationBytes ?? 0), 0);
+      const reservationBytes = usage.objects.has(storageObjectDigest)
+        ? 0
+        : binding.ciphertextBytes;
+      if (
+        usage.usedBytes + reservedBytes + reservationBytes >
+        normalizedQuotaBytes
+      ) {
+        return {
+          state: "quota_exceeded",
+          usedBytes: usage.usedBytes,
+          quotaBytes: normalizedQuotaBytes,
+        };
       }
       const grantId = randomUUID();
       const secret = randomBytes(32).toString("base64url");
@@ -867,14 +1085,38 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
         state: "ready",
         secretDigest: uploadGrantSecretDigest(grantId, secret),
         bindingDigest: uploadBindingDigest(binding),
-        principalDigest: principalDigest(ownerPrincipalId),
+        principalDigest: ownerDigest,
         binding: structuredClone(binding),
         budgetDebited: false,
+        reservationBytes,
+        storageObjectDigest,
         expiresAt: timestamp + normalizedTtlMs,
       });
       return {
         grant: `${grantId}.${secret}`,
         expiresAt: new Date(timestamp + normalizedTtlMs).toISOString(),
+      };
+    },
+
+    async getAccountStorageUsage(
+      principalId,
+      { quotaBytes = DEFAULT_ACCOUNT_STORAGE_QUOTA_BYTES } = {},
+    ) {
+      const timestamp = now();
+      removeExpired(timestamp);
+      const ownerPrincipalId = normalizedPrincipalId(principalId);
+      if (!ownerPrincipalId) {
+        throw new Error("Storage usage requires an authenticated principal.");
+      }
+      const usage = accountStorageUsages.get(
+        principalDigest(ownerPrincipalId),
+      );
+      return {
+        usedBytes: usage?.usedBytes ?? 0,
+        quotaBytes: positiveInteger(
+          quotaBytes,
+          DEFAULT_ACCOUNT_STORAGE_QUOTA_BYTES,
+        ),
       };
     },
 
@@ -1116,6 +1358,15 @@ export function createMemoryCoordinator({ now = () => Date.now() } = {}) {
           current.state = "completed";
           current.descriptor = structuredClone(descriptor);
           delete current.claimToken;
+          const usage = accountStorageUsages.get(ownerDigest) ?? {
+            usedBytes: 0,
+            objects: new Set(),
+          };
+          accountStorageUsages.set(ownerDigest, usage);
+          if (!usage.objects.has(current.storageObjectDigest)) {
+            usage.objects.add(current.storageObjectDigest);
+            usage.usedBytes += current.binding.ciphertextBytes;
+          }
           settled = true;
           return true;
         },

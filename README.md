@@ -118,9 +118,9 @@ Le dual rail fonctionnel de `1.4.0-alpha.10.1` est volontairement inchangé :
   Mainnet (chain ID 1)**, avec vérification de l'adresse, du calldata, du reçu,
   des confirmations et de la finalité.
 
-Les fichiers suivants restent byte-for-byte identiques à la version déployée :
+Les fichiers d'exécution dual rail suivants restent byte-for-byte identiques à
+la version déployée :
 
-- `.env.example`
 - `server/evidency.js`
 - `server/ethereum.js`
 - `server/rails-worker.js`
@@ -133,11 +133,10 @@ Le contrôle peut être rejoué avec :
 npm run verify:dual-rail-freeze
 ```
 
-## Railway : aucune nouvelle variable et aucune valeur à remplacer
+## Railway : rails inchangés et quota de stockage
 
-Cette version ne nécessite **aucune nouvelle variable Railway**. Conserver telles
-quelles toutes les variables et valeurs déjà opérationnelles du service web et
-du service `SiteSealed Rails`, notamment :
+Conserver telles quelles toutes les variables et valeurs déjà opérationnelles
+du service web et du service `SiteSealed Rails`, notamment :
 
 - les identifiants Evidency Sandbox et leur endpoint ;
 - l'endpoint RPC Ethereum Mainnet, la clé du portefeuille, l'adresse attendue,
@@ -145,6 +144,13 @@ du service `SiteSealed Rails`, notamment :
 - les références MySQL, PostgreSQL, Redis et S3 ;
 - la cadence cron horaire actuelle ;
 - `GOOGLE_OAUTH_CLIENT_ID` pour Google Identity Services.
+
+Le service web accepte désormais `ACCOUNT_STORAGE_QUOTA_BYTES`, fixé par défaut
+à `524288000` octets (500 MiB) lorsqu'il est absent. Il s'agit d'un plafond
+cumulatif par compte authentifié, distinct de `SEAL_RATE_LIMIT_PER_HOUR` et des
+plafonds d'admission sur 24 heures. Les réservations de grants sont atomiques et
+expirent avec les grants inutilisés ; les octets ne sont comptabilisés qu'après
+un stockage réussi et un même objet n'est compté qu'une fois par compte.
 
 Ne pas ajouter `ETHEREUM_TARGET_RECORD_ID`. Ne pas réintroduire
 `UPLOAD_ADMISSION_SECRET`. Ne pas renommer le client Google en

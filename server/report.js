@@ -326,7 +326,23 @@ function renderFinalizedChainDetails(doc, record, flow) {
     '2. Decode its calldata as ASCII "SSLD", followed by one version byte and the 32-byte Merkle root.',
     "3. Starting with leaf, recompute the root through each inclusion-path sibling in order, respecting its left/right position.",
     "4. Compare the recomputed root with both the calldata root and merkle.root above.",
-  ].forEach((step) => flowField(doc, flow, "", step, { mono: false }));
+  ].forEach((step) => {
+    doc.font("Helvetica").fontSize(7.4);
+    const height = doc.heightOfString(step, {
+      width: 532,
+      lineGap: 1.2,
+    });
+    flow.ensure(height + 7);
+    doc
+      .font("Helvetica")
+      .fontSize(7.4)
+      .fillColor(COLORS.ink)
+      .text(step, 40, flow.y, {
+        width: 532,
+        lineGap: 1.2,
+      });
+    flow.y += height + 7;
+  });
 }
 
 function renderHonestScope(doc, y, verificationUrl) {

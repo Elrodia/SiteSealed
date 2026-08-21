@@ -16,6 +16,13 @@ function boundedInteger(value, fallback, minimum, maximum, variableName) {
 }
 
 export function resolveUploadAdmissionConfig(environment = process.env) {
+  const accountStorageQuotaBytes = boundedInteger(
+    environment.ACCOUNT_STORAGE_QUOTA_BYTES,
+    500 * MIB,
+    1,
+    Number.MAX_SAFE_INTEGER,
+    "ACCOUNT_STORAGE_QUOTA_BYTES",
+  );
   const dailyLimitMiB = boundedInteger(
     environment.STORAGE_ADMISSION_MB_PER_DAY,
     2048,
@@ -43,6 +50,7 @@ export function resolveUploadAdmissionConfig(environment = process.env) {
     );
   }
   return {
+    accountStorageQuotaBytes,
     dailyLimitBytes: dailyLimitMiB * MIB,
     dailyLimitMiB,
     perUserDailyLimitBytes: perUserDailyLimitMiB * MIB,

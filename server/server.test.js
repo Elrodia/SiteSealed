@@ -992,6 +992,43 @@ test("the controlled-alpha grant limiter returns standard retry guidance", async
   }
 });
 
+test("IP rate limiting aggregates IPv6 /64, mapped IPv4 and unknown clients", async () => {
+  const limited = await listen(
+    createApp({
+      coordinator: createMemoryCoordinator(),
+      sealRateLimit: 1,
+      uploadAdmission: TEST_UPLOAD_ADMISSION,
+    }),
+  );
+  const requestGrant = (forwardedFor) =>
+    fetch(`${limited.url}/api/storage/upload-grants`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-for": forwardedFor,
+      },
+      body: "{}",
+    });
+
+  try {
+    assert.equal((await requestGrant("2001:db8:1:2::1")).status, 401);
+    const samePrefix = await requestGrant("2001:db8:1:2:abcd::9");
+    assert.equal(samePrefix.status, 429);
+    assert.equal(samePrefix.headers.get("ratelimit-limit"), "1");
+
+    assert.equal((await requestGrant("2001:db8:1:3::1")).status, 401);
+    assert.equal((await requestGrant("2001:db8:1:4::1")).status, 401);
+
+    assert.equal((await requestGrant("203.0.113.4")).status, 401);
+    assert.equal((await requestGrant("::ffff:203.0.113.4")).status, 429);
+
+    assert.equal((await requestGrant("garbage-address")).status, 401);
+    assert.equal((await requestGrant("still-not-an-ip")).status, 429);
+  } finally {
+    await close(limited.server);
+  }
+});
+
 test("storage grants require an authenticated account and remain account-bound", async () => {
   const body = validRequest();
   const rejected = await issueUploadGrant(baseUrl, body, null);
@@ -1020,6 +1057,69 @@ test("storage grants require an authenticated account and remain account-bound",
   );
   assert.equal(stolen.status, 403);
   assert.equal((await stolen.json()).code, "UPLOAD_GRANT_REJECTED");
+});
+
+test("cumulative account storage quota rejects grants with useful usage data", async () => {
+  const uploadAdmission = {
+    ...TEST_UPLOAD_ADMISSION,
+    accountStorageQuotaBytes: 40,
+  };
+  const isolated = await listenAuthenticated({
+    recordStore: createMemoryRecordStore(),
+    objectStore: createMemoryObjectStore(),
+    sealRateLimit: 100,
+    uploadAdmission,
+  });
+  try {
+    const storedBody = validRequest();
+    const issued = await issueUploadGrant(
+      isolated.url,
+      storedBody,
+      isolated.auth,
+    );
+    assert.equal(issued.response.status, 201);
+    const uploaded = await fetch(
+      `${isolated.url}/api/storage/uploads/${encodeURIComponent(storedBody.submissionId)}`,
+      {
+        method: "PUT",
+        headers: uploadHeadersFor(
+          storedBody,
+          issued.payload.grant,
+          isolated.auth,
+        ),
+        body: storedBody[TEST_UPLOAD].ciphertext,
+      },
+    );
+    assert.equal(uploaded.status, 201);
+
+    const identical = await issueUploadGrant(
+      isolated.url,
+      storedBody,
+      isolated.auth,
+    );
+    assert.equal(identical.response.status, 201);
+
+    const rejected = await issueUploadGrant(
+      isolated.url,
+      validRequest(),
+      isolated.auth,
+    );
+    assert.equal(rejected.response.status, 413);
+    assert.equal(rejected.payload.code, "ACCOUNT_STORAGE_QUOTA_EXCEEDED");
+    assert.equal(rejected.payload.usedBytes, 32);
+    assert.equal(rejected.payload.quotaBytes, 40);
+
+    const session = await fetch(`${isolated.url}/api/auth/session`, {
+      headers: { cookie: isolated.auth.cookie },
+    });
+    assert.equal(session.status, 200);
+    assert.deepEqual((await session.json()).storageUsage, {
+      usedBytes: 32,
+      quotaBytes: 40,
+    });
+  } finally {
+    await close(isolated.server);
+  }
 });
 
 test("receipt creation requires the same completed upload grant", async () => {
