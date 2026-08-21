@@ -1,6 +1,9 @@
 import { baseMessages } from "./base.js";
 import { deDE } from "./de-DE.js";
+import { esES } from "./es-ES.js";
 import { frBE } from "./fr-BE.js";
+import { itIT } from "./it-IT.js";
+import { lbLU } from "./lb-LU.js";
 import { nlBE } from "./nl-BE.js";
 import { ptBR } from "./pt-BR.js";
 
@@ -11,6 +14,9 @@ export const SUPPORTED_LOCALES = Object.freeze([
   "nl-BE",
   "de-DE",
   "pt-BR",
+  "es-ES",
+  "it-IT",
+  "lb-LU",
 ]);
 
 export const LOCALE_OPTIONS = Object.freeze([
@@ -19,6 +25,9 @@ export const LOCALE_OPTIONS = Object.freeze([
   { locale: "nl-BE", label: "Nederlands (België)", shortLabel: "NL" },
   { locale: "de-DE", label: "Deutsch", shortLabel: "DE" },
   { locale: "pt-BR", label: "Português (Brasil)", shortLabel: "PT-BR" },
+  { locale: "es-ES", label: "Español (España)", shortLabel: "ES" },
+  { locale: "it-IT", label: "Italiano (Italia)", shortLabel: "IT" },
+  { locale: "lb-LU", label: "Lëtzebuergesch", shortLabel: "LB" },
 ]);
 
 export const catalogs = Object.freeze({
@@ -27,6 +36,9 @@ export const catalogs = Object.freeze({
   "nl-BE": nlBE,
   "de-DE": deDE,
   "pt-BR": ptBR,
+  "es-ES": esES,
+  "it-IT": itIT,
+  "lb-LU": lbLU,
 });
 
 const localeByLanguage = Object.freeze({
@@ -35,6 +47,13 @@ const localeByLanguage = Object.freeze({
   nl: "nl-BE",
   de: "de-DE",
   pt: "pt-BR",
+  es: "es-ES",
+  it: "it-IT",
+  lb: "lb-LU",
+});
+
+const localeAliases = Object.freeze({
+  "lu-lu": "lb-LU",
 });
 
 const googleLocales = Object.freeze({
@@ -43,6 +62,9 @@ const googleLocales = Object.freeze({
   "nl-BE": "nl_NL",
   "de-DE": "de_DE",
   "pt-BR": "pt_BR",
+  "es-ES": "es_ES",
+  "it-IT": "it_IT",
+  "lb-LU": "lb_LU",
 });
 
 let activeLocale = DEFAULT_LOCALE;
@@ -50,6 +72,8 @@ let activeLocale = DEFAULT_LOCALE;
 export function normalizeLocale(value) {
   const candidate = String(value ?? "").trim().replaceAll("_", "-");
   if (!candidate) return DEFAULT_LOCALE;
+  const alias = localeAliases[candidate.toLowerCase()];
+  if (alias) return alias;
   const exact = SUPPORTED_LOCALES.find(
     (locale) => locale.toLowerCase() === candidate.toLowerCase(),
   );
@@ -161,6 +185,9 @@ const byteUnits = Object.freeze({
   "nl-BE": ["B", "kB", "MB"],
   "de-DE": ["B", "kB", "MB"],
   "pt-BR": ["B", "KB", "MB"],
+  "es-ES": ["B", "kB", "MB"],
+  "it-IT": ["B", "kB", "MB"],
+  "lb-LU": ["B", "kB", "MB"],
 });
 
 export function formatBytes(locale, bytes) {

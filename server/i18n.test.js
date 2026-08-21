@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { File } from "node:buffer";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { createElement } from "react";
@@ -17,6 +18,7 @@ import {
   DEFAULT_LOCALE,
   SUPPORTED_LOCALES,
   catalogDiagnostics,
+  catalogs,
   detectLocale,
   formatBytes,
   googleLocaleFor,
@@ -44,7 +46,7 @@ async function extractAttachments(bytes) {
   return { document, attachments };
 }
 
-test("i18n exposes exactly the five release locales with deterministic detection", () => {
+test("i18n exposes exactly the eight release locales with deterministic detection", () => {
   assert.equal(DEFAULT_LOCALE, "en-US");
   assert.deepEqual(SUPPORTED_LOCALES, [
     "en-US",
@@ -52,10 +54,16 @@ test("i18n exposes exactly the five release locales with deterministic detection
     "nl-BE",
     "de-DE",
     "pt-BR",
+    "es-ES",
+    "it-IT",
+    "lb-LU",
   ]);
   assert.equal(normalizeLocale("pt"), "pt-BR");
   assert.equal(normalizeLocale("nl_NL"), "nl-BE");
-  assert.equal(normalizeLocale("es-ES"), "en-US");
+  assert.equal(normalizeLocale("es"), "es-ES");
+  assert.equal(normalizeLocale("it_IT"), "it-IT");
+  assert.equal(normalizeLocale("lb"), "lb-LU");
+  assert.equal(normalizeLocale("lu-LU"), "lb-LU");
   assert.equal(
     detectLocale({ search: "?lang=de-DE", stored: "fr-BE", languages: ["pt-BR"] }),
     "de-DE",
@@ -96,6 +104,23 @@ test("every locale catalog is structurally complete and translates critical surf
   }
 });
 
+test("every locale preserves the interpolation contract of the English catalog", () => {
+  const placeholders = (message) =>
+    [...String(message).matchAll(/\{([A-Za-z][A-Za-z0-9]*)\}/g)]
+      .map((match) => match[1])
+      .sort();
+
+  for (const locale of SUPPORTED_LOCALES) {
+    for (const id of Object.keys(catalogs[DEFAULT_LOCALE])) {
+      assert.deepEqual(
+        placeholders(catalogs[locale][id]),
+        placeholders(catalogs[DEFAULT_LOCALE][id]),
+        `${locale} changes the interpolation variables for ${id}`,
+      );
+    }
+  }
+});
+
 test("buyer-facing release labels omit software version numbers", () => {
   const publicIds = [
     "seal.maxSize",
@@ -127,6 +152,19 @@ test("source messages, templates, locale formatting and Google locale mapping ar
   assert.equal(formatBytes("en-US", 1536), "1.5 KB");
   assert.equal(googleLocaleFor("pt-BR"), "pt_BR");
   assert.equal(googleLocaleFor("de-DE"), "de_DE");
+  assert.equal(googleLocaleFor("es-ES"), "es_ES");
+  assert.equal(googleLocaleFor("it-IT"), "it_IT");
+  assert.equal(googleLocaleFor("lb-LU"), "lb_LU");
+});
+
+test("the desktop header compacts before translated navigation can overflow", async () => {
+  const css = await readFile(
+    fileURLToPath(new URL("../client/src/App-mobile.css", import.meta.url)),
+    "utf8",
+  );
+  assert.match(css, /@media \(min-width: 1241px\) and \(max-width: 1500px\)/);
+  assert.match(css, /\.nav \{\s+min-width: 0;\s+gap: clamp\(8px, 0\.9vw, 14px\);/);
+  assert.match(css, /@media \(max-width: 1240px\) \{[\s\S]*?\.menu-toggle \{\s+display: inline-flex;/);
 });
 
 test("the complete React application renders its critical surfaces in every locale", async () => {

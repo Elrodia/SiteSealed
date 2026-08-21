@@ -1,4 +1,4 @@
-# SiteSealed Genesis v1.6.0-alpha.2 — Social sharing metadata
+# SiteSealed Genesis v1.6.0-alpha.2 — International Evidence Reports
 
 SiteSealed crée des enregistrements d'intégrité et un seul artefact humain
 canonique : le **SiteSealed Evidence Report PDF**. Le rapport affiche l'original,
@@ -9,9 +9,12 @@ de la preuve et rassemble les artefacts des deux rails externes.
 
 L’application et les Evidence Reports sont disponibles en anglais américain
 (`en-US`), français de Belgique (`fr-BE`), néerlandais de Belgique (`nl-BE`),
-allemand (`de-DE`) et portugais brésilien (`pt-BR`). La langue est choisie dans
-l’en-tête, conservée localement et propagée au générateur PDF. Les dates,
-nombres et tailles sont formatés selon la locale sélectionnée. Les données
+allemand (`de-DE`), portugais brésilien (`pt-BR`), espagnol d’Espagne (`es-ES`),
+italien d’Italie (`it-IT`) et luxembourgeois
+(`lb-LU`). La forme non standard `lu-LU` est acceptée comme alias d’entrée et
+normalisée vers `lb-LU`. La langue est choisie dans l’en-tête, conservée
+localement et propagée au générateur PDF. Les dates, nombres et tailles sont
+formatés selon la locale sélectionnée. Les données
 canoniques de preuve — codes d’état, schémas, empreintes, manifestes, signatures,
 preuves Merkle et données Ethereum — ne sont jamais traduites ni modifiées.
 

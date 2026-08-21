@@ -72,6 +72,7 @@ export function I18nProvider({ children }) {
     updateMeta("description", value.t("meta.description"));
     updateMeta("og:title", value.t("meta.title"), true);
     updateMeta("og:description", value.t("meta.description"), true);
+    updateMeta("og:locale", normalizedLocale.replace("-", "_"), true);
     try {
       window.localStorage.setItem(STORAGE_KEY, normalizedLocale);
     } catch {

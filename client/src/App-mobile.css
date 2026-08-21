@@ -33,7 +33,29 @@
   }
 }
 
-@media (max-width: 1040px) {
+@media (min-width: 1241px) and (max-width: 1500px) {
+  .header__inner {
+    gap: 14px;
+  }
+
+  .nav {
+    min-width: 0;
+    gap: clamp(8px, 0.9vw, 14px);
+  }
+
+  .nav > a,
+  .nav__verify {
+    font-size: 0.7rem;
+    letter-spacing: 0.045em;
+  }
+
+  .nav__cta {
+    padding-inline: 12px;
+    font-size: 0.7rem;
+  }
+}
+
+@media (max-width: 1240px) {
   .site-header {
     position: absolute;
   }
@@ -620,7 +642,7 @@
   }
 }
 
-@media (max-width: 1040px) {
+@media (max-width: 1240px) {
   .nav__verify {
     width: 100%;
     justify-content: flex-start;
