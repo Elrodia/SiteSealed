@@ -1,4 +1,8 @@
+import { createRequire } from "node:module";
 import PDFDocument from "pdfkit";
+
+const require = createRequire(import.meta.url);
+const { version: PACKAGE_VERSION } = require("../package.json");
 
 const COLORS = {
   navy: "#0B2942",
@@ -13,6 +17,13 @@ const COLORS = {
   white: "#FFFFFF",
 };
 
+const PAGE = {
+  contentBottom: 744,
+  footerY: 759,
+  height: 792,
+  width: 612,
+};
+
 function formatUtc(value) {
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return "Unavailable";
@@ -22,6 +33,14 @@ function formatUtc(value) {
 function digestLines(value) {
   const text = String(value ?? "Unavailable");
   return text.length === 64 ? `${text.slice(0, 32)}\n${text.slice(32)}` : text;
+}
+
+function fullHashLines(value) {
+  const text = String(value);
+  if (/^0x[0-9a-f]{64}$/i.test(text)) {
+    return `${text.slice(0, 34)}\n${text.slice(34)}`;
+  }
+  return digestLines(text);
 }
 
 function sectionTitle(doc, number, title, y) {
@@ -137,6 +156,237 @@ function chainProofCopy(record) {
   };
 }
 
+function reportFooter(doc) {
+  doc.rect(0, PAGE.footerY, PAGE.width, PAGE.height - PAGE.footerY).fill(COLORS.navyDark);
+  doc
+    .font("Helvetica")
+    .fontSize(6.2)
+    .fillColor("#B9C6CF")
+    .text("SITESEALED - Every alpha receipt declares its proof state.", 40, 771);
+  doc
+    .font("Helvetica-Bold")
+    .fillColor(COLORS.amber)
+    .text("ALPHA - NOT A CERTIFIED EVIDENCE REPORT", 330, 771, {
+      width: 212,
+      align: "right",
+      characterSpacing: 0.5,
+    });
+}
+
+function continuationHeader(doc, record) {
+  doc.rect(0, 0, PAGE.width, 54).fill(COLORS.navy);
+  doc.rect(0, 52, PAGE.width, 2).fill(COLORS.amber);
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(10)
+    .fillColor(COLORS.white)
+    .text("DUAL-RAIL ALPHA RECEIPT", 40, 18, { characterSpacing: 1.2 });
+  doc
+    .font("Courier")
+    .fontSize(7)
+    .fillColor("#B9C6CF")
+    .text(`${record.recordId} | CONTINUED`, 40, 35);
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(6.8)
+    .fillColor(COLORS.amber)
+    .text("ALPHA / NOT SEALED", 454, 24, {
+      width: 118,
+      align: "center",
+      characterSpacing: 0.8,
+    });
+}
+
+function createPageFlow(doc, record, startY) {
+  let y = startY;
+  return {
+    ensure(requiredHeight) {
+      if (y + requiredHeight <= PAGE.contentBottom) return;
+      reportFooter(doc);
+      doc.addPage();
+      continuationHeader(doc, record);
+      y = 76;
+    },
+    get y() {
+      return y;
+    },
+    set y(value) {
+      y = value;
+    },
+  };
+}
+
+function flowHeading(doc, flow, title) {
+  flow.ensure(28);
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(8.5)
+    .fillColor(COLORS.navy)
+    .text(title, 40, flow.y, { characterSpacing: 1.2 });
+  doc
+    .moveTo(40, flow.y + 15)
+    .lineTo(192, flow.y + 15)
+    .lineWidth(1.2)
+    .strokeColor(COLORS.amber)
+    .stroke();
+  flow.y += 25;
+}
+
+function flowField(doc, flow, label, value, { mono = true } = {}) {
+  const text = String(value);
+  const font = mono ? "Courier" : "Helvetica";
+  const fontSize = mono ? 7.2 : 7.8;
+  doc.font(font).fontSize(fontSize);
+  const valueHeight = doc.heightOfString(text, {
+    width: 414,
+    lineGap: 1.2,
+  });
+  const height = Math.max(12, valueHeight) + 7;
+  flow.ensure(height);
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(6.7)
+    .fillColor(COLORS.muted)
+    .text(label.toUpperCase(), 40, flow.y + 0.5, {
+      width: 104,
+      characterSpacing: 0.55,
+    });
+  doc
+    .font(font)
+    .fontSize(fontSize)
+    .fillColor(COLORS.ink)
+    .text(text, 154, flow.y, {
+      width: 414,
+      lineGap: 1.2,
+    });
+  flow.y += height;
+}
+
+function renderFinalizedChainDetails(doc, record, flow) {
+  const rail = record.chainRail ?? {};
+  flowHeading(doc, flow, "RAIL B - FINALIZED ANCHOR DATA");
+
+  if (rail.anchor !== null && rail.anchor !== undefined) {
+    flowField(doc, flow, "anchor.transaction", fullHashLines(rail.anchor));
+  }
+  if (rail.anchorAddress !== null && rail.anchorAddress !== undefined) {
+    flowField(doc, flow, "anchor.address", rail.anchorAddress);
+  }
+  if (rail.block !== null && rail.block !== undefined) {
+    const chainId =
+      rail.chainId === null || rail.chainId === undefined
+        ? ""
+        : ` | chainId ${rail.chainId}`;
+    flowField(doc, flow, "block", `${rail.block}${chainId}`);
+  }
+  if (rail.merkleRoot !== null && rail.merkleRoot !== undefined) {
+    flowField(doc, flow, "merkle.root", fullHashLines(rail.merkleRoot));
+  }
+  if (rail.merkleProtocol !== null && rail.merkleProtocol !== undefined) {
+    flowField(doc, flow, "merkle.protocol", rail.merkleProtocol);
+  }
+  if (rail.leafHash !== null && rail.leafHash !== undefined) {
+    let leaf = fullHashLines(rail.leafHash);
+    if (rail.leafIndex !== null && rail.leafIndex !== undefined) {
+      leaf += `\nleafIndex ${rail.leafIndex}`;
+      if (rail.batchSize !== null && rail.batchSize !== undefined) {
+        leaf += ` of batchSize ${rail.batchSize}`;
+      }
+    } else if (rail.batchSize !== null && rail.batchSize !== undefined) {
+      leaf += `\nbatchSize ${rail.batchSize}`;
+    }
+    flowField(doc, flow, "leaf", leaf);
+  }
+  if (rail.inclusionPath !== null && rail.inclusionPath !== undefined) {
+    flowHeading(doc, flow, "INCLUSION PATH");
+    if (rail.inclusionPath.length === 0) {
+      flowField(doc, flow, "path", "No sibling hashes (single-leaf batch).", {
+        mono: false,
+      });
+    } else {
+      rail.inclusionPath.forEach((entry, index) => {
+        if (entry?.sha256 === null || entry?.sha256 === undefined) return;
+        const position =
+          entry.position === null || entry.position === undefined
+            ? "position unavailable"
+            : entry.position;
+        flowField(
+          doc,
+          flow,
+          `path[${index}] ${position}`,
+          fullHashLines(entry.sha256),
+        );
+      });
+    }
+  }
+
+  flowHeading(doc, flow, "VERIFY WITHOUT SITESEALED");
+  [
+    "1. Fetch the transaction identified by anchor.transaction from any Ethereum node.",
+    '2. Decode its calldata as ASCII "SSLD", followed by one version byte and the 32-byte Merkle root.',
+    "3. Starting with leaf, recompute the root through each inclusion-path sibling in order, respecting its left/right position.",
+    "4. Compare the recomputed root with both the calldata root and merkle.root above.",
+  ].forEach((step) => flowField(doc, flow, "", step, { mono: false }));
+}
+
+function renderHonestScope(doc, y, verificationUrl) {
+  sectionTitle(doc, "4", "HONEST SCOPE", y);
+  doc
+    .roundedRect(40, y + 23, 532, 96, 5)
+    .fillAndStroke(COLORS.paper, COLORS.line);
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(7.6)
+    .fillColor(COLORS.ink)
+    .text("WHAT THIS RECEIPT CAN SHOW", 53, y + 35, { characterSpacing: 0.5 });
+  doc
+    .font("Helvetica")
+    .fontSize(7.1)
+    .fillColor(COLORS.ink)
+    .text(
+      "A locally recalculated matching SHA-256 shows byte identity with this receipt. The cards above list only the external artefacts actually attached; absence remains explicit.",
+      53,
+      y + 51,
+      { width: 506, lineGap: 1.1 },
+    );
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(7.6)
+    .fillColor(COLORS.red)
+    .text("NON-NEGOTIABLE LIMIT", 53, y + 84, { characterSpacing: 0.5 });
+  doc
+    .font("Helvetica")
+    .fontSize(6.8)
+    .fillColor(COLORS.ink)
+    .text(
+      "Evidency sandbox tokens are test-only and cannot support a QUALIFIED or SEALED status. Imported files also carry no live-capture, identity, location or truthfulness attestation.",
+      53,
+      y + 99,
+      { width: 506, lineGap: 1.0 },
+    );
+
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(7.4)
+    .fillColor(COLORS.navy)
+    .text("VERIFY LOCALLY - NO FILE UPLOAD", 40, y + 137, { characterSpacing: 0.7 });
+  doc
+    .font("Courier")
+    .fontSize(7.2)
+    .fillColor(COLORS.navy)
+    .text(verificationUrl, 40, y + 154, { width: 532, link: verificationUrl });
+  doc
+    .font("Helvetica")
+    .fontSize(6.9)
+    .fillColor(COLORS.muted)
+    .text(
+      "Select the independently held original in the verifier. Its SHA-256 is recalculated in the browser and is not uploaded.",
+      40,
+      y + 173,
+      { width: 532 },
+    );
+}
+
 export function renderReceiptPdf(record, { baseUrl }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
@@ -145,8 +395,9 @@ export function renderReceiptPdf(record, { baseUrl }) {
       info: {
         Title: `SiteSealed dual-rail alpha receipt ${record.recordId}`,
         Author: "The SiteSealed Project",
-        Subject: "Dual-rail alpha receipt - sandbox timestamp is not legally qualified",
-        Creator: "SiteSealed v1.4-alpha.9",
+        Subject:
+          "Dual-rail alpha receipt - proof states and legal scope are stated in the document",
+        Creator: `SiteSealed v${PACKAGE_VERSION}`,
       },
       compress: true,
     });
@@ -272,78 +523,17 @@ export function renderReceiptPdf(record, { baseUrl }) {
       color: chain.state === "REJECTED" ? COLORS.red : COLORS.amber,
     });
 
-    sectionTitle(doc, "4", "HONEST SCOPE", 567);
-    doc
-      .roundedRect(40, 590, 532, 96, 5)
-      .fillAndStroke(COLORS.paper, COLORS.line);
-    doc
-      .font("Helvetica-Bold")
-      .fontSize(7.6)
-      .fillColor(COLORS.ink)
-      .text("WHAT THIS RECEIPT CAN SHOW", 53, 602, { characterSpacing: 0.5 });
-    doc
-      .font("Helvetica")
-      .fontSize(7.1)
-      .fillColor(COLORS.ink)
-      .text(
-        "A locally recalculated matching SHA-256 shows byte identity with this receipt. The cards above list only the external artefacts actually attached; absence remains explicit.",
-        53,
-        618,
-        { width: 506, lineGap: 1.1 },
-      );
-    doc
-      .font("Helvetica-Bold")
-      .fontSize(7.6)
-      .fillColor(COLORS.red)
-      .text("NON-NEGOTIABLE LIMIT", 53, 651, { characterSpacing: 0.5 });
-    doc
-      .font("Helvetica")
-      .fontSize(6.8)
-      .fillColor(COLORS.ink)
-      .text(
-        "Evidency sandbox tokens are test-only and cannot support a QUALIFIED or SEALED status. Imported files also carry no live-capture, identity, location or truthfulness attestation.",
-        53,
-        666,
-        { width: 506, lineGap: 1.0 },
-      );
-
     const verificationUrl = `${String(baseUrl).replace(/\/$/, "")}/verify/${encodeURIComponent(record.recordId)}`;
-    doc
-      .font("Helvetica-Bold")
-      .fontSize(7.4)
-      .fillColor(COLORS.navy)
-      .text("VERIFY LOCALLY - NO FILE UPLOAD", 40, 704, { characterSpacing: 0.7 });
-    doc
-      .font("Courier")
-      .fontSize(7.2)
-      .fillColor(COLORS.navy)
-      .text(verificationUrl, 40, 721, { width: 532, link: verificationUrl });
-    doc
-      .font("Helvetica")
-      .fontSize(6.9)
-      .fillColor(COLORS.muted)
-      .text(
-        "Select the independently held original in the verifier. Its SHA-256 is recalculated in the browser and is not uploaded.",
-        40,
-        740,
-        { width: 532 },
-      );
+    if (record.chainRail?.state === "FINALIZED") {
+      const flow = createPageFlow(doc, record, 567);
+      renderFinalizedChainDetails(doc, record, flow);
+      flow.ensure(192);
+      renderHonestScope(doc, flow.y, verificationUrl);
+    } else {
+      renderHonestScope(doc, 567, verificationUrl);
+    }
 
-    doc.rect(0, 759, 612, 33).fill(COLORS.navyDark);
-    doc
-      .font("Helvetica")
-      .fontSize(6.2)
-      .fillColor("#B9C6CF")
-      .text("SITESEALED - Every alpha receipt declares its proof state.", 40, 771);
-    doc
-      .font("Helvetica-Bold")
-      .fillColor(COLORS.amber)
-      .text("ALPHA - NOT A CERTIFIED EVIDENCE REPORT", 330, 771, {
-        width: 212,
-        align: "right",
-        characterSpacing: 0.5,
-      });
-
+    reportFooter(doc);
     doc.end();
   });
 }
