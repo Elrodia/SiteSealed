@@ -36,6 +36,7 @@ export async function buildMarketing({ origin, cbid = "", mode = "off", target =
   const homepage = `<!doctype html><html lang="en-US"><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Explore SiteSealed’s construction evidence pipeline and its current proof limits.">
+    <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
     <link rel="canonical" href="${app}/"><link rel="stylesheet" href="/public-page.css">
     <title>SiteSealed | Construction evidence guides</title></head>
     <body class="public-page"><main class="public-page__main">${hero}</main><footer class="public-page__footer">
@@ -54,7 +55,7 @@ export async function buildMarketing({ origin, cbid = "", mode = "off", target =
     await mkdir(dir, {recursive: true});
     await writeFile(path.join(dir, "index.html"), page);
   }
-  for (const asset of ["favicon.svg","icon-192.svg","public-page.css"])
+  for (const asset of ["favicon-192.png","favicon.ico","favicon.svg","icon-192.svg","public-page.css"])
     await copyFile(path.join(client, "public", asset), path.join(target, asset));
   await writeFile(path.join(target, "ads.txt"), "google.com, pub-3852727861047545, DIRECT, f08c47fec0942fa0\n");
   await writeFile(path.join(target, "robots.txt"), "User-agent: *\nAllow: /\n");

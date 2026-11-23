@@ -328,7 +328,7 @@ ${page.references.map((reference) => `            <li><a href="${escapeHtml(refe
     <meta name="twitter:title" content="${escapeHtml(page.title)}" />
     <meta name="twitter:description" content="${escapeHtml(page.description)}" />
     <meta name="twitter:image" content="${socialImage}" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20260812" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
     <link rel="stylesheet" href="/public-page.css" />
     <title>${escapeHtml(page.title)}</title>
   </head>

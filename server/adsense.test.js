@@ -86,6 +86,7 @@ test("isolated marketing service serves all four editorial heads; rejects aliase
   for (const item of ["/", ...publicPages.map(p=>p.path)]) {
     const res = await get(item); assert.equal(res.status,200);
     const html = await res.text(), head = html.slice(0,html.indexOf("</head>"));
+    assert.match(head, /<link\b(?=[^>]*\brel="icon")(?=[^>]*\bhref="\/favicon-192\.png")(?=[^>]*\btype="image\/png")(?=[^>]*\bsizes="192x192")[^>]*>/i, item);
     assert.equal((head.match(/name="google-adsense-account"/g)||[]).length,1);
     assert.ok(head.includes('<template id="advertising-code"><script async src="'+scriptUrl+'" crossorigin="anonymous"></script></template>'));
     assert.equal((html.match(/<h1\b/g)||[]).length,1); assert.match(html, /Change or withdraw advertising consent/);
@@ -102,6 +103,12 @@ test("isolated marketing service serves all four editorial heads; rejects aliase
   assert.equal((await get("/", "app.sitesealed.com")).status,421);
   assert.equal((await get("/ads.txt")).status,200);
   assert.equal((await get("/healthz")).status,200);
+  for (const [name, mime] of [["favicon-192.png", /^image\/png(?:;|$)/], ["favicon.ico", /^image\/(?:x-icon|vnd\.microsoft\.icon)(?:;|$)/]]) {
+    const res = await get("/" + name);
+    assert.equal(res.status, 200, name);
+    assert.match(res.headers.get("content-type") ?? "", mime);
+    assert.deepEqual(Buffer.from(await res.arrayBuffer()), await readFile(new URL("../client/public/" + name, import.meta.url)));
+  }
 
   const appIndex = await readFile(new URL("../client/index.html", import.meta.url), "utf8");
   for (const html of [appIndex,...publicPages.map(renderPublicPage)]) {

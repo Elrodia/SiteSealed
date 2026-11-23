@@ -149,6 +149,36 @@ test("robots and sitemap expose only real public application URLs", async () => 
   }
 });
 
+test("each public head declares a stable PNG favicon; icon routes return real images", async () => {
+  const iconPath = "/favicon-192.png";
+  for (const route of ["/", ...publicRoutes]) {
+    const response = await fetch(baseUrl + route);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    const head = html.match(/<head\b[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+    const linked = elements(head, "link").some(link =>
+      link.rel === "icon" && link.href === iconPath &&
+      link.type === "image/png" && link.sizes === "192x192");
+    assert.ok(linked, `${route} must link the stable PNG in its initial head`);
+  }
+  const png = await fetch(baseUrl + iconPath);
+  assert.equal(png.status, 200);
+  assert.match(png.headers.get("content-type") ?? "", /^image\/png(?:;|$)/);
+  const pngBytes = Buffer.from(await png.arrayBuffer());
+  assert.equal(pngBytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+  assert.equal(pngBytes.toString("ascii", 12, 16), "IHDR");
+  assert.equal(pngBytes.readUInt32BE(16), 192);
+  assert.equal(pngBytes.readUInt32BE(20), 192);
+
+  const ico = await fetch(baseUrl + "/favicon.ico");
+  assert.equal(ico.status, 200);
+  assert.match(ico.headers.get("content-type") ?? "", /^image\/(?:vnd\.microsoft\.icon|x-icon)(?:;|$)/);
+  const icoBytes = Buffer.from(await ico.arrayBuffer());
+  assert.equal(icoBytes.readUInt16LE(0), 0);
+  assert.equal(icoBytes.readUInt16LE(2), 1);
+  assert.ok(icoBytes.readUInt16LE(4) > 0);
+});
+
 test("root JSON-LD is parseable, nonce-compatible and honestly scoped", async () => {
   const response = await fetch(`${baseUrl}/`);
   const html = await response.text();
