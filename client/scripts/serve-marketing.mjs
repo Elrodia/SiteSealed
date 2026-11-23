@@ -15,6 +15,7 @@ export async function makeMarketingServer({target = fileURLToPath(new URL("../di
   const pages = new Map([["/", "index.html"], ...publicPages.flatMap(({path: url, slug}) =>
     [[url, slug + "/index.html"], [url + "/", slug + "/index.html"]])]);
   const assets = new Map([["/public-page.css", "text/css"], ["/favicon.svg", "image/svg+xml"],
+    ["/favicon-192.png", "image/png"], ["/favicon.ico", "image/x-icon"],
     ["/icon-192.svg", "image/svg+xml"], ["/robots.txt", "text/plain"], ["/ads.txt", "text/plain"]]);
   return createServer(async (req, res) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -42,7 +43,8 @@ export async function makeMarketingServer({target = fileURLToPath(new URL("../di
         res.setHeader("Content-Security-Policy", csp + "; frame-ancestors 'none'");
         res.setHeader("Cache-Control", "private, no-store");
       }
-      res.setHeader("Content-Type", (mime || "text/html") + "; charset=utf-8");
+      const contentType = mime || "text/html";
+      res.setHeader("Content-Type", contentType.startsWith("text/") ? contentType + "; charset=utf-8" : contentType);
       res.setHeader("Content-Length", bytes.length);
       end(200, req.method === "HEAD" ? undefined : bytes);
     } catch { end(500, "Build file unavailable"); }

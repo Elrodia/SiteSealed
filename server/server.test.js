@@ -916,7 +916,7 @@ test("the production server serves the React application, social preview, offici
   assert.equal(homeResponse.status, 200);
   const homeHtml = await homeResponse.text();
   assert.match(homeHtml, /id="root"/);
-  assert.match(homeHtml, /favicon\.svg\?v=20260812/);
+  assert.match(homeHtml, /href="\/favicon-192\.png"/);
   assert.match(homeHtml, /<html lang="en-US">/);
   assert.match(homeHtml, /<link rel="canonical" href="https:\/\/app\.sitesealed\.com\/"/);
   assert.match(

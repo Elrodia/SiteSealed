@@ -1308,6 +1308,8 @@ export function createApp({
           if (
             filePath.endsWith(".html") ||
             filePath.endsWith("favicon.svg") ||
+            filePath.endsWith("favicon-192.png") ||
+            filePath.endsWith("favicon.ico") ||
             filePath.endsWith("icon-192.svg") ||
             filePath.endsWith("icon-512.svg") ||
             filePath.endsWith("site.webmanifest")
