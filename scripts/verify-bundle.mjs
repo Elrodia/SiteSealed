@@ -144,6 +144,7 @@ async function main() {
       throw new Error("The exported Evidency timestamp token digest is invalid.");
     }
     const verification = await verifyRfc3161Token({
+      usage: "historical",
       token: tokenBytes,
       expectedDigest: receipt.evidenceDigest,
       expectedSerialNumber: timestamp.serialNumber,

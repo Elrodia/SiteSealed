@@ -33,6 +33,7 @@ try {
   const token = await readFile(resolve(tokenPath));
   const verification = await verifyRfc3161Token({
     token,
+    usage: "historical",
     expectedDigest: digest,
     expectedSerialNumber: args.get("--serial") ?? null,
     expectedCertifiedAt: args.get("--time") ?? null,

@@ -4,10 +4,9 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { Certificate } from "pkijs";
 import {
-  EVIDENCY_SANDBOX_ROOT_SHA256,
   Rfc3161VerificationError,
   assertTimestampSignerProfile,
-  createEvidencySandboxTrustStore,
+  createTrustPolicy,
   verifyRfc3161Token,
 } from "./rfc3161.js";
 
@@ -55,7 +54,7 @@ test("independently verifies the real Evidency sandbox RFC 3161 token", async ()
   assert.equal(result.certifiedAt, fixture.certifiedAt);
   assert.equal(result.tsaPolicyId, fixture.tsaPolicyId);
   assert.equal(result.tokenSha256, fixture.tokenSha256);
-  assert.equal(result.trustAnchorSha256, EVIDENCY_SANDBOX_ROOT_SHA256);
+  assert.equal(result.trustAnchorSha256, "6871a6ed629cbefd77caee74a6bf6a9c22d96a8c26065dac75651e2e36a8b62d");
   assert.equal(result.certificatePathLength, 3);
   assert.equal(result.revocationVerification, "NOT_CHECKED");
 });
@@ -92,11 +91,10 @@ test("rejects provider metadata that contradicts the signed TSTInfo", async () =
 });
 
 test("fails closed if a release-pinned trust certificate changes", () => {
+  const changed = JSON.parse(readFileSync(new URL("./trust/anchors.v1.json", import.meta.url), "utf8"));
+  changed.certificates.find((certificate) => certificate.role === "root").sha256 = "0".repeat(64);
   assert.throws(
-    () =>
-      createEvidencySandboxTrustStore({
-        rootSha256: "0".repeat(64),
-      }),
+    () => createTrustPolicy(changed),
     rejectsWithCode("TRUST_BUNDLE_INTEGRITY_FAILED"),
   );
 });

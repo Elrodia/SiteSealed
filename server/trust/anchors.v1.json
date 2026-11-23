@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "certificates": [
+    {
+      "id": "evidency-sandbox-root",
+      "environment": "SANDBOX",
+      "role": "root",
+      "status": "active",
+      "file": "evidency-sandbox-root-ca.pem",
+      "sha256": "6871a6ed629cbefd77caee74a6bf6a9c22d96a8c26065dac75651e2e36a8b62d"
+    },
+    {
+      "id": "evidency-sandbox-timestamp-ca",
+      "environment": "SANDBOX",
+      "role": "issuer",
+      "parentId": "evidency-sandbox-root",
+      "status": "active",
+      "file": "evidency-sandbox-timestamp-ca.pem",
+      "sha256": "05d89655a8bd51ec3100a9d062432b19ce018f861c9e209d50026c7e6322597b"
+    },
+    {
+      "id": "evidency-sandbox-tsu01",
+      "environment": "SANDBOX",
+      "role": "signer",
+      "parentId": "evidency-sandbox-timestamp-ca",
+      "status": "active",
+      "file": "evidency-sandbox-tsu01.pem",
+      "sha256": "2f0bd0feed6b00dbb2d62e2bc374ed30e0b159f957fa4859c9d63308f959881e"
+    }
+  ]
+}

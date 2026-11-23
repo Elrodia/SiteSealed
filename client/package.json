@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "node scripts/generate-public-seo.mjs && vite build && node scripts/generate-public-seo.mjs --dist",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "build:marketing": "node scripts/build-marketing.mjs",
+    "start:marketing": "node scripts/serve-marketing.mjs"
   },
   "engines": {
     "node": ">=22.13.0 <25"

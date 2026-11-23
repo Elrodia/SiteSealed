@@ -1,6 +1,7 @@
 import mysql from "mysql2/promise";
 import {
   ApiError,
+  applyCurrentTimestampPolicy,
   chainRailFromProof,
   createDevelopmentRecord,
   createEvidenceDigest,
@@ -8,6 +9,8 @@ import {
   createReceiptPayload,
   parseEncryptedManifest,
   qualifiedRailFromProof,
+  recordHasTrustedSandboxTimestamp,
+  sandboxProofAccepted,
   serializeEncryptedManifest,
 } from "./records.js";
 import { specimenRecord } from "./specimen.js";
@@ -790,7 +793,7 @@ export function mapRecordRow(row) {
           verificationStatus: row.chain_status,
         })
       : null;
-    return {
+    return applyCurrentTimestampPolicy({
       ...record,
       manifestEncryption:
         row.manifest_encryption ?? "AES-256-GCM / client-held key",
@@ -799,7 +802,7 @@ export function mapRecordRow(row) {
         ? { qualifiedAt: qualifiedRail.certifiedAt, qualifiedRail }
         : {}),
       ...(chainRail ? { chainRail } : {}),
-    };
+    });
   }
 
   const payload = parseJsonColumn(row.specimen_payload);
@@ -1113,12 +1116,7 @@ export function createMysqlRecordStore(pool) {
     },
 
     async saveQualifiedTimestamp(recordId, proof) {
-      if (
-        proof?.validatorVersion !== "SITESEALED_RFC3161_VALIDATOR_V1" ||
-        proof?.signatureVerification !== "VALID" ||
-        proof?.certificateChainVerification !==
-          "VALID_TO_PINNED_SANDBOX_ROOT"
-      ) {
+      if (!sandboxProofAccepted(proof, "issuance")) {
         throw new ApiError(
           409,
           "TIMESTAMP_PROOF_NOT_VERIFIED",
@@ -1227,10 +1225,14 @@ export function createMysqlRecordStore(pool) {
         fallback: 1_024,
         maximum: 10_000,
       });
-      const [ids] = await textQuery(
+      const kept = [];
+      let cursor = null;
+      // Skip retired/revoked rows before applying the real batch limit. A page
+      // of rejected rows must not starve all later, still-trusted timestamps.
+      const fetchPage = (pageSize) => textQuery(
         pool,
         "automatic Ethereum candidate selection",
-        `SELECT records.record_id
+        `SELECT records.record_id, records.created_at
            FROM sealed_records AS records
            JOIN qualified_timestamp_proofs AS qualified
              ON qualified.record_id = records.record_id
@@ -1249,16 +1251,23 @@ export function createMysqlRecordStore(pool) {
             AND qualified.certificate_chain_verification =
               'VALID_TO_PINNED_SANDBOX_ROOT'
             AND member.record_id IS NULL
+            ${cursor ? "AND (records.created_at, records.record_id) > (?, ?)" : ""}
           ORDER BY records.created_at ASC, records.record_id ASC
-          LIMIT ${candidateLimit}`,
+          LIMIT ${pageSize}`,
+        cursor ? [cursor.created_at, cursor.record_id] : undefined,
       );
-      const records = await Promise.all(
-        ids.map(async ({ record_id: recordId }) => {
+      while (kept.length < candidateLimit) {
+        const pageSize = candidateLimit - kept.length;
+        const [ids] = await fetchPage(pageSize);
+        const records = await Promise.all(ids.map(async ({ record_id: recordId }) => {
           const row = await findRow("record_id", recordId);
           return row ? mapRecordRow(row) : null;
-        }),
-      );
-      return records.filter(Boolean);
+        }));
+        kept.push(...records.filter(recordHasTrustedSandboxTimestamp));
+        if (ids.length < pageSize) break;
+        cursor = ids.at(-1);
+      }
+      return kept;
     },
 
     async createAnchorBatch(batch) {

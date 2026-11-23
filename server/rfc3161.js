@@ -5,7 +5,11 @@ import {
   timingSafeEqual,
   verify as verifySignature,
 } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { selectTrustPath, Rfc3161VerificationError } from "./trust-manifest.js";
+export {
+  Rfc3161VerificationError, createTrustPolicy, isStoredTimestampTrusted, getTrustManifestHealth,
+  TRUST_MANIFEST_REVISION, TRUST_MANIFEST_SHA256,
+} from "./trust-manifest.js";
 import { OctetString, Sequence, fromBER } from "asn1js";
 import {
   AlgorithmIdentifier,
@@ -21,10 +25,6 @@ import {
 export const RFC3161_VALIDATOR_VERSION =
   "SITESEALED_RFC3161_VALIDATOR_V1";
 
-export const EVIDENCY_SANDBOX_ROOT_SHA256 =
-  "6871a6ed629cbefd77caee74a6bf6a9c22d96a8c26065dac75651e2e36a8b62d";
-export const EVIDENCY_SANDBOX_TIMESTAMP_CA_SHA256 =
-  "05d89655a8bd51ec3100a9d062432b19ce018f861c9e209d50026c7e6322597b";
 
 const CMS_SIGNED_DATA_OID = "1.2.840.113549.1.7.2";
 const TST_INFO_OID = "1.2.840.113549.1.9.16.1.4";
@@ -88,22 +88,6 @@ const SIGNATURE_ALGORITHMS = new Map([
   ],
 ]);
 
-const defaultRootPem = readFileSync(
-  new URL("./trust/evidency-sandbox-root-ca.pem", import.meta.url),
-  "utf8",
-);
-const defaultTimestampCaPem = readFileSync(
-  new URL("./trust/evidency-sandbox-timestamp-ca.pem", import.meta.url),
-  "utf8",
-);
-
-export class Rfc3161VerificationError extends Error {
-  constructor(code, message) {
-    super(message);
-    this.name = "Rfc3161VerificationError";
-    this.code = code;
-  }
-}
 
 function fail(code, message) {
   throw new Rfc3161VerificationError(code, message);
@@ -142,66 +126,6 @@ function integerHex(integer) {
   );
 }
 
-function parseCertificate(pem, expectedSha256, role) {
-  let x509;
-  try {
-    x509 = new X509Certificate(pem);
-  } catch {
-    fail("TRUST_BUNDLE_INVALID", `The pinned ${role} certificate is unreadable.`);
-  }
-  const raw = Buffer.from(x509.raw);
-  const fingerprint = sha256(raw);
-  if (fingerprint !== expectedSha256) {
-    fail(
-      "TRUST_BUNDLE_INTEGRITY_FAILED",
-      `The pinned ${role} certificate fingerprint does not match the release manifest.`,
-    );
-  }
-  let pkijs;
-  try {
-    pkijs = Certificate.fromBER(raw);
-  } catch {
-    fail("TRUST_BUNDLE_INVALID", `The pinned ${role} certificate is malformed.`);
-  }
-  return { x509, pkijs, raw, fingerprint };
-}
-
-export function createEvidencySandboxTrustStore({
-  rootPem = defaultRootPem,
-  timestampCaPem = defaultTimestampCaPem,
-  rootSha256 = EVIDENCY_SANDBOX_ROOT_SHA256,
-  timestampCaSha256 = EVIDENCY_SANDBOX_TIMESTAMP_CA_SHA256,
-} = {}) {
-  const root = parseCertificate(rootPem, rootSha256, "sandbox root CA");
-  const timestampCa = parseCertificate(
-    timestampCaPem,
-    timestampCaSha256,
-    "sandbox timestamp CA",
-  );
-
-  if (!root.x509.ca || !root.x509.checkIssued(root.x509) || !root.x509.verify(root.x509.publicKey)) {
-    fail("TRUST_BUNDLE_INVALID", "The pinned sandbox root CA is not a valid self-signed CA.");
-  }
-  if (
-    !timestampCa.x509.ca ||
-    !timestampCa.x509.checkIssued(root.x509) ||
-    !timestampCa.x509.verify(root.x509.publicKey)
-  ) {
-    fail(
-      "TRUST_BUNDLE_INVALID",
-      "The pinned sandbox timestamp CA does not validate to the pinned root CA.",
-    );
-  }
-
-  return { root, timestampCa };
-}
-
-let defaultTrustStore;
-
-function getDefaultTrustStore() {
-  defaultTrustStore ??= createEvidencySandboxTrustStore();
-  return defaultTrustStore;
-}
 
 function requireSingleAttribute(attributes, oid, label) {
   const matches = attributes.filter((attribute) => attribute.type === oid);
@@ -460,23 +384,6 @@ export function assertTimestampSignerProfile(certificate, x509) {
   }
 }
 
-function assertCertificateValidAt(x509, date, role) {
-  const checkedAt = date.valueOf();
-  const notBefore = Date.parse(x509.validFrom);
-  const notAfter = Date.parse(x509.validTo);
-  if (
-    !Number.isFinite(checkedAt) ||
-    !Number.isFinite(notBefore) ||
-    !Number.isFinite(notAfter) ||
-    checkedAt < notBefore ||
-    checkedAt > notAfter
-  ) {
-    fail(
-      "CERTIFICATE_NOT_VALID_AT_GENTIME",
-      `The ${role} certificate was not valid at the RFC 3161 genTime.`,
-    );
-  }
-}
 
 function parsePssParameters(algorithmIdentifier, digestAlgorithm) {
   if (!algorithmIdentifier.algorithmParams) {
@@ -651,6 +558,8 @@ export async function verifyRfc3161Token({
   expectedCertifiedAt = null,
   expectedPolicyId = null,
   trustStore = null,
+  usage = "issuance",
+  environment = "SANDBOX",
 } = {}) {
   const digest = String(expectedDigest ?? "").trim().toLowerCase();
   if (!SHA256_PATTERN.test(digest)) {
@@ -796,23 +705,9 @@ export async function verifyRfc3161Token({
     fail("PROVIDER_POLICY_MISMATCH", "The provider policy identifier does not match TSTInfo.");
   }
 
-  const pinnedTrust = trustStore ?? getDefaultTrustStore();
-  assertCertificateValidAt(signerX509, tstInfo.genTime, "timestamp signer");
-  assertCertificateValidAt(
-    pinnedTrust.timestampCa.x509,
-    tstInfo.genTime,
-    "timestamp CA",
-  );
-  assertCertificateValidAt(pinnedTrust.root.x509, tstInfo.genTime, "root CA");
-  if (
-    !signerX509.checkIssued(pinnedTrust.timestampCa.x509) ||
-    !signerX509.verify(pinnedTrust.timestampCa.x509.publicKey)
-  ) {
-    fail(
-      "CERTIFICATE_CHAIN_INVALID",
-      "The timestamp signer certificate does not validate to the pinned timestamp CA.",
-    );
-  }
+  const pinnedTrust = selectTrustPath({
+    trustStore, usage, environment, signerSha256: sha256(signerRaw), at: tstInfo.genTime.valueOf(),
+  });
 
   const chainEngine = new CertificateChainValidationEngine({
     certs: [signerCertificate, pinnedTrust.timestampCa.pkijs],
@@ -845,14 +740,17 @@ export async function verifyRfc3161Token({
   ) {
     fail(
       "CERTIFICATE_CHAIN_INVALID",
-      "The validated certificate path does not terminate at the pinned sandbox root.",
+      "The validated certificate path does not terminate at the approved root.",
     );
   }
 
   return {
     validatorVersion: RFC3161_VALIDATOR_VERSION,
     signatureVerification: "VALID",
-    certificateChainVerification: "VALID_TO_PINNED_SANDBOX_ROOT",
+    certificateChainVerification: environment === "SANDBOX"
+      ? "VALID_TO_PINNED_SANDBOX_ROOT" : "VALID_TO_PINNED_PRODUCTION_ROOT",
+    trustManifestRevision: pinnedTrust.revision,
+    trustPathIds: [pinnedTrust.signer.id, pinnedTrust.timestampCa.id, pinnedTrust.root.id],
     signingCertificateVerification: signingCertificate.status,
     signingCertificateHashAlgorithm: signingCertificate.hashAlgorithm,
     cmsAlgorithmProtection: algorithmProtection,

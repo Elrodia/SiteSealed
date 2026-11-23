@@ -13,7 +13,7 @@ const distributionDirectory = path.join(clientDirectory, "dist");
 const origin = "https://app.sitesealed.com";
 const socialImage = `${origin}/sitesealed-social-1200x628.png`;
 
-const publicPages = Object.freeze([
+export const publicPages = Object.freeze([
   {
     slug: "how-it-works",
     path: "/how-it-works",
@@ -290,7 +290,7 @@ function publicNavigation() {
           <a href="/verify">Independent record verification</a>`;
 }
 
-function renderPublicPage(page) {
+export function renderPublicPage(page) {
   const sections = page.sections.map((section) => `
         <section class="public-page__section">
           <h2>${escapeHtml(section.heading)}</h2>
@@ -312,6 +312,7 @@ ${page.references.map((reference) => `            <li><a href="${escapeHtml(refe
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#061A2B" />
+    <meta name="google-adsense-account" content="ca-pub-3852727861047545" />
     <meta name="sitesealed-csp-nonce" content="__SITESEALED_CSP_NONCE__" />
     <meta name="description" content="${escapeHtml(page.description)}" />
     <meta name="robots" content="index, follow" />
@@ -423,7 +424,9 @@ async function generateDistributionPages() {
   );
 }
 
-assertCanonicalLocales();
-await generateIndexAndSitemap();
-if (process.argv.includes("--dist")) await generateDistributionPages();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  assertCanonicalLocales();
+  await generateIndexAndSitemap();
+  if (process.argv.includes("--dist")) await generateDistributionPages();
+}
 
