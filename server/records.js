@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isStoredTimestampTrusted, RFC3161_VALIDATOR_VERSION } from "./rfc3161.js";
 
 export const RECORD_CLASS_IMPORTED = "IMPORTED_FILE";
 export const RECORD_CLASS_LIVE_WEB = "LIVE_CAPTURE_WEB";
@@ -612,6 +613,46 @@ export function createDevelopmentRecord(input, options = {}) {
   };
 }
 
+// The persisted signature result describes verification at ingestion, not the
+// current release's trust policy. Recheck cached records as well as DB rows.
+export function sandboxProofAccepted(proof, usage = "historical") {
+  return (
+    proof?.environment === "SANDBOX" &&
+    proof.legalUse === false &&
+    proof.qualificationStatus === "TEST_ONLY_NOT_QUALIFIED" &&
+    proof.validatorVersion === RFC3161_VALIDATOR_VERSION &&
+    proof.signatureVerification === "VALID" &&
+    proof.certificateChainVerification === "VALID_TO_PINNED_SANDBOX_ROOT" &&
+    proof.signingCertificateVerification === "ESSCERTIDV2_MATCH" &&
+    isStoredTimestampTrusted(proof, { usage })
+  );
+}
+
+export function recordHasTrustedSandboxTimestamp(record) {
+  const proof = record?.qualifiedRail;
+  return !record?.specimen && proof?.state === "SANDBOX_TOKEN_ISSUED" &&
+    SHA256_PATTERN.test(record.evidenceDigest) &&
+    proof.hashedMessage === record.evidenceDigest && sandboxProofAccepted(proof);
+}
+
+export function applyCurrentTimestampPolicy(record) {
+  const proof = record?.qualifiedRail;
+  if (record?.specimen || !["TOKEN_ISSUED", "SANDBOX_TOKEN_ISSUED"].includes(proof?.state)) return record;
+  if (recordHasTrustedSandboxTimestamp(record)) return record;
+  // Don't destroy token bytes, signer metadata, or the original stored row.
+  return {
+    ...record,
+    qualifiedRail: {
+      ...proof,
+      legalUse: false,
+      qualificationStatus: proof.environment === "SANDBOX" ? "TEST_ONLY_NOT_QUALIFIED" : "UNDETERMINED",
+      certificateChainVerification: "NOT_ACCEPTED_BY_CURRENT_POLICY",
+      responseValidation: "NOT_ACCEPTED_BY_CURRENT_POLICY",
+      status: "Token retained for inspection; not accepted under the current timestamp trust policy.",
+    },
+  };
+}
+
 export function externalProofStatus(record) {
   if (record?.specimen) {
     return {
@@ -621,14 +662,7 @@ export function externalProofStatus(record) {
       sealed: false,
     };
   }
-  const qualified =
-    record?.qualifiedRail?.qualificationStatus === "EIDAS_QUALIFIED" &&
-    record?.qualifiedRail?.signatureVerification === "VALID";
-  const sandbox =
-    record?.qualifiedRail?.state === "SANDBOX_TOKEN_ISSUED" &&
-    record?.qualifiedRail?.signatureVerification === "VALID" &&
-    record?.qualifiedRail?.certificateChainVerification ===
-      "VALID_TO_PINNED_SANDBOX_ROOT";
+  const sandbox = recordHasTrustedSandboxTimestamp(record);
   const finalized = record?.chainRail?.state === "FINALIZED";
   const anchorRejected = ["FAILED_ON_CHAIN", "INVALID_ON_CHAIN"].includes(
     record?.chainRail?.state,
@@ -637,8 +671,6 @@ export function externalProofStatus(record) {
     state:
       anchorRejected
         ? "PUBLIC_ANCHOR_REJECTED"
-        : qualified && finalized
-        ? "DUAL_RAIL_COMPLETE"
         : sandbox && finalized
           ? "ALPHA_DUAL_RAIL_COMPLETE"
           : sandbox
@@ -646,9 +678,9 @@ export function externalProofStatus(record) {
             : finalized
               ? "MAINNET_ANCHORED_QTSP_PENDING"
               : "EXTERNAL_PROOFS_PENDING",
-    proofsComplete: Boolean(qualified && finalized),
+    proofsComplete: false,
     alphaComplete: Boolean(sandbox && finalized),
-    sealed: Boolean(qualified && finalized),
+    sealed: false, // production qualification is not enabled in this release
   };
 }
 
@@ -773,12 +805,12 @@ export function scopeForRecord(record) {
 
   const timestampStatement =
     record.qualifiedRail?.state === "SANDBOX_TOKEN_ISSUED"
-      ? record.qualifiedRail?.signatureVerification === "VALID" &&
-        record.qualifiedRail?.certificateChainVerification ===
-          "VALID_TO_PINNED_SANDBOX_ROOT"
+      ? recordHasTrustedSandboxTimestamp(record)
         ? " Evidency sandbox returned an RFC 3161 test token bound to the evidence digest; SiteSealed independently verified its CMS signature, signer binding and certificate path to the pinned sandbox root. Revocation was not checked, and the sandbox expressly has no legal effect."
-        : " Evidency sandbox returned an RFC 3161 test token, but this stored token has not passed the alpha.10.1 independent signature-and-chain gate. The sandbox expressly has no legal effect."
-      : " No external RFC 3161 timestamp token is attached.";
+        : " The stored sandbox token is not accepted under the current timestamp trust policy and has no qualified legal effect."
+      : record.qualifiedRail?.token
+        ? " A timestamp token is attached, but this release does not establish its production qualification."
+        : " No external RFC 3161 timestamp token is attached.";
   const chainStatement =
     record.chainRail?.state === "FINALIZED"
       ? " Its Merkle inclusion path resolves to a root recorded in a finalized Ethereum mainnet transaction."
@@ -815,6 +847,7 @@ export function scopeForRecord(record) {
 }
 
 export function createProofBundle(record, encryptedManifest = null) {
+  record = applyCurrentTimestampPolicy(record);
   const proofStatus = externalProofStatus(record);
   return {
     schemaVersion:

@@ -67,8 +67,8 @@ function verifiedTimestampProof(evidenceDigest, overrides = {}) {
     validatorVersion: "SITESEALED_RFC3161_VALIDATOR_V1",
     cmsDigestAlgorithm: "SHA512",
     cmsSignatureAlgorithm: "RSA_PKCS1_SHA512",
-    signerCertificateSha256: "c".repeat(64),
-    trustAnchorSha256: "d".repeat(64),
+    signerCertificateSha256: "2f0bd0feed6b00dbb2d62e2bc374ed30e0b159f957fa4859c9d63308f959881e",
+    trustAnchorSha256: "6871a6ed629cbefd77caee74a6bf6a9c22d96a8c26065dac75651e2e36a8b62d",
     certificatePathLength: 3,
     ...overrides,
   };
@@ -358,6 +358,30 @@ test("an actionable legacy batch cannot bypass the independent RFC 3161 gate", a
   });
   assert.equal(result.status, "INELIGIBLE_ACTIONABLE_BATCH");
   assert.equal(signed, 0);
+});
+
+test("an old issued timestamp whose signer is no longer enrolled cannot authorize an Ethereum write", async () => {
+  const store = createMemoryRecordStore();
+  const { record } = await store.create(input());
+  const proof = verifiedTimestampProof(record.evidenceDigest);
+  await assert.rejects(
+    store.saveQualifiedTimestamp(record.recordId, { ...proof, signerCertificateSha256: "f".repeat(64) }),
+    (error) => error.code === "TIMESTAMP_PROOF_NOT_VERIFIED",
+  );
+  await store.saveQualifiedTimestamp(record.recordId, proof);
+  // Simulate a row/cached proof verified under a preceding trust manifest.
+  const old = await store.findById(record.recordId);
+  old.qualifiedRail.signerCertificateSha256 = "f".repeat(64);
+  assert.deepEqual(await store.listAnchorCandidates(), []);
+  assert.equal((await store.getBundleById(record.recordId)).proofs.qualifiedTimestamp.token.value, proof.tokenBase64);
+  const common = { recordStore: store, auditStore: createMemoryAuditStore(),
+    coordinator: createMemoryCoordinator(), ethereumRail: { configured: true } };
+  assert.equal((await processAnchorQueue({ ...common, targetRecordId: record.recordId })).status, "NO_ELIGIBLE_RECORDS");
+  await store.createAnchorBatch({ batchId: "old-policy", ...buildMerkleTree([record]) });
+  const result = await processAnchorQueue(common);
+  assert.equal(result.status, "INELIGIBLE_ACTIONABLE_BATCH");
+  assert.equal(result.transactionsSigned, 0);
+  assert.equal(result.transactionsBroadcast, 0);
 });
 
 test("targeted mode refuses an actionable batch containing any extra record", async () => {

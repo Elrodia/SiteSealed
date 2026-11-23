@@ -16,7 +16,7 @@ const expected = new Map([
   ],
   [
     "server/rails-worker.js",
-    "9c542f916d0d85a08e7a955c126357ae1fd830416373589c7a2494eff5a4d71c",
+    "e82d5a6d4224573e7ea1747134eab57613d98cba07f034df45280f45ed24a64c",
   ],
   [
     "railway.json",
@@ -43,4 +43,4 @@ if (failed) {
   );
 }
 
-console.log("Dual-rail freeze verified: the Evidency/Ethereum implementation and Railway rail settings remain frozen; the approved environment template is unchanged.");
+console.log("Dual-rail freeze verified against the reviewed trust-manifest worker, original network adapters, Railway configuration and environment template.");

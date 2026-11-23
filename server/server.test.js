@@ -6,6 +6,7 @@ import { createMemoryCoordinator } from "./coordination.js";
 import { createApp } from "./server.js";
 import { createMemoryRecordStore } from "./specimen.js";
 import { createMemoryObjectStore } from "./storage.js";
+import { TRUST_MANIFEST_REVISION, TRUST_MANIFEST_SHA256 } from "./rfc3161.js";
 
 let server;
 let baseUrl;
@@ -356,6 +357,9 @@ test("health endpoint reports the honest v1.6-alpha.2 capability boundary", asyn
     environment: "SANDBOX",
     legalUse: false,
   });
+  assert.equal(payload.trustManifest.environment, "SANDBOX");
+  assert.equal(payload.trustManifest.revision, TRUST_MANIFEST_REVISION);
+  assert.ok(Array.isArray(payload.trustManifest.expiring));
   assert.deepEqual(payload.publicChainAnchor, {
     mode: "disabled",
     status: "not_configured",
@@ -431,6 +435,8 @@ test("health endpoint reads operational Evidency status from the separate worker
     signatureVerification: "VALID",
     certificateChainVerification: "VALID_TO_PINNED_SANDBOX_ROOT",
     validatorVersion: "SITESEALED_RFC3161_VALIDATOR_V1",
+    trustManifestRevision: TRUST_MANIFEST_REVISION,
+    trustManifestSha256: TRUST_MANIFEST_SHA256,
     revocationVerification: "NOT_CHECKED",
     dryRun: false,
     lastCheckedAt: "2026-08-12T20:00:00.000Z",
@@ -455,6 +461,12 @@ test("health endpoint reads operational Evidency status from the separate worker
       payload.sealing.qualifiedTimestamp,
       "EVIDENCY_SANDBOX_CRYPTOGRAPHICALLY_VERIFIED_TEST_ONLY",
     );
+    // Even a previously valid worker result cannot outlive a review/rotation.
+    const old = await coordinator.getRailRuntimeStatus("evidency");
+    await coordinator.setRailRuntimeStatus("evidency", { ...old, trustManifestRevision: "older-policy" });
+    const refreshed = await (await fetch(`http://127.0.0.1:${address.port}/api/health`)).json();
+    assert.equal(refreshed.qualifiedTimestamp.externalCallVerified, false);
+    assert.equal(refreshed.qualifiedTimestamp.status, "configured");
   } finally {
     await new Promise((resolve, reject) =>
       statusServer.close((error) => (error ? reject(error) : resolve())),
@@ -499,6 +511,23 @@ test("health endpoint refuses a stale pre-alpha.6 operational claim", async () =
       statusServer.close((error) => (error ? reject(error) : resolve())),
     );
   }
+});
+
+test("an enabled worker with no active trust path is not advertised as ready", async (t) => {
+  const coordinator = createMemoryCoordinator();
+  await coordinator.setRailRuntimeStatus("evidency", { configured: true, status: "operational" });
+  const app = createApp({
+    coordinator,
+    trustManifestHealth: () => ({ activePaths: 0, expiring: [], status: "unavailable" }),
+  });
+  const server = await new Promise(resolve => {
+    const instance = app.listen(0, "127.0.0.1", () => resolve(instance));
+  });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const result = await (await fetch(`http://127.0.0.1:${server.address().port}/api/health`)).json();
+  assert.equal(result.qualifiedTimestamp.status, "unavailable");
+  assert.equal(result.qualifiedTimestamp.externalCallVerified, false);
+  assert.equal(result.sealing.qualifiedTimestamp, false);
 });
 
 test("health exposes Ethereum FINALIZED only with binding and finality evidence", async () => {

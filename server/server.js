@@ -28,16 +28,23 @@ import {
   createDisabledTimestampService,
   createEvidencyTimestampServiceFromEnv,
 } from "./evidency.js";
-import { RFC3161_VALIDATOR_VERSION } from "./rfc3161.js";
+import {
+  RFC3161_VALIDATOR_VERSION,
+  TRUST_MANIFEST_REVISION,
+  TRUST_MANIFEST_SHA256,
+  getTrustManifestHealth,
+} from "./rfc3161.js";
 import {
   createDisabledEthereumRail,
   createEthereumAnchorClientFromEnv,
 } from "./ethereum.js";
 import { normalizeRateLimitIdentity } from "./net.js";
+import { linkPublicGuides, publicGuidesOrigin } from "./marketing-links.js";
 import {
   ApiError,
   MAX_ENCRYPTED_ORIGINAL_BYTES,
   RECORD_CLASS_LIVE_WEB,
+  applyCurrentTimestampPolicy,
   externalProofStatus,
   isValidRecordId,
   normalizeRecordId,
@@ -254,12 +261,15 @@ export function createApp({
   timestampService = createDisabledTimestampService(),
   ethereumRail = createDisabledEthereumRail(),
   identityService = createGoogleIdentityServiceFromEnv({}),
+  marketingOrigin = process.env.SITESEALED_MARKETING_ORIGIN,
+  trustManifestHealth = getTrustManifestHealth,
   sealRateLimit = positiveInteger(process.env.SEAL_RATE_LIMIT_PER_HOUR, 20),
   uploadAdmission = resolveUploadAdmissionConfig({
     DATABASE_MODE: "optional",
   }),
 } = {}) {
   const app = express();
+  const guidesOrigin = publicGuidesOrigin(marketingOrigin, process.env.PUBLIC_BASE_URL);
   const sessionCookieName = identityService.secureCookies
     ? "__Host-sitesealed_session"
     : "sitesealed_session";
@@ -325,13 +335,23 @@ export function createApp({
     return next();
   };
 
-  const timestampHealth = async () => {
+  const timestampHealth = async (manifest) => {
     const local = await timestampService.healthCheck();
     const shared = await coordinator.getRailRuntimeStatus?.("evidency");
+    if (!manifest.activePaths && (local.mode === "evidency" || shared?.configured)) {
+      return {
+        ...local, status: "unavailable", externalCallVerified: false,
+        signatureVerification: "NOT_YET_VERIFIED",
+        certificateChainVerification: "NO_ACTIVE_TRUST_PATH",
+        message: "No currently valid approved path can accept a new sandbox token.",
+      };
+    }
     if (!shared) return local;
     if (
       shared.status === "operational" &&
-      (shared.validatorVersion !== RFC3161_VALIDATOR_VERSION ||
+      (shared.trustManifestRevision !== TRUST_MANIFEST_REVISION ||
+        shared.trustManifestSha256 !== TRUST_MANIFEST_SHA256 ||
+        shared.validatorVersion !== RFC3161_VALIDATOR_VERSION ||
         shared.signatureVerification !== "VALID" ||
         shared.certificateChainVerification !==
           "VALID_TO_PINNED_SANDBOX_ROOT")
@@ -345,7 +365,7 @@ export function createApp({
         certificateChainVerification: "NOT_YET_VERIFIED",
         validatorVersion: RFC3161_VALIDATOR_VERSION,
         message:
-          "A fresh alpha.10.1 worker result is required before Evidency can be shown as operational.",
+          "A worker result verified under the current trust manifest is required.",
       };
     }
     return shared;
@@ -404,7 +424,7 @@ export function createApp({
   const findRecord = async (recordId) => {
     try {
       const cached = await coordinator.getCachedRecord(recordId);
-      if (cached) return cached;
+      if (cached) return applyCurrentTimestampPolicy(cached);
     } catch (error) {
       console.error(`Redis verification cache read failed: ${error.message}`);
     }
@@ -416,7 +436,7 @@ export function createApp({
           console.error(`Redis verification cache write failed: ${error.message}`),
         );
     }
-    return record;
+    return record ? applyCurrentTimestampPolicy(record) : null;
   };
 
   const findAudit = async (recordId) => {
@@ -558,6 +578,7 @@ export function createApp({
   );
 
   app.get("/api/health", async (_request, response) => {
+    const manifest = trustManifestHealth({ environment: "SANDBOX" });
     const [
       database,
       objectStorage,
@@ -573,13 +594,14 @@ export function createApp({
       auditStore.healthCheck(),
       coordinator.healthCheck(),
       identityService.healthCheck(),
-      timestampHealth(),
+      timestampHealth(manifest),
       ethereumHealth(),
     ]);
     response.status(200).json({
       ok: true,
       service: "sitesealed",
       version: "1.6.0-alpha.2",
+      trustManifest: { ...manifest, sha256: TRUST_MANIFEST_SHA256 },
       sealing: {
         workflow: "CONTEXT_BOUND_WEB_CAPTURE_WITH_SEPARATE_IMPORTED_CLASS",
         liveCapture: {
@@ -1081,7 +1103,7 @@ export function createApp({
             status: result.created
               ? "DUAL_RAIL_ALPHA_RECEIPT_CREATED"
               : "IDEMPOTENT_RECEIPT_REUSED",
-            record: result.record,
+            record: applyCurrentTimestampPolicy(result.record),
             operationalAudit: auditBoundary(
               result.record,
               auditResult.audit,
@@ -1258,7 +1280,7 @@ export function createApp({
   });
 
   if (existsSync(indexFile)) {
-    const indexTemplate = readFileSync(indexFile, "utf8");
+    const indexTemplate = linkPublicGuides(readFileSync(indexFile, "utf8"), guidesOrigin);
     const sendHtmlTemplate = (template, response) => {
       const cspNonce = String(response.locals.cspNonce ?? "");
       response.set("Cache-Control", "no-cache");
@@ -1274,7 +1296,7 @@ export function createApp({
     app.get("/index.html", sendClientIndex);
     for (const [route, filePath] of publicPageFiles) {
       if (!existsSync(filePath)) continue;
-      const template = readFileSync(filePath, "utf8");
+      const template = linkPublicGuides(readFileSync(filePath, "utf8"), guidesOrigin);
       app.get(route, (_request, response) =>
         sendHtmlTemplate(template, response));
     }

@@ -112,7 +112,7 @@ reçu, jamais à une URL fournie par le kit.
 
 ## Dual rail : gel de non-régression
 
-Le dual rail fonctionnel de `1.4.0-alpha.10.1` est volontairement inchangé :
+Les fournisseurs, la cadence et les paramètres réseau du double rail restent inchangés :
 
 - Rail A : jeton RFC 3161 Evidency **Sandbox**, validation CMS, `ESSCertIDv2` et
   chaîne vers la racine Sandbox épinglée ; ce jeton reste test-only et non
@@ -121,14 +121,24 @@ Le dual rail fonctionnel de `1.4.0-alpha.10.1` est volontairement inchangé :
   Mainnet (chain ID 1)**, avec vérification de l'adresse, du calldata, du reçu,
   des confirmations et de la finalité.
 
-Les fichiers d'exécution dual rail suivants restent byte-for-byte identiques à
-la version déployée :
+Les fichiers suivants restent identiques à la version antérieure du dépôt :
 
 - `server/evidency.js`
 - `server/ethereum.js`
-- `server/rails-worker.js`
 - `railway.json`
 - `railway.rails.json`
+
+Le manifeste versionné admet plusieurs chaînes approuvées. Le worker publie désormais
+la révision et l'empreinte de sa politique : l'API ne réutilise pas un feu vert
+Redis issu d'une autre version. Le gel du worker a été recalé sur ce changement ;
+les jetons restent des jetons de **test**. Voir [ROTATION.md](ROTATION.md).
+
+La publicité est réservée à une vitrine publique séparée de l'application
+qui manipule les preuves. Voir [ADSENSE.md](ADSENSE.md) pour la configuration
+du consentement, le domaine et les commandes de lancement. Le service web
+principal peut également recevoir `SITESEALED_MARKETING_ORIGIN` **après**
+l'ouverture de cette vitrine : ses liens de navigation publics y conduiront
+sans transmettre les identifiants, les paramètres ni les fragments de la page courante.
 
 Le contrôle peut être rejoué avec :
 

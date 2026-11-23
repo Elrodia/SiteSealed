@@ -14,7 +14,7 @@ import {
 } from "./evidency.js";
 import { createEthereumAnchorClientFromEnv } from "./ethereum.js";
 import { buildMerkleTree } from "./merkle.js";
-import { RFC3161_VALIDATOR_VERSION } from "./rfc3161.js";
+import { RFC3161_VALIDATOR_VERSION, TRUST_MANIFEST_REVISION, TRUST_MANIFEST_SHA256 } from "./rfc3161.js";
 import { createMemoryRecordStore } from "./specimen.js";
 import {
   createMemoryObjectStore,
@@ -126,6 +126,8 @@ export function deriveEvidencyRuntimeStatus({
   const previouslyVerified =
     previous?.status === "operational" &&
     previous?.externalCallVerified === true &&
+    previous?.trustManifestRevision === TRUST_MANIFEST_REVISION &&
+    previous?.trustManifestSha256 === TRUST_MANIFEST_SHA256 &&
     previous?.validatorVersion === RFC3161_VALIDATOR_VERSION &&
     previous?.signatureVerification === "VALID" &&
     previous?.certificateChainVerification === VALID_CERTIFICATE_CHAIN &&
@@ -184,6 +186,8 @@ export function deriveEvidencyRuntimeStatus({
         ? VALID_CERTIFICATE_CHAIN
         : "NOT_YET_VERIFIED",
     validatorVersion: RFC3161_VALIDATOR_VERSION,
+    trustManifestRevision: TRUST_MANIFEST_REVISION,
+    trustManifestSha256: TRUST_MANIFEST_SHA256,
     revocationVerification: "NOT_CHECKED",
     dryRun: Boolean(dryRun),
     lastCheckedAt: checkedAt,

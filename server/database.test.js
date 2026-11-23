@@ -5,7 +5,7 @@ import {
   mapRecordRow,
   resolveDatabaseConfig,
 } from "./database.js";
-import { externalProofStatus, validateSealRequest } from "./records.js";
+import { applyCurrentTimestampPolicy, createEvidenceDigest, createProofBundle, externalProofStatus, validateSealRequest } from "./records.js";
 
 const submissionId = "123e4567-e89b-42d3-a456-426614174000";
 const storageCipherSha256 = "d".repeat(64);
@@ -452,8 +452,8 @@ test("INVALID_ON_CHAIN anchor batches remain actionable for safe reinspection", 
   assert.match(lookupSql, /'INVALID_ON_CHAIN'/);
 });
 
-test("database rows expose the independently verified RFC 3161 path", () => {
-  const record = mapRecordRow({
+function timestampRow(overrides = {}) {
+  return {
     record_id: "SR-20260812-ABCDEF0123456789ABCDEF01",
     record_sha256: "a".repeat(64),
     manifest_sha256: "b".repeat(64),
@@ -476,7 +476,7 @@ test("database rows expose the independently verified RFC 3161 path", () => {
     qualified_legal_use: 0,
     qualification_status: "TEST_ONLY_NOT_QUALIFIED",
     qualified_hash_algorithm: "SHA256",
-    qualified_hashed_message: "f".repeat(64),
+    qualified_hashed_message: createEvidenceDigest({ recordSha256: "a".repeat(64), manifestSha256: "b".repeat(64) }),
     qualified_serial_number: "01",
     certified_at: new Date("2026-08-12T19:01:00.000Z"),
     token_der: Buffer.alloc(64, 7),
@@ -495,11 +495,15 @@ test("database rows expose the independently verified RFC 3161 path", () => {
     qualified_revocation_verification: "NOT_CHECKED",
     qualified_cms_digest_algorithm: "SHA512",
     qualified_cms_signature_algorithm: "RSA_PKCS1_SHA512",
-    qualified_signer_certificate_sha256: "2".repeat(64),
-    qualified_trust_anchor_sha256: "3".repeat(64),
+    qualified_signer_certificate_sha256: "2f0bd0feed6b00dbb2d62e2bc374ed30e0b159f957fa4859c9d63308f959881e",
+    qualified_trust_anchor_sha256: "6871a6ed629cbefd77caee74a6bf6a9c22d96a8c26065dac75651e2e36a8b62d",
     qualified_certificate_path_length: 3,
-  });
+    ...overrides,
+  };
+}
 
+test("database rows expose the independently verified RFC 3161 path", () => {
+  const record = mapRecordRow(timestampRow());
   assert.equal(record.qualifiedRail.signatureVerification, "VALID");
   assert.equal(
     record.qualifiedRail.certificateChainVerification,
@@ -511,6 +515,44 @@ test("database rows expose the independently verified RFC 3161 path", () => {
     externalProofStatus(record).state,
     "SANDBOX_TIMESTAMP_ISSUED_ANCHOR_PENDING",
   );
+});
+
+test("stale cached signature flags cannot turn an unknown path, mismatched digest, or production claim into verified evidence", () => {
+  const trusted = mapRecordRow(timestampRow());
+  for (const change of [
+    { signerCertificateSha256: null },
+    { trustAnchorSha256: "8".repeat(64) },
+    { hashedMessage: "1".repeat(64) },
+    { qualificationStatus: "EIDAS_QUALIFIED", legalUse: true, environment: "PRODUCTION", state: "TOKEN_ISSUED" },
+  ]) {
+    const old = { ...trusted, chainRail: { state: "FINALIZED" }, qualifiedRail: { ...trusted.qualifiedRail, ...change } };
+    const record = applyCurrentTimestampPolicy(old);
+    const bundle = createProofBundle(old);
+    assert.equal(bundle.proofStatus.state, "MAINNET_ANCHORED_QTSP_PENDING");
+    assert.equal(bundle.proofStatus.sealed, false);
+    assert.equal(record.qualifiedRail.legalUse, false);
+    assert.equal(record.qualifiedRail.certificateChainVerification, "NOT_ACCEPTED_BY_CURRENT_POLICY");
+    assert.equal(bundle.proofs.qualifiedTimestamp.certificateChainVerification, "NOT_ACCEPTED_BY_CURRENT_POLICY");
+    assert.equal(bundle.proofs.qualifiedTimestamp.responseValidation, "NOT_ACCEPTED_BY_CURRENT_POLICY");
+    assert.equal(bundle.proofs.qualifiedTimestamp.token.value, old.qualifiedRail.token);
+    assert.equal(old.qualifiedRail.certificateChainVerification, "VALID_TO_PINNED_SANDBOX_ROOT");
+  }
+});
+
+test("a page of no-longer-trusted records does not hide the next eligible MySQL anchor candidate", async () => {
+  const first = timestampRow({ qualified_signer_certificate_sha256: "0".repeat(64) });
+  const second = timestampRow({ record_id: "SR-20260812-ABCDEF0123456789ABCDEF02" });
+  const store = createMysqlRecordStore({
+    async query(sql, params) {
+      if (sql.includes("WHERE records.record_id = ?")) {
+        return [[params[0] === first.record_id ? first : second], []];
+      }
+      if (params) assert.deepEqual(params, [first.created_at, first.record_id]);
+      const row = params ? second : first;
+      return [[{ record_id: row.record_id, created_at: row.created_at }], []];
+    },
+  });
+  assert.deepEqual((await store.listAnchorCandidates(1)).map(r => r.recordId), [second.record_id]);
 });
 
 test("MySQL persistence rejects an unverified timestamp proof before writing", async () => {

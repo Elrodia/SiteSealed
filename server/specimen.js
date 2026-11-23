@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
 import {
   ApiError,
+  applyCurrentTimestampPolicy,
   chainRailFromProof,
   createDevelopmentRecord,
   createProofBundle,
   qualifiedRailFromProof,
+  recordHasTrustedSandboxTimestamp,
+  sandboxProofAccepted,
   scopeForRecord,
   stableStringify,
 } from "./records.js";
@@ -103,7 +106,7 @@ export function createMemoryRecordStore() {
             "This submission ID is already bound to a different encrypted record.",
           );
         }
-        return { record: existing.record, created: false };
+        return { record: applyCurrentTimestampPolicy(existing.record), created: false };
       }
 
       const record = createDevelopmentRecord(input, {
@@ -131,12 +134,7 @@ export function createMemoryRecordStore() {
     },
 
     async saveQualifiedTimestamp(recordId, proof) {
-      if (
-        proof?.validatorVersion !== "SITESEALED_RFC3161_VALIDATOR_V1" ||
-        proof?.signatureVerification !== "VALID" ||
-        proof?.certificateChainVerification !==
-          "VALID_TO_PINNED_SANDBOX_ROOT"
-      ) {
+      if (!sandboxProofAccepted(proof, "issuance")) {
         throw new ApiError(
           409,
           "TIMESTAMP_PROOF_NOT_VERIFIED",
@@ -147,6 +145,9 @@ export function createMemoryRecordStore() {
       if (!entry || entry.record.specimen) {
         throw new ApiError(404, "RECORD_NOT_FOUND", "Record not found.");
       }
+      if (entry.record.evidenceDigest !== proof.hashedMessage) {
+        throw new ApiError(409, "TIMESTAMP_PROOF_CONFLICT", "The timestamp token is not bound to this record's evidence digest.");
+      }
       if (entry.record.qualifiedRail?.state === "SANDBOX_TOKEN_ISSUED") {
         if (entry.record.qualifiedRail.hashedMessage !== proof.hashedMessage) {
           throw new ApiError(
@@ -155,7 +156,7 @@ export function createMemoryRecordStore() {
             "This record already carries a timestamp for another digest.",
           );
         }
-        return { created: false, record: structuredClone(entry.record) };
+        return { created: false, record: structuredClone(applyCurrentTimestampPolicy(entry.record)) };
       }
       entry.record = {
         ...entry.record,
@@ -170,15 +171,7 @@ export function createMemoryRecordStore() {
         .map((entry) => entry.record)
         .filter(
           (record) =>
-            !record.specimen &&
-            record.qualifiedRail?.state === "SANDBOX_TOKEN_ISSUED" &&
-            record.qualifiedRail.environment === "SANDBOX" &&
-            record.qualifiedRail.validatorVersion ===
-              "SITESEALED_RFC3161_VALIDATOR_V1" &&
-            record.qualifiedRail.signatureVerification === "VALID" &&
-            record.qualifiedRail.certificateChainVerification ===
-              "VALID_TO_PINNED_SANDBOX_ROOT" &&
-            record.qualifiedRail.hashedMessage === record.evidenceDigest &&
+            recordHasTrustedSandboxTimestamp(record) &&
             record.chainRail?.state === "NOT_ANCHORED" &&
             !batchByRecord.has(record.recordId),
         )
@@ -270,7 +263,7 @@ export function createMemoryRecordStore() {
     },
 
     async findById(recordId) {
-      return entries.get(recordId)?.record ?? null;
+      return applyCurrentTimestampPolicy(entries.get(recordId)?.record ?? null);
     },
 
     async getBundleById(recordId) {

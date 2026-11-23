@@ -28,6 +28,7 @@ import {
   useI18n,
 } from "./i18n/I18nProvider.jsx";
 const SPECIMEN_ID = "SR-2026-08-0147-A3";
+const publicGuides = globalThis.document?.getElementById("root")?.dataset.publicGuidesOrigin || "";
 
 const pipeline = [
   {
@@ -2698,9 +2699,10 @@ function App() {
           <div className="footer__links">
             <div>
               <strong>Explore</strong>
-              <a href="/how-it-works">How it works</a>
-              <a href="/qualified-timestamping">Qualified timestamping</a>
-              <a href="/verify">Verify a record</a>
+              {publicGuides && <a href={publicGuides} rel="noreferrer">SiteSealed public guides</a>}
+              <a href={publicGuides + "/how-it-works"} rel="noreferrer">How it works</a>
+              <a href={publicGuides + "/qualified-timestamping"} rel="noreferrer">Qualified timestamping</a>
+              <a href={publicGuides + "/verify"} rel="noreferrer">Verify a record</a>
               <a href="#proof">Dual rail</a>
               <a href="#principles">Principles</a>
             </div>
